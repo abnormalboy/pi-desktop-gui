@@ -1,0 +1,128 @@
+import { _electron as electron } from 'playwright';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider.ts';
+
+const provider = await createLocalProvider();
+const fixture = await prepareRealPiFixture(provider.baseUrl, 'ui');
+const output = path.resolve('test-results');
+await fs.mkdir(output, { recursive: true });
+let app;
+const errors = [];
+let page;
+const launch = async () => {
+  app = await electron.launch({
+    executablePath: process.env.PI_DESKTOP_EXE,
+    args: process.env.PI_DESKTOP_EXE ? [] : [path.resolve('.')],
+    env: { ...process.env, PI_DESKTOP_DATA_DIR: fixture.dataDir, PI_OFFLINE: '1' },
+    timeout: 30000,
+  });
+  page = await app.firstWindow();
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.getByText('想一起完成什么？').or(page.locator('.message')).first().waitFor();
+};
+const waitStatus = async (s) => page.locator('.run-meta .status.' + s).waitFor({ timeout: 25000 });
+try {
+  await launch();
+  await page.locator('.change-row').first().waitFor();
+  await page.screenshot({ path: path.join(output, 'workspace-empty.png') });
+  const input = page.getByRole('textbox', { name: '任务输入' });
+  await input.fill('@输入');
+  await page.locator('.file-picker').getByRole('button', { name: '输入 文件.txt', exact: true }).click();
+  await page.locator('.attachments').getByText('输入 文件.txt').waitFor();
+  await input.fill('E2E_FILES：读取输入文件，写入结果，再执行验证命令。');
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await waitStatus('completed');
+  await page.locator('.message-attachment').getByText('输入 文件.txt', { exact: false }).waitFor();
+  await page.getByText('命令结果：', { exact: false }).waitFor();
+  assert.equal(
+    await fs.readFile(path.join(fixture.projectDir, '输出结果.txt'), 'utf8'),
+    '真实 Pi 工具执行成功\n',
+  );
+  await page.getByRole('button', { name: '刷新变更', exact: true }).click();
+  await page.locator('.change-row').filter({ hasText: '输出结果.txt' }).click();
+  await page.locator('.diff-lines').getByText('+真实 Pi 工具执行成功', { exact: true }).waitFor();
+  assert.equal(await page.locator('.tool-card.error').count(), 0);
+  await page.screenshot({ path: path.join(output, 'workspace-completed.png') });
+  console.log('PASS UI real Pi task, attachment, tools and diff');
+  await input.fill('/gui-select');
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await page.getByRole('dialog', { name: '测试选择' }).waitFor();
+  await page.getByRole('radio', { name: 'B', exact: true }).check();
+  await page.getByRole('button', { name: '提交回复', exact: true }).click();
+  await waitStatus('idle');
+  console.log('PASS UI actual Pi extension prompt');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '外观与编辑器', exact: true }).click();
+  await page.getByRole('button', { name: '深色', exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.getByRole('button', { name: '关闭', exact: true }).last().click();
+  await page.screenshot({ path: path.join(output, 'workspace-dark.png') });
+  await page.getByRole('textbox', { name: '任务输入' }).fill('不会自动发送的持久草稿');
+  await page.waitForTimeout(300);
+  await app.close();
+  app = undefined;
+  await launch();
+  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), '不会自动发送的持久草稿');
+  assert.ok((await page.locator('.message').count()) > 0);
+  assert.equal(await page.locator('.run-meta .running').count(), 0);
+  console.log('PASS UI theme, draft and history after restart');
+  await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW');
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await waitStatus('running');
+  await page.getByRole('textbox', { name: '任务输入' }).fill('停止后恢复这条后续任务');
+  await page.getByLabel('运行中发送方式').selectOption('followUp');
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await page.locator('.queue').getByText('停止后恢复这条后续任务', { exact: false }).waitFor();
+  await page.getByRole('button', { name: '停止全部', exact: true }).click();
+  await waitStatus('stopped');
+  assert.match(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), /停止后恢复/);
+  console.log('PASS UI stop and queue restoration');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '外观与编辑器', exact: true }).click();
+  await page.getByLabel('字号比例').fill('2');
+  await page.getByRole('button', { name: '关闭', exact: true }).last().click();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1024, 768));
+  await page.screenshot({ path: path.join(output, 'workspace-200-percent.png') });
+  assert.ok(await page.getByRole('textbox', { name: '任务输入' }).isVisible());
+  assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
+  assert.equal(await page.evaluate(() => typeof window.process), 'undefined');
+  assert.deepEqual(errors, []);
+  await fs.writeFile(
+    path.join(output, 'ui-result.json'),
+    JSON.stringify(
+      {
+        result: 'PASS',
+        fixture: fixture.dir,
+        checks: [
+          'real Electron renderer',
+          'real Pi read/write/shell',
+          'attachment picker',
+          'Git diff',
+          'light/dark themes',
+          'draft/history reload',
+          'queue and stop',
+          '200% font at 1024x768',
+          'isolated renderer',
+        ],
+        consoleErrors: errors,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log('UI PASS:', output);
+} catch (e) {
+  if (page && !page.isClosed()) await page.screenshot({ path: path.join(output, 'ui-failure.png') });
+  console.error('Renderer errors:', errors);
+  throw e;
+} finally {
+  if (app) await app.close();
+  await provider.close();
+}

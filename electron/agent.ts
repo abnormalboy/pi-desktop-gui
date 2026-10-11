@@ -1,0 +1,660 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PiRpc } from './rpc';
+import { agentDirectory, detectEnvironment, resolvePi } from './environment';
+import { Store, readSessionFile } from './store';
+import { Workspace, attachmentPrompt } from './workspace';
+import {
+  busy,
+  emptyRuntime,
+  messageText,
+  type Runtime,
+  type Message,
+  type RunStatus,
+  type SendMode,
+  type Session,
+  type Model,
+} from '../shared/types';
+
+// Pi model records may contain provider headers. Keep only display metadata in IPC.
+const displayModel = (model: any): Model | undefined =>
+  model
+    ? {
+        id: model.id,
+        provider: model.provider,
+        name: model.name ?? model.id,
+        reasoning: model.reasoning,
+        contextWindow: model.contextWindow,
+      }
+    : undefined;
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const redact = (s: string) =>
+  s
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[已隐藏]')
+    .replace(/\b(sk-[a-zA-Z0-9_-]{12,}|gh[pousr]_[a-zA-Z0-9]{15,})\b/g, '[已隐藏]')
+    .replace(/((?:api[_-]?key|access_token|refresh_token|authorization)["'\s:=]+)[^\s,"'}]+/gi, '$1[已隐藏]');
+export class AgentService extends EventEmitter {
+  runtime: Runtime = emptyRuntime();
+  private rpc?: PiRpc;
+  private publishing?: NodeJS.Timeout;
+  private operation = Promise.resolve();
+  private stopRequested = false;
+  private connecting = false;
+  private shutdown = false;
+  private fullOutput = '';
+  private dialogTimers = new Map<string, NodeJS.Timeout>();
+  private probe?: PiRpc;
+  private probing = false;
+  private stopEpoch = 0;
+  constructor(
+    readonly store: Store,
+    readonly workspace: Workspace,
+    private developmentRoot?: string,
+  ) {
+    super();
+  }
+  publish(immediate = false) {
+    if (immediate) {
+      if (this.publishing) clearTimeout(this.publishing);
+      this.publishing = undefined;
+      this.emit('runtime', structuredClone(this.runtime));
+      return;
+    }
+    this.publishing ??= setTimeout(() => {
+      this.publishing = undefined;
+      this.emit('runtime', structuredClone(this.runtime));
+    }, 40);
+  }
+  private save() {
+    this.store
+      .save()
+      .then(() => this.emit('state', this.store.state))
+      .catch((e) => {
+        this.runtime.error = `本地保存失败：${errorText(e)}`;
+        this.publish();
+      });
+  }
+  private status(status: RunStatus) {
+    this.runtime.status = status;
+    if (this.runtime.sessionId) {
+      const s = this.store.session(this.runtime.sessionId);
+      s.lastStatus = status;
+      s.updatedAt = Date.now();
+      if (!busy(status)) s.unread = this.store.state.selectedSessionId !== s.id;
+      this.save();
+    }
+    this.publish(true);
+  }
+  private exclusive<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.operation.then(action, action);
+    this.operation = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+  private diagnostic(s: string) {
+    this.runtime.diagnostic.push(redact(s).slice(-4000));
+    this.runtime.diagnostic = this.runtime.diagnostic.slice(-100);
+    this.publish();
+  }
+  private clearDialogs() {
+    for (const timer of this.dialogTimers.values()) clearTimeout(timer);
+    this.dialogTimers.clear();
+    this.runtime.dialogs = [];
+  }
+  private onEvent(record: any) {
+    const r = this.runtime;
+    switch (record.type) {
+      case 'agent_start':
+        if (!this.stopRequested) this.status('running');
+        break;
+      case 'message_start':
+        r.messages.push(record.message);
+        break;
+      case 'message_update': {
+        let m = r.messages.at(-1);
+        if (!m || m.role !== 'assistant') {
+          m = { role: 'assistant', content: [], timestamp: Date.now() };
+          r.messages.push(m);
+        }
+        if (typeof m.content === 'string') m.content = [{ type: 'text', text: m.content }];
+        const e = record.assistantMessageEvent,
+          i = e?.contentIndex ?? 0;
+        if (!e) break;
+        if (e.type === 'text_start') m.content[i] = { type: 'text', text: '' };
+        if (e.type === 'text_delta') {
+          m.content[i] ??= { type: 'text', text: '' };
+          m.content[i].text = (m.content[i].text ?? '') + (e.delta ?? '');
+        }
+        if (e.type === 'text_end') m.content[i] = { type: 'text', text: e.content ?? '' };
+        if (e.type === 'thinking_start') m.content[i] = { type: 'thinking', thinking: '' };
+        if (e.type === 'thinking_delta') {
+          m.content[i] ??= { type: 'thinking', thinking: '' };
+          m.content[i].thinking = (m.content[i].thinking ?? '') + (e.delta ?? '');
+        }
+        if (e.type === 'thinking_end') m.content[i] = { type: 'thinking', thinking: e.content ?? '' };
+        if (e.type === 'toolcall_end') m.content[i] = e.toolCall;
+        break;
+      }
+      case 'message_end': {
+        const last = r.messages.at(-1);
+        if (last && last.role === record.message?.role) r.messages[r.messages.length - 1] = record.message;
+        else r.messages.push(record.message);
+        break;
+      }
+      case 'tool_execution_start':
+        r.tools.push({
+          id: record.toolCallId,
+          name: record.toolName,
+          args: record.args ?? {},
+          status: 'running',
+          output: '',
+          startedAt: Date.now(),
+        });
+        break;
+      case 'tool_execution_update': {
+        const t = r.tools.find((t) => t.id === record.toolCallId);
+        if (t)
+          t.output = messageText(record.partialResult ?? { content: '' })
+            .split('\n')
+            .slice(-200)
+            .join('\n');
+        break;
+      }
+      case 'tool_execution_end': {
+        const output = messageText(record.result ?? { content: '' });
+        let t = r.tools.find((t) => t.id === record.toolCallId);
+        if (!t) {
+          t = {
+            id: record.toolCallId,
+            name: record.toolName,
+            args: {},
+            status: 'running',
+            output: '',
+            startedAt: Date.now(),
+          };
+          r.tools.push(t);
+        }
+        t.output = output.split('\n').slice(-200).join('\n');
+        t.status = record.isError ? 'error' : 'done';
+        t.durationMs = record.durationMs ?? Date.now() - t.startedAt;
+        this.fullOutput = (this.fullOutput + `\n\n[${t.name}] ${JSON.stringify(t.args)}\n${output}`).slice(
+          -10 * 1024 * 1024,
+        );
+        break;
+      }
+      case 'queue_update':
+        r.steering = record.steering ?? [];
+        r.followUp = record.followUp ?? [];
+        break;
+      case 'compaction_start':
+        if (!this.stopRequested) this.status('compacting');
+        break;
+      case 'compaction_end':
+        if (record.errorMessage) r.notices.push(record.errorMessage);
+        if (!this.stopRequested)
+          this.status(record.reason === 'manual' && !record.willRetry ? 'idle' : 'running');
+        break;
+      case 'auto_retry_start':
+        r.notices.push(`正在重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`);
+        if (!this.stopRequested) this.status('retrying');
+        break;
+      case 'auto_retry_end':
+        if (!record.success) r.error = record.finalError;
+        if (!this.stopRequested) this.status('running');
+        break;
+      case 'agent_settled': {
+        if (this.stopRequested) break;
+        const last = r.messages.findLast((m) => m.role === 'assistant');
+        const failed = last?.stopReason === 'error';
+        r.error = failed ? last.errorMessage || '模型请求失败' : undefined;
+        this.status(record.aborted ? 'stopped' : failed ? 'error' : 'completed');
+        for (const t of r.tools)
+          if (t.status === 'running') {
+            t.status = 'error';
+            t.output += '\n执行已结束但未收到工具结果';
+          }
+        void this.refresh().catch((e) => this.diagnostic(errorText(e)));
+        break;
+      }
+      case 'session_info_changed':
+        if (r.sessionId && record.name) {
+          this.store.session(r.sessionId).title = String(record.name).slice(0, 120);
+          this.save();
+        }
+        break;
+      case 'thinking_level_changed':
+        r.thinking = record.level;
+        break;
+      case 'extension_error':
+        r.notices.push(`扩展错误：${record.error}`);
+        break;
+      case 'extension_ui_request':
+        this.extension(record);
+        break;
+      // agent_end is deliberately not a terminal state: recovery and queued work may follow.
+    }
+    r.notices = r.notices.slice(-20);
+    if (r.tools.length > 1000) r.tools = r.tools.slice(-1000);
+    this.publish();
+  }
+  private extension(record: any) {
+    const r = this.runtime;
+    if (['select', 'confirm', 'input', 'editor'].includes(record.method)) {
+      const expiresAt = record.timeout ? Date.now() + record.timeout : undefined;
+      r.dialogs.push({ ...record, expiresAt });
+      if (!this.stopRequested) this.status('waiting');
+      if (record.timeout)
+        this.dialogTimers.set(
+          record.id,
+          setTimeout(() => {
+            r.dialogs = r.dialogs.filter((d) => d.id !== record.id);
+            this.dialogTimers.delete(record.id);
+            if (r.status === 'waiting') this.status(this.connecting ? 'starting' : 'running');
+            this.publish(true);
+          }, record.timeout),
+        );
+    } else if (record.method === 'notify') r.notices.push(String(record.message ?? ''));
+    else if (record.method === 'setStatus') {
+      if (record.statusText) r.statuses[record.statusKey] = record.statusText;
+      else delete r.statuses[record.statusKey];
+    } else if (record.method === 'setWidget') {
+      if (record.widgetLines) r.widgets[record.widgetKey] = record.widgetLines;
+      else delete r.widgets[record.widgetKey];
+    } else if (record.method === 'set_editor_text' && r.sessionId) {
+      this.store.session(r.sessionId).draft = String(record.text ?? '');
+      this.save();
+    } else if (record.method !== 'setTitle')
+      r.notices.push(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`);
+  }
+  async respond(id: string, values: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
+    const d = this.runtime.dialogs.find((d) => d.id === id);
+    if (!d || (d.expiresAt && Date.now() >= d.expiresAt)) throw new Error('这个问题已失效');
+    if (d.method === 'select' && !values.cancelled && !d.options?.includes(values.value ?? ''))
+      throw new Error('请选择有效选项');
+    await this.rpc?.write({ type: 'extension_ui_response', id, ...values });
+    const timer = this.dialogTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.dialogTimers.delete(id);
+    this.runtime.dialogs = this.runtime.dialogs.filter((d) => d.id !== id);
+    if (this.runtime.status === 'waiting' && !this.runtime.dialogs.length)
+      this.status(this.connecting ? 'starting' : 'running');
+    this.publish(true);
+  }
+  private async refresh() {
+    const rpc = this.rpc;
+    if (!rpc || rpc.closed) return;
+    const state = await rpc.request('get_state');
+    if (this.rpc !== rpc) return;
+    this.runtime.model = displayModel(state.model);
+    this.runtime.thinking = state.thinkingLevel;
+    if (this.runtime.sessionId && state.sessionFile) {
+      this.store.session(this.runtime.sessionId).file = state.sessionFile;
+      this.save();
+    }
+    if (!busy(this.runtime.status)) {
+      const messages = await rpc.request('get_messages');
+      if (this.rpc === rpc) this.runtime.messages = messages.messages ?? [];
+      try {
+        const stats = await rpc.request('get_session_stats');
+        if (this.rpc === rpc)
+          this.runtime.stats = {
+            tokens: stats.tokens?.total ?? stats.totalTokens,
+            cost: stats.cost ?? stats.totalCost,
+            contextPercent: stats.contextUsage?.percent,
+          };
+      } catch {}
+    }
+    this.publish();
+  }
+  connect(sessionId: string) {
+    return this.exclusive(() => this.ensureConnected(sessionId));
+  }
+  private async ensureConnected(sessionId: string) {
+    if (this.probing) throw new Error('正在测试模型连接，请稍候');
+    const session = this.store.session(sessionId),
+      project = this.store.project(session.projectId);
+    if (!project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
+    if (busy(this.runtime.status) && this.runtime.sessionId !== sessionId)
+      throw new Error('另一个会话正在运行，请先停止或等待完成');
+    if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) return;
+    if (this.rpc && !this.rpc.closed) {
+      const result = session.file
+        ? await this.rpc.request('switch_session', { sessionPath: session.file }, 120000)
+        : await this.rpc.request('new_session', {}, 120000);
+      if (result?.cancelled) throw new Error('Pi 扩展取消了会话切换，原会话保持不变');
+      const old = this.rpc;
+      this.rpc = undefined;
+      await old.close();
+    }
+    this.clearDialogs();
+    this.runtime = { ...emptyRuntime(), sessionId };
+    this.stopRequested = false;
+    this.connecting = true;
+    this.fullOutput = '';
+    this.status('starting');
+    try {
+      const environment = await detectEnvironment(this.store.state.settings, this.developmentRoot);
+      if (!environment.supported) throw new Error(environment.errors.join('\n'));
+      const resolved = await resolvePi(this.store.state.settings, this.developmentRoot);
+      if (this.stopRequested) throw new Error('启动已取消');
+      const rpc = new PiRpc();
+      this.rpc = rpc;
+      rpc.on('event', (e) => {
+        if (this.rpc === rpc) this.onEvent(e);
+      });
+      rpc.on('diagnostic', (s) => {
+        if (this.rpc === rpc) this.diagnostic(s);
+      });
+      rpc.on('protocolError', (e) => {
+        if (this.rpc === rpc) {
+          this.runtime.error = errorText(e);
+          this.status('error');
+          void rpc.killTree().catch(() => {});
+        }
+      });
+      rpc.on('fault', (e) => {
+        if (this.rpc === rpc) {
+          this.runtime.error = errorText(e);
+          this.runtime.connected = false;
+          this.status('error');
+        }
+      });
+      rpc.on('exit', () => {
+        if (this.rpc !== rpc || this.shutdown) return;
+        this.runtime.connected = false;
+        this.clearDialogs();
+        if (busy(this.runtime.status)) {
+          this.runtime.error = 'Pi 进程已退出，历史保留，可重新连接。';
+          this.status(this.stopRequested ? 'stopped' : 'interrupted');
+        } else this.publish(true);
+      });
+      const args = [
+        '--mode',
+        'rpc',
+        '--name',
+        session.title,
+        '--session-dir',
+        path.join(this.store.dir, 'sessions'),
+      ];
+      if (session.file) args.push('--session', session.file);
+      else args.push('--session-id', session.id);
+      // Project trust is answered in Pi's own dialog; no implicit --approve flag.
+      const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+      const shellEnv: NodeJS.ProcessEnv = {
+        PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
+        PI_TELEMETRY: '0',
+      };
+      // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
+      // including installations on another drive, over Windows' legacy WSL bash launcher.
+      if (environment.bash)
+        shellEnv[pathKey] = path.dirname(environment.bash) + path.delimiter + (process.env[pathKey] ?? '');
+      rpc.start(resolved.spec, project.path, args, shellEnv);
+      const state = await rpc.request('get_state', {}, 120000);
+      if (this.stopRequested) throw new Error('启动已取消');
+      if (state.sessionFile) session.file = state.sessionFile;
+      this.runtime.model = displayModel(state.model);
+      this.runtime.thinking = state.thinkingLevel;
+      this.runtime.messages = (await rpc.request('get_messages')).messages ?? [];
+      const calls = new Map(
+        this.runtime.messages
+          .flatMap((m) => (typeof m.content === 'string' ? [] : m.content))
+          .filter((b) => b.type === 'toolCall')
+          .map((b) => [b.id, b]),
+      );
+      this.runtime.tools = this.runtime.messages
+        .filter((m) => m.role === 'toolResult')
+        .slice(-1000)
+        .map((m) => ({
+          id: m.toolCallId ?? '',
+          name: m.toolName ?? 'tool',
+          args: calls.get(m.toolCallId)?.arguments ?? {},
+          status: m.isError ? 'error' : 'done',
+          output: messageText(m).split('\n').slice(-200).join('\n'),
+          startedAt: m.timestamp ?? 0,
+          durationMs: typeof m.durationMs === 'number' ? m.durationMs : undefined,
+        }));
+      this.fullOutput = this.runtime.messages
+        .filter((m) => m.role === 'toolResult')
+        .map((m) => `[${m.toolName ?? 'tool'}]\n${messageText(m)}`)
+        .join('\n\n')
+        .slice(-10 * 1024 * 1024);
+      this.runtime.models = ((await rpc.request('get_available_models')).models ?? [])
+        .map(displayModel)
+        .filter(Boolean);
+      const settings = this.store.state.settings;
+      if (settings.provider && settings.modelId) {
+        this.runtime.model = displayModel(
+          await rpc.request('set_model', {
+            provider: settings.provider,
+            modelId: settings.modelId,
+          }),
+        );
+      }
+      const levels = await rpc.request('get_available_thinking_levels');
+      this.runtime.thinkingLevels =
+        levels.levels ?? levels.thinkingLevels ?? (Array.isArray(levels) ? levels : []);
+      if (settings.thinking && this.runtime.thinkingLevels.includes(settings.thinking)) {
+        const result = await rpc.request('set_thinking_level', { level: settings.thinking });
+        this.runtime.thinking = result?.level ?? settings.thinking;
+      }
+      this.runtime.connected = true;
+      this.status('idle');
+      this.save();
+    } catch (e) {
+      this.runtime.error = errorText(e);
+      this.status(this.stopRequested ? 'stopped' : 'error');
+      const rpc = this.rpc;
+      this.rpc = undefined;
+      await rpc?.close();
+      throw e;
+    } finally {
+      this.connecting = false;
+    }
+  }
+  send(id: string, text: string, attachments: string[], mode: SendMode) {
+    const epoch = this.stopEpoch;
+    return this.exclusive(async () => {
+      if (epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+      if (this.probing) throw new Error('正在测试模型连接，请稍候');
+      if (!text.trim()) throw new Error('请输入任务内容');
+      const session = this.store.session(id),
+        project = this.store.project(session.projectId);
+      if (busy(this.runtime.status) && this.runtime.sessionId !== id)
+        throw new Error('已有会话运行中，请先等待完成或停止');
+      if (this.runtime.status === 'stopping') throw new Error('正在停止，请稍候');
+      const prompt = await attachmentPrompt(project, text, attachments);
+      await this.ensureConnected(id);
+      if (!this.runtime.model) throw new Error('请选择一个可用模型');
+      const isActive = busy(this.runtime.status);
+      if (!isActive) {
+        this.stopRequested = false;
+        this.runtime.error = undefined;
+        this.runtime.tools = [];
+        this.runtime.startedAt = Date.now();
+        this.status('starting');
+        await this.workspace.capture(project);
+      }
+      if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+      try {
+        const result = await this.rpc!.request(
+          isActive ? (mode === 'followUp' ? 'follow_up' : 'steer') : 'prompt',
+          { message: prompt },
+        );
+        if (result?.disposition === 'handled' && !this.stopRequested) {
+          const state = await this.rpc!.request('get_state');
+          if (!state.isStreaming && !state.isCompacting && !state.pendingMessageCount) this.status('idle');
+        }
+        if (session.draft === text) {
+          session.draft = '';
+          session.attachments = [];
+        }
+        if (session.title === '新会话') {
+          session.title = text.trim().split('\n')[0].slice(0, 28);
+          void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
+        }
+        session.updatedAt = Date.now();
+        this.save();
+      } catch (e) {
+        this.runtime.error = errorText(e);
+        if (!isActive && !this.stopRequested) this.status('error');
+        throw e;
+      }
+    });
+  }
+  async clearQueue() {
+    if (!this.rpc || this.rpc.closed) return;
+    const result = await this.rpc.request('clear_queue');
+    const returned = [...(result?.steering ?? []), ...(result?.followUp ?? [])];
+    if (returned.length && this.runtime.sessionId) {
+      const s = this.store.session(this.runtime.sessionId);
+      s.draft = [s.draft, ...returned].filter(Boolean).join('\n\n');
+      this.save();
+    }
+    this.runtime.steering = [];
+    this.runtime.followUp = [];
+    this.publish(true);
+  }
+  async stop() {
+    if (!busy(this.runtime.status)) return;
+    this.stopEpoch++;
+    this.stopRequested = true;
+    this.runtime.stopStartedAt = Date.now();
+    this.status('stopping');
+    if (!this.rpc || this.rpc.closed) {
+      this.status('stopped');
+      return;
+    }
+    try {
+      for (const dialog of [...this.runtime.dialogs])
+        await this.respond(dialog.id, { cancelled: true }).catch(() => {});
+      await this.clearQueue();
+      await this.rpc.request('abort', {}, 60000);
+      if (this.rpc && !this.rpc.closed) {
+        const state = await this.rpc.request('get_state');
+        if (state.isStreaming || state.isCompacting || state.pendingMessageCount)
+          throw new Error('Pi 尚未停止，请重试或强制结束');
+      }
+      this.clearDialogs();
+      this.status('stopped');
+      await this.refresh();
+    } catch (e) {
+      this.runtime.error = `停止未完成：${errorText(e)}`;
+      this.publish(true);
+      throw e;
+    }
+  }
+  async forceStop() {
+    this.stopEpoch++;
+    this.stopRequested = true;
+    await this.rpc?.killTree();
+    this.runtime.connected = false;
+    this.clearDialogs();
+    this.status('stopped');
+  }
+  async disconnect() {
+    if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务或连接测试结束');
+    const rpc = this.rpc;
+    this.rpc = undefined;
+    await rpc?.close();
+    this.runtime.connected = false;
+    this.publish(true);
+  }
+  async testConnection(sessionId: string) {
+    if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务结束');
+    const session = this.store.session(sessionId);
+    const p = this.store.project(session.projectId);
+    const settings = this.store.state.settings;
+    const model = this.runtime.model;
+    const provider = settings.provider || model?.provider,
+      modelId = settings.modelId || model?.id;
+    if (!provider || !modelId) throw new Error('请先连接 Pi 并选择模型');
+    this.probing = true;
+    const probe = new PiRpc();
+    this.probe = probe;
+    const started = Date.now();
+    let answer = '';
+    let failure = '';
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const resolved = await resolvePi(settings, this.developmentRoot);
+      const settled = new Promise<void>((resolve, reject) => {
+        probe.on('event', (e) => {
+          if (e.type === 'message_end' && e.message?.role === 'assistant') {
+            answer = messageText(e.message);
+            if (e.message.stopReason === 'error') failure = e.message.errorMessage ?? '模型连接失败';
+          }
+          if (e.type === 'agent_settled') failure ? reject(new Error(failure)) : resolve();
+        });
+        probe.on('fault', reject);
+        probe.on('exit', () => reject(new Error('连接测试进程已退出')));
+      });
+      settled.catch(() => {});
+      probe.start(
+        resolved.spec,
+        p.path,
+        [
+          '--mode',
+          'rpc',
+          '--no-session',
+          '--no-tools',
+          '--no-extensions',
+          '--no-mcp',
+          '--no-skills',
+          '--no-context-files',
+          '--no-prompt-templates',
+          '--no-approve',
+          '--provider',
+          provider,
+          '--model',
+          modelId,
+        ],
+        { PI_CODING_AGENT_DIR: agentDirectory(settings), PI_TELEMETRY: '0' },
+      );
+      timer = setTimeout(() => {
+        failure = '模型连接测试超过 45 秒';
+        void probe.killTree().catch(() => {});
+      }, 45000);
+      await probe.request('get_state');
+      await probe.request('prompt', { message: 'Reply with only OK.' });
+      await settled;
+      return { elapsed: Date.now() - started, text: answer };
+    } finally {
+      if (timer) clearTimeout(timer);
+      await probe.close();
+      this.probe = undefined;
+      this.probing = false;
+    }
+  }
+  output() {
+    return (
+      'Pi Desktop 导出：当前会话已接收的工具结果（最多最近 10 MiB）。Pi 自身可能截断长输出，完整日志位置以工具结果为准。\n\n' +
+      (this.fullOutput || this.runtime.tools.map((t) => `[${t.name}]\n${t.output}`).join('\n\n'))
+    );
+  }
+  async history(id: string): Promise<Message[]> {
+    const s = this.store.session(id);
+    if (this.runtime.sessionId === id && this.runtime.messages.length) return this.runtime.messages;
+    if (!s.file) return [];
+    try {
+      return (await readSessionFile(s.file)).messages;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw e;
+    }
+  }
+  async dispose() {
+    this.shutdown = true;
+    this.clearDialogs();
+    if (this.publishing) clearTimeout(this.publishing);
+    await this.probe?.close();
+    if (busy(this.runtime.status)) {
+      await this.stop().catch(() => {});
+    }
+    await this.rpc?.close();
+    await this.store.flush();
+  }
+}

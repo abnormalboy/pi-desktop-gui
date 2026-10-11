@@ -1,0 +1,156 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider';
+import { AgentService } from '../electron/agent';
+import { Store, readSessionFile } from '../electron/store';
+import { Workspace } from '../electron/workspace';
+import { messageText } from '../shared/types';
+process.env.PI_OFFLINE = '1';
+const provider = await createLocalProvider();
+const fixture = await prepareRealPiFixture(provider.baseUrl, 'integration');
+const { store, sessionId, projectId, dataDir, projectDir } = fixture;
+const workspace = new Workspace(dataDir);
+let service = new AgentService(store, workspace);
+const events: any[] = [];
+let activeLog = '';
+function listen() {
+  service.on('runtime', (r) => {
+    const line = `${r.status} ${r.messages.length} messages ${r.tools.map((t: any) => t.name + ':' + t.status).join(',')}`;
+    if (line !== activeLog) {
+      console.log(line);
+      activeLog = line;
+      events.push({ time: Date.now(), line });
+    }
+  });
+}
+async function waitFor(condition: () => boolean, ms = 25000) {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > ms)
+      throw new Error(
+        'Timed out: ' +
+          JSON.stringify({
+            status: service.runtime.status,
+            error: service.runtime.error,
+            diagnostic: service.runtime.diagnostic,
+          }),
+      );
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+try {
+  listen();
+  await service.connect(sessionId);
+  assert.equal(service.runtime.model?.id, 'local-e2e');
+  const probe = await service.testConnection(sessionId);
+  assert.equal(probe.text, 'OK');
+  console.log('PASS actual Pi model probe');
+  await service.send(sessionId, 'E2E_FILES：读取输入、写入输出并运行验证命令。', ['输入 文件.txt'], 'steer');
+  await waitFor(() => ['completed', 'error'].includes(service.runtime.status));
+  assert.equal(service.runtime.status, 'completed', service.runtime.error ?? '');
+  assert.equal(await fs.readFile(path.join(projectDir, '输出结果.txt'), 'utf8'), '真实 Pi 工具执行成功\n');
+  assert.equal(service.runtime.tools.length, 3);
+  assert.ok(service.runtime.tools.every((t) => t.status === 'done'));
+  assert.match(service.runtime.tools[2].output, /PI_TOOL_TEST_PASS/);
+  assert.match(messageText(service.runtime.messages.find((m) => m.role === 'user')!), /project_file/);
+  console.log('PASS actual Pi read, write and shell tools');
+  const changes = await workspace.changes(store.project(projectId));
+  assert.ok(changes.files.find((f) => f.path === '已有修改.txt')?.existedBeforeRun);
+  assert.equal(
+    (await workspace.diff(store.project(projectId), '输出结果.txt', 'run')).after,
+    '真实 Pi 工具执行成功\n',
+  );
+  const file = store.session(sessionId).file;
+  assert.ok(file);
+  await waitFor(() => Boolean(store.session(sessionId).file));
+  await service.dispose();
+  assert.ok((await readSessionFile(file)).messages.some((m) => m.role === 'toolResult'));
+  const restored = new Store(dataDir);
+  await restored.load();
+  service = new AgentService(restored, new Workspace(dataDir));
+  listen();
+  await service.connect(sessionId);
+  assert.ok(service.runtime.messages.some((m) => m.role === 'toolResult'));
+  console.log('PASS persisted Pi JSONL and resumed history');
+  for (const method of ['select', 'confirm', 'input', 'editor']) {
+    const sent = service.send(sessionId, '/gui-' + method, [], 'steer');
+    await waitFor(() => service.runtime.dialogs.length === 1);
+    await service.respond(
+      service.runtime.dialogs[0].id,
+      method === 'select'
+        ? { value: 'B' }
+        : method === 'confirm'
+          ? { confirmed: false }
+          : method === 'input'
+            ? { value: '中文回复' }
+            : { cancelled: true },
+    );
+    await sent;
+    assert.equal(service.runtime.status, 'idle');
+    assert.ok(service.runtime.notices.some((n) => n.includes('GUI_REPLY:' + method)));
+  }
+  await service.send(sessionId, '/gui-timeout', [], 'steer');
+  assert.equal(service.runtime.status, 'idle');
+  assert.equal(service.runtime.dialogs.length, 0);
+  const other = randomUUID();
+  restored.state.sessions.push({
+    id: other,
+    projectId,
+    title: '被取消的切换',
+    draft: '',
+    attachments: [],
+    lastStatus: 'idle',
+    updatedAt: Date.now(),
+  });
+  await fs.writeFile(path.join(fixture.agentDir, 'cancel-switch'), 'cancel');
+  await assert.rejects(service.connect(other), /取消了会话切换/);
+  assert.equal(service.runtime.sessionId, sessionId);
+  await fs.unlink(path.join(fixture.agentDir, 'cancel-switch'));
+  console.log('PASS actual Pi extension dialogs, timeout, handled commands and cancelled switch');
+  await service.send(sessionId, 'E2E_STOP：执行一个可中断的长命令。', [], 'steer');
+  await waitFor(() => service.runtime.tools.some((t) => t.status === 'running'));
+  await service.send(sessionId, '队列中的补充要求', [], 'steer');
+  await service.send(sessionId, '队列中的后续任务', [], 'followUp');
+  await waitFor(() => service.runtime.steering.length === 1 && service.runtime.followUp.length === 1);
+  await service.stop();
+  assert.equal(service.runtime.status, 'stopped');
+  assert.equal(service.runtime.steering.length + service.runtime.followUp.length, 0);
+  assert.match(restored.session(sessionId).draft, /队列中的后续任务/);
+  await assert.rejects(fs.access(path.join(projectDir, 'should-not-exist.txt')));
+  console.log('PASS actual Pi stop clears queues and interrupts shell');
+  await service.send(sessionId, 'E2E_401', [], 'steer');
+  await waitFor(() => service.runtime.status === 'error');
+  assert.match(service.runtime.error ?? '', /401|Invalid API key/);
+  console.log('PASS provider failure reaches visible error state');
+  await fs.writeFile(
+    path.join(fixture.dir, 'result.json'),
+    JSON.stringify(
+      {
+        result: 'PASS',
+        engine: 'Pi 1.1.0 (unmodified)',
+        provider: 'deterministic localhost HTTP server',
+        checks: [
+          'connection probe',
+          'read/write/command in Chinese path',
+          'file attachment',
+          'preexisting Git edits',
+          'JSONL restore',
+          'real extension select/confirm/input/editor and timeout',
+          'cancelled session switch',
+          'steer/follow_up queue',
+          'stop process tree',
+          '401 error',
+        ],
+        events,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log('Integration PASS:', fixture.dir);
+} finally {
+  await service.dispose();
+  await provider.close();
+}

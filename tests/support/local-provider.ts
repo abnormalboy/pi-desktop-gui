@@ -1,0 +1,215 @@
+import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { Store } from '../../electron/store';
+const exec = promisify(execFile);
+
+/** Local deterministic OpenAI-compatible endpoint, used with the unmodified Pi CLI. */
+export async function createLocalProvider() {
+  const requests: any[] = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    requests.push(body);
+    const lastUser = body.messages.findLastIndex((m: any) => m.role === 'user');
+    const content = body.messages[lastUser]?.content;
+    const prompt =
+      typeof content === 'string' ? content : (content ?? []).map((b: any) => b.text ?? '').join('');
+    if (prompt.includes('E2E_401')) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({ error: { message: 'Invalid API key (local test)', type: 'authentication_error' } }),
+      );
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
+    const chunk = (delta: any, finish_reason: string | null = null) =>
+      res.write(
+        `data: ${JSON.stringify({ id: 'chatcmpl-local', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'local-e2e', choices: [{ index: 0, delta, finish_reason }] })}\n\n`,
+      );
+    const done = (reason = 'stop') => {
+      chunk({}, reason);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
+    const tool = (name: string, args: any) => {
+      chunk({
+        role: 'assistant',
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call_' + randomUUID().slice(0, 8),
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args) },
+          },
+        ],
+      });
+      done('tool_calls');
+    };
+    const results = body.messages.slice(lastUser + 1).filter((m: any) => m.role === 'tool');
+    if (prompt.includes('E2E_FILES')) {
+      if (results.length === 0) return tool('read', { path: '输入 文件.txt' });
+      if (results.length === 1)
+        return tool('write', { path: '输出结果.txt', content: '真实 Pi 工具执行成功\n' });
+      if (results.length === 2) {
+        const shell = body.tools.some((t: any) => t.function?.name === 'powershell') ? 'powershell' : 'bash';
+        return tool(shell, {
+          command:
+            shell === 'powershell'
+              ? "if ((Get-Content -LiteralPath '输出结果.txt' -Raw -Encoding UTF8).Trim() -ne '真实 Pi 工具执行成功') { throw 'Unexpected file content' }; Write-Output 'PI_TOOL_TEST_PASS'"
+              : "test -f '输出结果.txt' && printf 'PI_TOOL_TEST_PASS\\n'",
+        });
+      }
+      const answer =
+        '已经完成文件读取和写入，并运行验证命令。\n\n- 读取 `输入 文件.txt`\n- 创建 `输出结果.txt`\n- 命令结果：`PI_TOOL_TEST_PASS`\n\n以上操作由真实 Pi 工具执行，回复来自本地测试接口。';
+      chunk({ role: 'assistant', content: '' });
+      for (const text of answer.match(/.{1,8}|\n/g) ?? []) {
+        if (res.destroyed) return;
+        chunk({ content: text });
+        await new Promise((r) => setTimeout(r, 18));
+      }
+      done();
+      return;
+    }
+    if (prompt.includes('E2E_STOP') && results.length === 0) {
+      const shell = body.tools.some((t: any) => t.function?.name === 'powershell') ? 'powershell' : 'bash';
+      return tool(shell, {
+        command:
+          shell === 'powershell'
+            ? "Write-Output 'WAITING_FOR_STOP'; Start-Sleep -Seconds 30; Set-Content -LiteralPath 'should-not-exist.txt' -Value 'NOT_STOPPED'"
+            : "printf 'WAITING_FOR_STOP\\n'; sleep 30; printf 'NOT_STOPPED' > should-not-exist.txt",
+      });
+    }
+    if (prompt.includes('E2E_SLOW')) {
+      chunk({ role: 'assistant', content: '开始流式回复。' });
+      const timer = setTimeout(() => {
+        if (!res.destroyed) {
+          chunk({ content: '完成。' });
+          done();
+        }
+      }, 20000);
+      res.on('close', () => clearTimeout(timer));
+      return;
+    }
+    chunk({ role: 'assistant', content: 'OK' });
+    done();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as import('node:net').AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+export async function prepareRealPiFixture(baseUrl: string, label: string) {
+  const root = path.resolve('work', label);
+  await fs.mkdir(root, { recursive: true });
+  const dir = await fs.mkdtemp(path.join(root, '中文项目 space-'));
+  const projectDir = path.join(dir, 'project');
+  const dataDir = path.join(dir, 'app-data');
+  const agentDir = path.join(dir, 'pi-agent');
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.mkdir(agentDir, { recursive: true });
+  await fs.mkdir(path.join(agentDir, 'extensions'), { recursive: true });
+  await fs.copyFile(
+    path.resolve('tests/support/pi-extension.js'),
+    path.join(agentDir, 'extensions', 'gui-e2e.js'),
+  );
+  await fs.writeFile(path.join(projectDir, '输入 文件.txt'), '这是 E2E 测试的输入文件。\n');
+  await fs.writeFile(path.join(projectDir, '已有修改.txt'), 'committed\n');
+  await exec('git', ['init'], { cwd: projectDir, windowsHide: true });
+  await exec('git', ['add', '.'], { cwd: projectDir, windowsHide: true });
+  await exec(
+    'git',
+    [
+      '-c',
+      'user.name=Pi GUI Test',
+      '-c',
+      'user.email=pi-test@example.invalid',
+      'commit',
+      '-m',
+      'test baseline',
+    ],
+    { cwd: projectDir, windowsHide: true },
+  );
+  await fs.writeFile(path.join(projectDir, '已有修改.txt'), 'before agent run\n');
+  await fs.writeFile(
+    path.join(agentDir, 'models.json'),
+    JSON.stringify({
+      providers: {
+        'local-e2e': {
+          baseUrl,
+          api: 'openai-completions',
+          apiKey: 'local-test-only',
+          models: [
+            {
+              id: 'local-e2e',
+              name: '本地验收接口',
+              reasoning: false,
+              input: ['text'],
+              contextWindow: 32768,
+              maxTokens: 4096,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+      },
+    }),
+  );
+  await fs.writeFile(
+    path.join(agentDir, 'settings.json'),
+    JSON.stringify({
+      defaultProvider: 'local-e2e',
+      defaultModel: 'local-e2e',
+      retry: { enabled: false },
+      compaction: { enabled: false },
+      quietStartup: true,
+    }),
+  );
+  const store = new Store(dataDir);
+  await store.load();
+  const projectId = randomUUID(),
+    sessionId = randomUUID();
+  store.state.projects = [
+    { id: projectId, name: 'Pi GUI 验收项目', path: projectDir, trusted: true, createdAt: Date.now() },
+  ];
+  store.state.sessions = [
+    {
+      id: sessionId,
+      projectId,
+      title: '新会话',
+      draft: '',
+      attachments: [],
+      lastStatus: 'idle',
+      updatedAt: Date.now(),
+    },
+  ];
+  store.state.selectedProjectId = projectId;
+  store.state.selectedSessionId = sessionId;
+  store.state.settings = {
+    ...store.state.settings,
+    piPath: path.resolve('node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'),
+    nodePath: process.execPath,
+    agentDir,
+    provider: 'local-e2e',
+    modelId: 'local-e2e',
+    theme: 'light',
+    onboardingDone: true,
+  };
+  await store.save();
+  return { dir, projectDir, dataDir, agentDir, projectId, sessionId, store };
+}
