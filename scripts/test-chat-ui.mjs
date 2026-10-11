@@ -63,7 +63,7 @@ try {
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
   await page.locator('.message').filter({ hasText: 'OK' }).waitFor();
-  assert.equal(provider.requests.at(-1).tools?.length ?? 0, 0);
+  assert.ok(provider.requests.at(-1).tools?.length > 0);
   const first = (await waitForSaved((state) => !!state.sessions[0]?.file)).sessions[0];
   await input.fill('独立对话未发送草稿');
   await waitForSaved(
@@ -132,7 +132,7 @@ try {
           'zero-project startup',
           'model picker and connection probe',
           'plain @ text',
-          'real Pi response without tools',
+          'real Pi response with tools available',
           'Ctrl+N',
           'independent histories',
           'draft/history restart',

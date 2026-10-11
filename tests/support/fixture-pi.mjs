@@ -49,6 +49,9 @@ io.on('line', (line) => {
   const r = JSON.parse(line);
   fs.appendFileSync(path.join(dir, 'commands.jsonl'), JSON.stringify(r) + '\n');
   switch (r.type) {
+    case 'get_commands':
+      respond(r, { commands: [] });
+      break;
     case 'get_state':
       respond(r, {
         model,
@@ -99,6 +102,18 @@ io.on('line', (line) => {
       finish();
       break;
     case 'prompt': {
+      if (r.message.startsWith('/desktop-internal ')) {
+        const request = JSON.parse(Buffer.from(r.message.split(' ')[1], 'base64').toString('utf8'));
+        out({ type: 'desktop_result', id: request.id, data: { autoRetry: true } });
+        respond(r, { disposition: 'handled' });
+        break;
+      }
+      if (active && r.streamingBehavior) {
+        (r.streamingBehavior === 'steer' ? steering : followUp).push(r.message);
+        out({ type: 'queue_update', steering, followUp });
+        respond(r, { disposition: 'queued' });
+        break;
+      }
       if (r.message === '/handled') {
         respond(r, { disposition: 'handled' });
         break;

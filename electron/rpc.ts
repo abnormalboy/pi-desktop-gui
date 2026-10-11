@@ -31,9 +31,9 @@ export class LfJsonDecoder {
         this.invalid(new Error(`Pi 输出不是有效 JSONL：${(e as Error).message}`));
       }
     }
-    if (this.buffer.length > 32 * 1024 * 1024) {
+    if (this.buffer.length > 128 * 1024 * 1024) {
       this.buffer = '';
-      this.invalid(new Error('Pi 单条协议记录超过 32 MiB'));
+      this.invalid(new Error('Pi 单条协议记录超过 128 MiB'));
     }
   }
 }
@@ -55,6 +55,19 @@ export class PiRpc extends EventEmitter {
     });
     const decoder = new LfJsonDecoder(
       (record) => {
+        if (
+          record.type === 'extension_ui_request' &&
+          record.method === 'notify' &&
+          typeof record.message === 'string' &&
+          record.message.startsWith('__PI_DESKTOP__')
+        ) {
+          try {
+            this.emit('event', JSON.parse(record.message.slice('__PI_DESKTOP__'.length)));
+          } catch {
+            this.emit('protocolError', new Error('桌面适配返回了无效数据'));
+          }
+          return;
+        }
         if (record.type === 'response' && typeof record.id === 'string') {
           const item = this.pending.get(record.id);
           if (item) {
@@ -120,6 +133,33 @@ export class PiRpc extends EventEmitter {
         reject(e);
       });
     });
+  }
+  async bridge(method: string, params: unknown = {}) {
+    const id = randomUUID();
+    let result: any;
+    let received = false;
+    const listener = (event: any) => {
+      if (event.type === 'desktop_result' && event.id === id) {
+        result = event;
+        received = true;
+      }
+    };
+    this.on('event', listener);
+    try {
+      await this.request(
+        'prompt',
+        {
+          message:
+            '/desktop-internal ' + Buffer.from(JSON.stringify({ id, method, params })).toString('base64'),
+        },
+        600_000,
+      );
+      if (!received) throw new Error('Pi 桌面适配未响应，请重新连接');
+      if (result.error) throw new Error(result.error);
+      return result.data;
+    } finally {
+      this.off('event', listener);
+    }
   }
   async close() {
     if (!this.child || this.closed) return;

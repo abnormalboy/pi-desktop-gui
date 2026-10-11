@@ -25,6 +25,8 @@ export interface Session {
   file?: string;
   draft: string;
   attachments: string[];
+  images?: ImageAttachment[];
+  cwd?: string;
   updatedAt: number;
   lastStatus: RunStatus;
   scrollTop?: number;
@@ -98,6 +100,54 @@ export interface Model {
   name: string;
   reasoning?: boolean;
   contextWindow?: number;
+  input?: string[];
+}
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  data: string;
+  mimeType: string;
+}
+export interface PiCommand {
+  name: string;
+  description?: string;
+  source: string;
+  sourceInfo?: { path: string; scope?: string };
+}
+export interface TreeEntry {
+  id: string;
+  parentId: string | null;
+  type: string;
+  role?: string;
+  text: string;
+  label?: string;
+  depth: number;
+  active: boolean;
+}
+export type ConfigKind = 'settings' | 'models' | 'mcp';
+export interface ConfigDocument {
+  text: string;
+  revision: string;
+  path: string;
+}
+export interface ResourceItem {
+  path: string;
+  enabled: boolean;
+  kind: 'extensions' | 'skills' | 'prompts' | 'themes';
+  metadata: { source: string; scope: string; origin: string; baseDir?: string };
+}
+export interface ResourceCatalog {
+  resources: ResourceItem[];
+  packages: { source: string; scope: string; installedPath?: string }[];
+  tools: { name: string; description: string }[];
+  activeTools: string[];
+}
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  configured: boolean;
+  oauth: boolean;
+  apiKey: boolean;
 }
 export interface Runtime {
   sessionId?: string;
@@ -120,6 +170,15 @@ export interface Runtime {
   stats?: { tokens?: number; cost?: number; contextPercent?: number };
   diagnostic: string[];
   stopStartedAt?: number;
+  commands: PiCommand[];
+  cwd?: string;
+  title?: string;
+  auth?: { message: string; url?: string; code?: string };
+  widgetPlacements?: Record<string, string>;
+  autoCompaction?: boolean;
+  autoRetry?: boolean;
+  steeringMode?: string;
+  followUpMode?: string;
 }
 export interface Environment {
   piPath: string;
@@ -185,10 +244,11 @@ export interface ApiMap {
   removeProject: { args: [string]; result: void };
   trustProject: { args: [string]; result: void };
   newSession: { args: [projectId?: string]; result: Session };
-  importSession: { args: [string]; result: Session | null };
+  importSession: { args: [projectId?: string]; result: Session | null };
   selectSession: { args: [string]; result: Message[] };
   renameSession: { args: [string, string]; result: void };
-  saveDraft: { args: [string, string, string[]]; result: void };
+  saveDraft: { args: [string, string, string[], ImageAttachment[]?]; result: void };
+  consumeDraft: { args: [string, string]; result: void };
   saveView: { args: [string, number, string[]]; result: void };
   readHistory: { args: [string]; result: Message[] };
   detect: { args: []; result: Environment };
@@ -196,7 +256,33 @@ export interface ApiMap {
   saveSettings: { args: [Partial<Settings>]; result: void };
   connect: { args: [string]; result: void };
   testConnection: { args: [string]; result: { elapsed: number; text: string } };
-  send: { args: [string, string, string[], SendMode]; result: void };
+  send: { args: [string, string, string[], SendMode, ImageAttachment[]?]; result: void };
+  pickImages: { args: []; result: ImageAttachment[] };
+  sessionTree: { args: [string]; result: TreeEntry[] };
+  branchSession: { args: [string, 'fork' | 'clone' | 'navigate', string?, boolean?, string?]; result: void };
+  compact: {
+    args: [string, string];
+    result: { summary: string; tokensBefore: number; estimatedTokensAfter?: number };
+  };
+  piOption: {
+    args: [string, 'autoCompaction' | 'autoRetry' | 'steeringMode' | 'followUpMode', boolean | string];
+    result: void;
+  };
+  exportSession: { args: [string, 'html' | 'jsonl']; result: string | null };
+  shareSession: { args: [string]; result: string | null };
+  reloadPi: { args: [string]; result: void };
+  resources: { args: [string]; result: ResourceCatalog };
+  toggleResource: { args: [string, ResourceItem, boolean]; result: void };
+  packageAction: { args: [string, 'install' | 'remove' | 'update', string, boolean]; result: void };
+  providers: { args: [string]; result: ProviderInfo[] };
+  login: { args: [string, string, 'oauth' | 'api_key']; result: void };
+  logout: { args: [string, string]; result: void };
+  cancelLogin: { args: []; result: void };
+  configRead: { args: [string, ConfigKind, boolean]; result: ConfigDocument };
+  configSave: { args: [string, ConfigKind, boolean, ConfigDocument]; result: void };
+  revealSessionDirectory: { args: [string]; result: void };
+  openPiTerminal: { args: [string]; result: void };
+  editDraft: { args: [string]; result: void };
   stop: { args: []; result: void };
   clearQueue: { args: []; result: void };
   forceStop: { args: []; result: boolean };
@@ -213,6 +299,7 @@ export interface ApiMap {
   diagnostics: { args: []; result: string };
   exportDiagnostics: { args: []; result: string | null };
   revealData: { args: []; result: void };
+  quit: { args: []; result: void };
 }
 export interface DesktopApi {
   invoke<K extends keyof ApiMap>(method: K, ...args: ApiMap[K]['args']): Promise<ApiMap[K]['result']>;
@@ -234,6 +321,7 @@ export const emptyRuntime = (): Runtime => ({
   thinkingLevels: [],
   connected: false,
   diagnostic: [],
+  commands: [],
 });
 export function messageText(message: Pick<Message, 'content'>): string {
   return typeof message.content === 'string'

@@ -39,7 +39,10 @@ import {
   Import,
   CircleHelp,
   Link2,
+  ImagePlus,
+  Command,
 } from 'lucide-react';
+import { PiFeatures, builtinCommands } from './PiFeatures';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -60,6 +63,7 @@ import {
   type ToolActivity,
   type Settings,
   type ExtensionDialog,
+  type ImageAttachment,
 } from '../shared/types';
 declare global {
   interface Window {
@@ -170,7 +174,7 @@ function useFocusScope(
     };
   }, [active, ref]);
 }
-function Modal({
+export function Modal({
   title,
   subtitle,
   close,
@@ -244,11 +248,50 @@ function RichText({ text }: { text: string }) {
           </button>
         ),
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-        img: ({ alt }) => <span className="muted">[图片：{alt || '附件'}]</span>,
+        img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
       }}
     >
       {text}
     </Markdown>
+  );
+}
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [loaded, setLoaded] = useState(false);
+  if (src && /^data:image\/(png|jpeg|gif|webp);base64,/.test(src))
+    return <img className="message-image" src={src} alt={alt || '图片'} />;
+  if (src && /^https?:\/\//.test(src))
+    return loaded ? (
+      <img className="message-image" src={src} alt={alt || '图片'} />
+    ) : (
+      <button onClick={() => setLoaded(true)}>加载图片：{alt || src}</button>
+    );
+  return <span className="muted">[图片：{alt || '附件'}]</span>;
+}
+function MessageImages({ message }: { message: Message }) {
+  return (
+    <div className="message-images">
+      {typeof message.content !== 'string' &&
+        message.content
+          .filter(
+            (b) =>
+              b.type === 'image' &&
+              typeof b.data === 'string' &&
+              ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(b.mimeType)),
+          )
+          .map((b, i) => (
+            <button
+              key={i}
+              className="image-preview"
+              onClick={(e) => e.currentTarget.classList.toggle('expanded-image')}
+            >
+              <img
+                className="message-image"
+                src={`data:${b.mimeType};base64,${b.data}`}
+                alt={`附件图片 ${i + 1}`}
+              />
+            </button>
+          ))}
+    </div>
   );
 }
 function UserMessage({ text }: { text: string }) {
@@ -453,6 +496,8 @@ function ExtensionPrompt({
         )}
         {request.method === 'input' && (
           <input
+            type={request.title.startsWith('[密钥]') ? 'password' : 'text'}
+            autoComplete="off"
             className="input"
             aria-label="回复内容"
             value={value}
@@ -503,6 +548,10 @@ export default function App() {
     [draft, setDraft] = useState(''),
     [attachments, setAttachments] = useState<string[]>([]),
     [sendMode, setSendMode] = useState<'steer' | 'followUp'>('steer');
+  const [images, setImages] = useState<ImageAttachment[]>([]),
+    [featureTab, setFeatureTab] = useState(''),
+    [commandIndex, setCommandIndex] = useState(0),
+    [hideCommands, setHideCommands] = useState(false);
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
     [compact, setCompact] = useState(false),
     [inspector, setInspector] = useState(false),
@@ -544,6 +593,16 @@ export default function App() {
     ownRunning = ownRuntime && running;
   const messages = ownRuntime ? runtime.messages : history;
   const visibleMessages = messages.slice(-messageLimit);
+  const commandQuery = /^\/([^\s]*)$/.exec(draft)?.[1];
+  const commandOptions =
+    commandQuery !== undefined && !hideCommands
+      ? [
+          ...builtinCommands,
+          ...runtime.commands.filter((c) => !builtinCommands.some((b) => b.name === c.name)),
+        ]
+          .filter((c) => c.name.toLowerCase().startsWith(commandQuery.toLowerCase()))
+          .slice(0, 12)
+      : [];
   const patchLines = fileDiff?.patch.split('\n') ?? [];
   const diffLines = patchLines.slice(
     Math.max(
@@ -623,7 +682,16 @@ export default function App() {
     if (!selected) return;
     setDraft(selected.draft);
     setAttachments(selected.attachments);
-  }, [selected?.id, selected?.draft, selected?.attachments.join('|')]);
+    setImages(selected.images ?? []);
+  }, [
+    selected?.id,
+    selected?.draft,
+    selected?.attachments.join('|'),
+    selected?.images?.map((i) => i.id).join('|'),
+  ]);
+  useEffect(() => {
+    document.title = runtime.title || 'Pi Desktop';
+  }, [runtime.title]);
   useEffect(() => {
     if (!selected) return;
     selectedRef.current = selected.id;
@@ -680,6 +748,15 @@ export default function App() {
       if (e.ctrlKey && e.key === ',') {
         e.preventDefault();
         openSettings();
+      }
+      if (
+        e.ctrlKey &&
+        e.key.toLowerCase() === 'g' &&
+        selected &&
+        !document.querySelector('[role="dialog"]')
+      ) {
+        e.preventDefault();
+        void action(() => api.invoke('editDraft', selected.id));
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'b' && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
@@ -746,13 +823,18 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [notice]);
-  const persistDraft = (value: string, files = attachments) => {
+  const persistDraft = (value: string, files = attachments, pictures = images) => {
     setDraft(value);
     setAttachments(files);
-    if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files));
+    setImages(pictures);
+    if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files, pictures));
   };
   const onDraft = (value: string) => {
     persistDraft(value);
+    setHideCommands(false);
+    setCommandIndex(0);
+    if (value === '/' && selected && !runtime.connected && !running)
+      void attempt(() => api.invoke('connect', selected.id));
     const match = value.match(/(?:^|\s)@([^\s@]*)$/);
     setFileQuery(project && match ? match[1] : null);
   };
@@ -774,14 +856,93 @@ export default function App() {
     focusComposer();
   }
   async function send() {
-    if (!selected || !draft.trim() || pending) return;
+    if (!selected || (!draft.trim() && !images.length) || pending) return;
     setError('');
     setPending(true);
     const sent = draft;
-    await attempt(() => api.invoke('send', selected.id, sent, attachments, sendMode));
+    await attempt(async () => {
+      if (await handleBuiltin(sent)) {
+        await api.invoke('consumeDraft', selected.id, sent);
+        setHideCommands(true);
+      } else await api.invoke('send', selected.id, sent, attachments, sendMode, images);
+    });
     setPending(false);
     autoScroll.current = true;
     input.current?.focus();
+  }
+  async function handleBuiltin(value: string) {
+    const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(value.trim());
+    if (!match || !selected || !builtinCommands.some((c) => c.name === match[1])) return false;
+    if (images.length || attachments.length) throw new Error('桌面命令不能附带附件，请先移除附件');
+    const [_, cmd, arg = ''] = match;
+    if (['tree', 'fork'].includes(cmd)) setFeatureTab('tree');
+    else if (cmd === 'new') await createSession(selected.projectId);
+    else if (cmd === 'resume') setSearchOpen(true);
+    else if (cmd === 'name') {
+      if (arg) await api.invoke('renameSession', selected.id, arg);
+      else setRename({ kind: 'session', id: selected.id, name: selected.title });
+    } else if (cmd === 'clone') await api.invoke('branchSession', selected.id, 'clone');
+    else if (cmd === 'compact') {
+      const r = await api.invoke('compact', selected.id, arg);
+      setNotice('压缩完成：' + r.tokensBefore + ' tokens');
+    } else if (cmd === 'session') setFeatureTab('session');
+    else if (cmd === 'settings' || cmd === 'scoped-models') setFeatureTab('settings');
+    else if (cmd === 'login' || cmd === 'logout') setFeatureTab('providers');
+    else if (cmd === 'config') setFeatureTab('resources');
+    else if (cmd === 'mcp') {
+      if (arg) {
+        await api.invoke('send', selected.id, value, [], 'steer');
+      } else setFeatureTab('mcp');
+    } else if (cmd === 'reload') {
+      await api.invoke('reloadPi', selected.id);
+      setNotice('已重新加载');
+    } else if (cmd === 'model' || cmd === 'thinking') openSettings('models');
+    else if (cmd === 'copy') {
+      await api.invoke(
+        'copy',
+        messageText(messages.findLast((m) => m.role === 'assistant') ?? { content: '' }),
+      );
+      setNotice('最后回复已复制');
+    } else if (cmd === 'import') await api.invoke('importSession', selected.projectId);
+    else if (cmd === 'export')
+      await api.invoke('exportSession', selected.id, arg === 'jsonl' ? 'jsonl' : 'html');
+    else if (cmd === 'share') {
+      const url = await api.invoke('shareSession', selected.id);
+      if (url) setNotice('链接已复制：' + url);
+    } else if (cmd === 'terminal') await api.invoke('openPiTerminal', selected.id);
+    else if (cmd === 'quit') await api.invoke('quit');
+    else if (cmd === 'trust') {
+      if (project) await api.invoke('trustProject', project.id);
+    } else if (cmd === 'bug') openSettings('diagnostic');
+    else if (cmd === 'changelog')
+      await api.invoke(
+        'openLink',
+        'https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/CHANGELOG.md',
+      );
+    else setFeatureTab('help');
+    return true;
+  }
+  async function acceptImages(files: File[]) {
+    await attempt(async () => {
+      if (files.length + images.length > 8) throw new Error('每条消息最多添加 8 张图片');
+      const next = await Promise.all(
+        files.map(async (f) => {
+          if (
+            f.size > 8 * 1024 * 1024 ||
+            !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(f.type)
+          )
+            throw new Error('支持 PNG、JPEG、WebP、GIF，单张不超过 8 MiB');
+          const data = await new Promise<string>((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result).split(',')[1]);
+            r.onerror = reject;
+            r.readAsDataURL(f);
+          });
+          return { id: crypto.randomUUID(), name: f.name || '粘贴的图片', mimeType: f.type, data };
+        }),
+      );
+      persistDraft(draft, attachments, [...images, ...next]);
+    });
   }
   async function addProject() {
     await action(async () => {
@@ -870,7 +1031,7 @@ export default function App() {
     const observed = ownRuntime && runtime.tools.find((t) => t.id === message.toolCallId);
     if (observed) return observed;
     const call = messages
-      .flatMap((m) => (typeof m.content === 'string' ? [] : m.content))
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
       .find((b) => b.type === 'toolCall' && b.id === message.toolCallId);
     return {
       id: message.toolCallId ?? '',
@@ -1032,7 +1193,7 @@ export default function App() {
             <span className={'connection-dot ' + (environment?.supported ? 'ready' : '')} />
           </button>
           <div className="sidebar-version">
-            Pi Desktop <span>v0.1.2</span>
+            Pi Desktop <span>v0.2.0</span>
           </div>
         </div>
       </aside>
@@ -1059,6 +1220,14 @@ export default function App() {
             </div>
           </div>
           <div className="header-actions">
+            <button
+              aria-label="Pi 功能"
+              disabled={!selected || (running && !ownRuntime)}
+              onClick={() => setFeatureTab('session')}
+            >
+              <Command size={16} />
+              <span>Pi 功能</span>
+            </button>
             {project && (
               <button
                 className={'workspace-toggle ' + (inspector ? 'active' : '')}
@@ -1177,15 +1346,36 @@ export default function App() {
                 if (m.role === 'toolResult') {
                   const tool = toolFor(m);
                   return (
-                    <ToolCard
-                      key={key}
-                      tool={tool}
-                      expanded={expanded.includes(tool.id)}
-                      onToggle={(v) => toggleTool(tool.id, v)}
-                      openFile={(p) => void inspectFile(p, 'files')}
-                    />
+                    <div key={key}>
+                      <ToolCard
+                        tool={tool}
+                        expanded={expanded.includes(tool.id)}
+                        onToggle={(v) => toggleTool(tool.id, v)}
+                        openFile={(p) => void inspectFile(p, 'files')}
+                      />
+                      <MessageImages message={m} />
+                    </div>
                   );
                 }
+                if (m.role === 'bashExecution')
+                  return (
+                    <article className="message bash-message" key={key}>
+                      <strong>
+                        <Terminal size={14} /> {String(m.command ?? '')}
+                      </strong>
+                      <CodeBlock>{String(m.output ?? '')}</CodeBlock>
+                      <small>
+                        {m.excludeFromContext ? '输出不进入模型上下文' : '输出已加入模型上下文'} · 退出码{' '}
+                        {String(m.exitCode ?? '')}
+                      </small>
+                    </article>
+                  );
+                if (m.role === 'custom' || m.role === 'branchSummary' || m.role === 'compactionSummary')
+                  return (
+                    <article className="message" key={key}>
+                      <RichText text={messageText(m) || String(m.summary ?? '')} />
+                    </article>
+                  );
                 if (m.role !== 'user' && m.role !== 'assistant') return null;
                 const content = messageText(m);
                 if (
@@ -1230,6 +1420,7 @@ export default function App() {
                         <span className="stream-cursor" />
                       ) : null}
                       {m.errorMessage && <p className="inline-error">{m.errorMessage}</p>}
+                      <MessageImages message={m} />
                     </div>
                   </article>
                 );
@@ -1307,15 +1498,48 @@ export default function App() {
                 </div>
               )}
               {ownRuntime &&
-                Object.values(runtime.widgets).map((lines, i) => (
-                  <div className="extension-widget" key={i}>
-                    {lines.join('\n')}
-                  </div>
-                ))}
+                Object.entries(runtime.widgets)
+                  .filter(([key]) => runtime.widgetPlacements?.[key] !== 'belowEditor')
+                  .map(([key, lines]) => (
+                    <div className="extension-widget" key={key}>
+                      {lines.join('\n')}
+                    </div>
+                  ))}
               {ownRuntime && Object.keys(runtime.statuses).length > 0 && (
                 <div className="extension-status">{Object.values(runtime.statuses).join(' · ')}</div>
               )}
-              <div className={'composer ' + (!selected ? 'disabled' : '')}>
+              <div
+                className={'composer ' + (!selected ? 'disabled' : '')}
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  void acceptImages(Array.from(e.dataTransfer.files));
+                }}
+              >
+                {!!images.length && (
+                  <div className="image-attachments">
+                    {images.map((img) => (
+                      <div key={img.id}>
+                        <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+                        <button
+                          aria-label={'移除图片 ' + img.name}
+                          onClick={() =>
+                            persistDraft(
+                              draft,
+                              attachments,
+                              images.filter((i) => i.id !== img.id),
+                            )
+                          }
+                        >
+                          ×
+                        </button>
+                        <small>{img.name}</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {attachments.length > 0 && (
                   <div className="attachments">
                     {attachments.map((a) => (
@@ -1346,7 +1570,37 @@ export default function App() {
                   value={draft}
                   disabled={!selected}
                   onChange={(e) => onDraft(e.target.value)}
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData.files).filter((f) =>
+                      f.type.startsWith('image/'),
+                    );
+                    if (files.length) {
+                      e.preventDefault();
+                      void acceptImages(files);
+                    }
+                  }}
                   onKeyDown={(e) => {
+                    if (commandOptions.length) {
+                      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setCommandIndex(
+                          (i) =>
+                            (i + (e.key === 'ArrowDown' ? 1 : -1) + commandOptions.length) %
+                            commandOptions.length,
+                        );
+                        return;
+                      }
+                      if (e.key === 'Tab') {
+                        e.preventDefault();
+                        persistDraft('/' + commandOptions[commandIndex]?.name + ' ');
+                        return;
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setHideCommands(true);
+                        return;
+                      }
+                    }
                     if (e.key === 'Escape' && fileQuery !== null) {
                       e.preventDefault();
                       setFileQuery(null);
@@ -1358,6 +1612,26 @@ export default function App() {
                     }
                   }}
                 />
+                {!!commandOptions.length && (
+                  <div className="command-picker" role="listbox" aria-label="Pi 命令">
+                    {commandOptions.map((c, i) => (
+                      <button
+                        key={c.name}
+                        role="option"
+                        aria-selected={commandIndex === i}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          persistDraft('/' + c.name + ' ');
+                          input.current?.focus();
+                        }}
+                      >
+                        <code>/{c.name}</code>
+                        <span>{c.description || c.source}</span>
+                      </button>
+                    ))}
+                    <small>↑↓ 选择 · Tab 补全 · Enter 执行输入的命令</small>
+                  </div>
+                )}
                 {fileQuery !== null && (
                   <div className="file-picker">
                     <div className="file-picker-header">
@@ -1381,6 +1655,18 @@ export default function App() {
                 )}
                 <div className="composer-toolbar">
                   <div>
+                    <IconButton
+                      title="添加图片"
+                      disabled={!selected}
+                      onClick={() =>
+                        void attempt(async () => {
+                          const picked = await api.invoke('pickImages');
+                          if (picked.length) persistDraft(draft, attachments, [...images, ...picked]);
+                        })
+                      }
+                    >
+                      <ImagePlus size={17} />
+                    </IconButton>
                     {project && (
                       <IconButton
                         title="引用文件"
@@ -1433,7 +1719,7 @@ export default function App() {
                       aria-label="发送任务"
                       title="发送任务"
                       disabled={
-                        !draft.trim() ||
+                        (!draft.trim() && !images.length) ||
                         !selected ||
                         pending ||
                         !sessionEnabled ||
@@ -1447,6 +1733,14 @@ export default function App() {
                   </div>
                 </div>
               </div>
+              {ownRuntime &&
+                Object.entries(runtime.widgets)
+                  .filter(([key]) => runtime.widgetPlacements?.[key] === 'belowEditor')
+                  .map(([key, lines]) => (
+                    <div className="extension-widget" key={key}>
+                      {lines.join('\n')}
+                    </div>
+                  ))}
               <div className="composer-bottom">
                 <div className="run-meta" role="status" aria-live="polite">
                   {ownRuntime ? (
@@ -1483,7 +1777,7 @@ export default function App() {
                     title={
                       project
                         ? 'Enter 发送 · Shift+Enter 换行。Pi 会直接修改项目文件。'
-                        : 'Enter 发送 · Shift+Enter 换行。独立对话不读取项目文件。'
+                        : 'Enter 发送 · Shift+Enter 换行。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。'
                     }
                   >
                     {ownRuntime && runtime.stats?.tokens
@@ -2055,13 +2349,20 @@ export default function App() {
                   {testResult && <p className="test-result">{testResult}</p>}
                   <details className="setup-guide" open={!environment?.authExists}>
                     <summary>登录或配置模型</summary>
-                    <p>在终端启动 Pi，输入 /login 完成登录，再回到本窗口重新连接。</p>
+                    <button
+                      onClick={() => {
+                        setSettingsOpen(false);
+                        setFeatureTab('providers');
+                      }}
+                    >
+                      管理供应商与登录
+                    </button>
                     <CodeBlock>
                       {environment?.piPath && /\.m?js$/i.test(environment.piPath)
                         ? `& '${(environment.nodePath || 'node').replaceAll("'", "''")}' '${environment.piPath.replaceAll("'", "''")}'`
                         : 'pi'}
                     </CodeBlock>
-                    <p>自定义接口可使用 Pi 配置目录中的 models.json。此界面不会复制或显示 API Key。</p>
+                    <p>可在供应商管理中登录、保存 API Key 或编辑自定义模型。已有密钥不会回显。</p>
                     <button
                       className="text-button"
                       onClick={() =>
@@ -2208,6 +2509,26 @@ export default function App() {
             </button>
           </footer>
         </Modal>
+      )}
+      {featureTab && selected && (
+        <PiFeatures
+          session={selected}
+          runtime={runtime}
+          initialTab={featureTab}
+          close={() => setFeatureTab('')}
+        />
+      )}
+      {runtime.auth && (
+        <div className="auth-banner" role="status">
+          <strong>{runtime.auth.message}</strong>
+          {runtime.auth.code && <code>{runtime.auth.code}</code>}
+          {runtime.auth.url && (
+            <button onClick={() => void attempt(() => api.invoke('openLink', runtime.auth!.url!))}>
+              打开登录页面
+            </button>
+          )}
+          <button onClick={() => void attempt(() => api.invoke('cancelLogin'))}>取消登录</button>
+        </div>
       )}
       {runtime.dialogs[0] && (
         <ExtensionPrompt

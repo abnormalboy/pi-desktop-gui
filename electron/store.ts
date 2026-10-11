@@ -84,7 +84,7 @@ export class Store {
   async sessionDirectory(id: string) {
     const session = this.session(id);
     if (session.projectId) return this.project(session.projectId).path;
-    // Pi requires a cwd even for conversations without file or command tools.
+    if (session.cwd) return session.cwd;
     const directory = path.join(this.dir, 'chats', 'chat-' + encodeURIComponent(id));
     await fs.mkdir(directory, { recursive: true });
     return directory;

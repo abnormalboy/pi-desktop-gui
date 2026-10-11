@@ -55,6 +55,7 @@ export async function createLocalProvider() {
       done('tool_calls');
     };
     const results = body.messages.slice(lastUser + 1).filter((m: any) => m.role === 'tool');
+    if (prompt.includes('E2E_MCP') && results.length === 0) return tool('mcp__desktop__ping', {});
     if (prompt.includes('E2E_FILES')) {
       if (results.length === 0) return tool('read', { path: '输入 文件.txt' });
       if (results.length === 1)
@@ -160,7 +161,7 @@ export async function prepareRealPiFixture(baseUrl: string, label: string) {
               id: 'local-e2e',
               name: '本地验收接口',
               reasoning: false,
-              input: ['text'],
+              input: ['text', 'image'],
               contextWindow: 32768,
               maxTokens: 4096,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

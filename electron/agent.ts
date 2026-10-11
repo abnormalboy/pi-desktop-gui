@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { PiRpc } from './rpc';
 import { agentDirectory, detectEnvironment, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
@@ -15,7 +16,10 @@ import {
   type SendMode,
   type Session,
   type Model,
+  type ImageAttachment,
+  type TreeEntry,
 } from '../shared/types';
+import { validateImages } from './images';
 
 // Pi model records may contain provider headers. Keep only display metadata in IPC.
 const displayModel = (model: any): Model | undefined =>
@@ -26,6 +30,7 @@ const displayModel = (model: any): Model | undefined =>
         name: model.name ?? model.id,
         reasoning: model.reasoning,
         contextWindow: model.contextWindow,
+        input: model.input,
       }
     : undefined;
 
@@ -48,10 +53,12 @@ export class AgentService extends EventEmitter {
   private probe?: PiRpc;
   private probing = false;
   private stopEpoch = 0;
+  private queuedImages: { text: string; images: ImageAttachment[] }[] = [];
   constructor(
     readonly store: Store,
     readonly workspace: Workspace,
     private developmentRoot?: string,
+    private bridgeSource = path.resolve('dist-electron/pi-bridge.mjs'),
   ) {
     super();
   }
@@ -108,6 +115,16 @@ export class AgentService extends EventEmitter {
   private onEvent(record: any) {
     const r = this.runtime;
     switch (record.type) {
+      case 'desktop_auth':
+        r.auth = record.clear
+          ? undefined
+          : { message: record.message ?? '', url: record.url, code: record.code };
+        break;
+      case 'bash_execution_update': {
+        const t = r.tools.find((t) => t.id === 'desktop-bash');
+        if (t) t.output = (t.output + String(record.delta ?? '')).slice(-100000);
+        break;
+      }
       case 'agent_start':
         if (!this.stopRequested) this.status('running');
         break;
@@ -189,6 +206,7 @@ export class AgentService extends EventEmitter {
       case 'queue_update':
         r.steering = record.steering ?? [];
         r.followUp = record.followUp ?? [];
+        this.queuedImages = this.queuedImages.filter((q) => [...r.steering, ...r.followUp].includes(q.text));
         break;
       case 'compaction_start':
         if (!this.stopRequested) this.status('compacting');
@@ -264,11 +282,12 @@ export class AgentService extends EventEmitter {
     } else if (record.method === 'setWidget') {
       if (record.widgetLines) r.widgets[record.widgetKey] = record.widgetLines;
       else delete r.widgets[record.widgetKey];
+      (r.widgetPlacements ??= {})[record.widgetKey] = record.widgetPlacement ?? 'aboveEditor';
     } else if (record.method === 'set_editor_text' && r.sessionId) {
       this.store.session(r.sessionId).draft = String(record.text ?? '');
       this.save();
-    } else if (record.method !== 'setTitle')
-      r.notices.push(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`);
+    } else if (record.method === 'setTitle') r.title = String(record.title ?? 'Pi Desktop');
+    else r.notices.push(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`);
   }
   async respond(id: string, values: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
     const d = this.runtime.dialogs.find((d) => d.id === id);
@@ -291,6 +310,9 @@ export class AgentService extends EventEmitter {
     if (this.rpc !== rpc) return;
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
+    this.runtime.autoCompaction = state.autoCompactionEnabled;
+    this.runtime.steeringMode = state.steeringMode;
+    this.runtime.followUpMode = state.followUpMode;
     if (this.runtime.sessionId && state.sessionFile) {
       this.store.session(this.runtime.sessionId).file = state.sessionFile;
       this.save();
@@ -332,6 +354,7 @@ export class AgentService extends EventEmitter {
     }
     this.clearDialogs();
     this.runtime = { ...emptyRuntime(), sessionId };
+    this.queuedImages = [];
     this.stopRequested = false;
     this.connecting = true;
     this.fullOutput = '';
@@ -382,17 +405,9 @@ export class AgentService extends EventEmitter {
       ];
       if (session.file) args.push('--session', session.file);
       else args.push('--session-id', session.id);
-      if (!project)
-        args.push(
-          '--no-tools',
-          '--no-extensions',
-          '--no-mcp',
-          '--no-skills',
-          '--no-context-files',
-          '--no-prompt-templates',
-          '--system-prompt',
-          'You are a helpful assistant. This is a standalone conversation without access to local files or command execution.',
-        );
+      const bridge = path.join(this.store.dir, 'desktop-bridge.mjs');
+      await fs.copyFile(this.bridgeSource, bridge);
+      args.push('--extension', bridge);
       // Project trust is answered in Pi's own dialog; no implicit --approve flag.
       const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
       const shellEnv: NodeJS.ProcessEnv = {
@@ -404,6 +419,7 @@ export class AgentService extends EventEmitter {
       if (environment.bash)
         shellEnv[pathKey] = path.dirname(environment.bash) + path.delimiter + (process.env[pathKey] ?? '');
       rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
+      this.runtime.cwd = await this.store.sessionDirectory(sessionId);
       const state = await rpc.request('get_state', {}, 120000);
       if (this.stopRequested) throw new Error('启动已取消');
       if (state.sessionFile) session.file = state.sessionFile;
@@ -412,7 +428,7 @@ export class AgentService extends EventEmitter {
       this.runtime.messages = (await rpc.request('get_messages')).messages ?? [];
       const calls = new Map(
         this.runtime.messages
-          .flatMap((m) => (typeof m.content === 'string' ? [] : m.content))
+          .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
           .filter((b) => b.type === 'toolCall')
           .map((b) => [b.id, b]),
       );
@@ -437,7 +453,11 @@ export class AgentService extends EventEmitter {
         .map(displayModel)
         .filter(Boolean);
       const settings = this.store.state.settings;
-      if (settings.provider && settings.modelId) {
+      if (
+        settings.provider &&
+        settings.modelId &&
+        this.runtime.models.some((m) => m.provider === settings.provider && m.id === settings.modelId)
+      ) {
         this.runtime.model = displayModel(
           await rpc.request('set_model', {
             provider: settings.provider,
@@ -454,6 +474,7 @@ export class AgentService extends EventEmitter {
       }
       this.runtime.connected = true;
       this.status('idle');
+      await this.refreshCapabilities();
       this.save();
     } catch (e) {
       this.runtime.error = errorText(e);
@@ -466,12 +487,13 @@ export class AgentService extends EventEmitter {
       this.connecting = false;
     }
   }
-  send(id: string, text: string, attachments: string[], mode: SendMode) {
+  send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
     const epoch = this.stopEpoch;
     return this.exclusive(async () => {
       if (epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
       if (this.probing) throw new Error('正在测试模型连接，请稍候');
-      if (!text.trim()) throw new Error('请输入任务内容');
+      validateImages(images);
+      if (!text.trim() && !images.length) throw new Error('请输入任务内容或添加图片');
       const session = this.store.session(id),
         project = session.projectId ? this.store.project(session.projectId) : undefined;
       if (busy(this.runtime.status) && this.runtime.sessionId !== id)
@@ -481,8 +503,15 @@ export class AgentService extends EventEmitter {
       if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
       const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
       await this.ensureConnected(id);
-      if (!this.runtime.model) throw new Error('请选择一个可用模型');
+      const shellCommand = /^!!?\S/.test(text);
+      if (!this.runtime.model && !text.startsWith('/') && !shellCommand)
+        throw new Error('请选择一个可用模型');
+      if (images.length && !this.runtime.model?.input?.includes('image'))
+        throw new Error('当前模型未声明图片能力，请切换到支持图片的模型');
       const isActive = busy(this.runtime.status);
+      if (isActive && images.length)
+        validateImages([...this.queuedImages.flatMap((q) => q.images), ...images]);
+      if (shellCommand && isActive) throw new Error('请等待当前任务完成后再执行命令');
       if (!isActive) {
         this.stopRequested = false;
         this.runtime.error = undefined;
@@ -493,10 +522,43 @@ export class AgentService extends EventEmitter {
       }
       if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
       try {
-        const result = await this.rpc!.request(
-          isActive ? (mode === 'followUp' ? 'follow_up' : 'steer') : 'prompt',
-          { message: prompt },
-        );
+        let result: any;
+        if (shellCommand) {
+          if (images.length || attachments.length) throw new Error('终端命令不能附带附件');
+          this.status('running');
+          this.runtime.tools.push({
+            id: 'desktop-bash',
+            name: 'bash',
+            args: { command: text.replace(/^!!?/, '') },
+            status: 'running',
+            output: '',
+            startedAt: Date.now(),
+          });
+          const output = await this.rpc!.request(
+            'bash',
+            { command: text.replace(/^!!?/, ''), excludeFromContext: text.startsWith('!!') },
+            3600000,
+          );
+          const tool = this.runtime.tools.find((t) => t.id === 'desktop-bash')!;
+          tool.output = output.output;
+          tool.status = output.exitCode === 0 ? 'done' : 'error';
+          tool.durationMs = Date.now() - tool.startedAt;
+          this.status(output.cancelled ? 'stopped' : output.exitCode === 0 ? 'completed' : 'error');
+          await this.refresh();
+        } else
+          result = await this.rpc!.request(
+            'prompt',
+            {
+              message: prompt,
+              ...(isActive ? { streamingBehavior: mode } : {}),
+              ...(images.length
+                ? { images: images.map(({ data, mimeType }) => ({ type: 'image', data, mimeType })) }
+                : {}),
+            },
+            text.startsWith('/') ? 600000 : 30000,
+          );
+        if (result?.disposition === 'queued' && images.length)
+          this.queuedImages.push({ text: prompt, images: structuredClone(images) });
         if (result?.disposition === 'handled' && !this.stopRequested) {
           const state = await this.rpc!.request('get_state');
           if (!state.isStreaming && !state.isCompacting && !state.pendingMessageCount) this.status('idle');
@@ -504,9 +566,10 @@ export class AgentService extends EventEmitter {
         if (session.draft === text) {
           session.draft = '';
           session.attachments = [];
+          session.images = [];
         }
         if (session.title === '新会话' || session.title === '新对话') {
-          session.title = text.trim().split('\n')[0].slice(0, 28);
+          session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
           void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
         }
         session.updatedAt = Date.now();
@@ -520,16 +583,148 @@ export class AgentService extends EventEmitter {
   }
   async clearQueue() {
     if (!this.rpc || this.rpc.closed) return;
+    const queuedImages = [...this.queuedImages];
     const result = await this.rpc.request('clear_queue');
     const returned = [...(result?.steering ?? []), ...(result?.followUp ?? [])];
     if (returned.length && this.runtime.sessionId) {
       const s = this.store.session(this.runtime.sessionId);
-      s.draft = [s.draft, ...returned].filter(Boolean).join('\n\n');
+      const selectedId = this.store.state.selectedSessionId;
+      const restored = [...returned];
+      for (const q of queuedImages.filter((q) => returned.includes(q.text))) {
+        try {
+          validateImages([...(s.images ?? []), ...q.images]);
+          s.images = [...(s.images ?? []), ...q.images];
+        } catch {
+          const recovered = this.store.createSession(s.projectId);
+          if (!s.projectId) recovered.cwd = await this.store.sessionDirectory(s.id);
+          recovered.title = '已恢复的图片消息';
+          recovered.draft = q.text;
+          recovered.images = q.images;
+          const index = restored.indexOf(q.text);
+          if (index >= 0) restored.splice(index, 1);
+          this.runtime.notices.push('未发送的图片已保存在“已恢复的图片消息”中。');
+        }
+      }
+      if (selectedId) this.store.selectSession(selectedId);
+      s.draft = [s.draft, ...restored].filter(Boolean).join('\n\n');
       this.save();
     }
     this.runtime.steering = [];
     this.runtime.followUp = [];
+    this.queuedImages = [];
     this.publish(true);
+  }
+  private async refreshCapabilities() {
+    if (!this.rpc || this.rpc.closed) return;
+    this.runtime.commands = ((await this.rpc.request('get_commands')).commands ?? []).filter(
+      (c: any) => c.name !== 'desktop-internal',
+    );
+    this.runtime.models = ((await this.rpc.request('get_available_models')).models ?? [])
+      .map(displayModel)
+      .filter(Boolean);
+    this.runtime.autoRetry = (await this.rpc.bridge('options')).autoRetry;
+    await this.refresh();
+  }
+  private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
+    return this.exclusive(async () => {
+      await this.ensureConnected(id);
+      if (busy(this.runtime.status)) throw new Error('请先等待当前任务结束');
+      this.stopRequested = false;
+      this.runtime.error = undefined;
+      this.status('starting');
+      try {
+        return await action(this.rpc!);
+      } finally {
+        this.clearDialogs();
+        if (!this.stopRequested && this.runtime.connected) {
+          this.status('idle');
+          await this.refresh();
+        }
+      }
+    });
+  }
+  tree(id: string): Promise<TreeEntry[]> {
+    return this.idleTask(id, (rpc) => rpc.bridge('tree'));
+  }
+  branch(
+    id: string,
+    kind: 'fork' | 'clone' | 'navigate',
+    entryId?: string,
+    summarize = false,
+    instructions = '',
+  ) {
+    return this.idleTask(id, async (rpc) => {
+      const old = this.store.session(id);
+      const cwd = await this.store.sessionDirectory(id);
+      const forkMessage =
+        kind === 'fork'
+          ? (await rpc.request('get_entries')).entries?.find((e: any) => e.id === entryId)?.message
+          : undefined;
+      const result =
+        kind === 'navigate'
+          ? await rpc.bridge('navigate', { entryId, summarize, instructions })
+          : await rpc.request(kind, kind === 'fork' ? { entryId } : {}, 600000);
+      if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+      if (kind !== 'navigate') {
+        const state = await rpc.request('get_state');
+        const next = this.store.createSession(old.projectId);
+        next.file = state.sessionFile;
+        if (!next.projectId) next.cwd = cwd;
+        next.title = old.title + (kind === 'fork' ? ' · 分支' : ' · 副本');
+        next.draft = result?.text ?? '';
+        next.images = (Array.isArray(forkMessage?.content) ? forkMessage.content : [])
+          .filter((b: any) => b.type === 'image')
+          .map((b: any, i: number) => ({
+            id: randomUUID(),
+            name: `历史图片 ${i + 1}`,
+            data: b.data,
+            mimeType: b.mimeType,
+          }));
+        this.runtime.sessionId = next.id;
+        await rpc.request('set_session_name', { name: next.title });
+        await this.store.save();
+        this.emit('state', this.store.state);
+      }
+      this.runtime.tools = [];
+    });
+  }
+  compact(id: string, customInstructions: string) {
+    return this.idleTask(id, async (rpc) => {
+      this.status('compacting');
+      return rpc.request('compact', { customInstructions }, 600000);
+    });
+  }
+  option(id: string, key: string, value: boolean | string) {
+    const command = {
+      autoCompaction: 'set_auto_compaction',
+      autoRetry: 'set_auto_retry',
+      steeringMode: 'set_steering_mode',
+      followUpMode: 'set_follow_up_mode',
+    }[key];
+    if (!command) throw new Error('未知 Pi 设置');
+    if (key.endsWith('Mode') ? !['all', 'one-at-a-time'].includes(String(value)) : typeof value !== 'boolean')
+      throw new Error('设置值无效');
+    return this.idleTask(id, async (rpc) => {
+      await rpc.request(command, key.endsWith('Mode') ? { mode: value } : { enabled: value });
+      await this.refreshCapabilities();
+    });
+  }
+  admin(id: string, method: string, params: unknown = {}) {
+    return this.idleTask(id, async (rpc) => {
+      const result = await rpc.bridge(method, params);
+      if (['login', 'logout', 'reload', 'toggle_resource'].includes(method)) await this.refreshCapabilities();
+      return result;
+    });
+  }
+  async cancelLogin() {
+    await this.rpc?.bridge('cancel_auth');
+  }
+  exportHtml(id: string, outputPath: string) {
+    return this.idleTask(id, (rpc) => rpc.request('export_html', { outputPath }, 120000));
+  }
+  async rename(id: string, name: string) {
+    if (this.runtime.sessionId === id && this.runtime.connected)
+      await this.rpc!.request('set_session_name', { name });
   }
   async stop() {
     if (!busy(this.runtime.status)) return;
@@ -542,9 +737,11 @@ export class AgentService extends EventEmitter {
       return;
     }
     try {
+      if (this.runtime.auth) await this.cancelLogin();
       for (const dialog of [...this.runtime.dialogs])
         await this.respond(dialog.id, { cancelled: true }).catch(() => {});
       await this.clearQueue();
+      await this.rpc.request('abort_bash');
       await this.rpc.request('abort', {}, 60000);
       if (this.rpc && !this.rpc.closed) {
         const state = await this.rpc.request('get_state');
