@@ -85,6 +85,35 @@ test('store writes latest draft atomically and recovers interrupted session with
   await assert.rejects(new Store(dir).load(), /原文件已保留/);
   assert.equal(await fs.readFile(path.join(dir, 'state.json'), 'utf8'), 'broken');
 });
+test('standalone conversations persist alongside projects and keep independent working directories', async () => {
+  const store = new Store(await sandbox());
+  await store.load();
+  const p = project(await sandbox());
+  store.state.projects.push(p);
+  const projectSession = store.createSession(p.id);
+  const first = store.createSession();
+  const second = store.createSession();
+  first.draft = '尚未发送的独立对话';
+  assert.equal(store.state.selectedProjectId, undefined);
+  assert.equal(store.state.projects.length, 1);
+  const firstDirectory = await store.sessionDirectory(first.id);
+  assert.ok(firstDirectory.startsWith(path.join(store.dir, 'chats') + path.sep));
+  assert.notEqual(firstDirectory, await store.sessionDirectory(second.id));
+  assert.equal(await store.sessionDirectory(projectSession.id), p.path);
+  store.selectSession(projectSession.id);
+  assert.equal(store.state.selectedProjectId, p.id);
+  store.selectSession(first.id);
+  await store.save();
+  const restored = new Store(store.dir);
+  await restored.load();
+  assert.equal(restored.state.selectedProjectId, undefined);
+  assert.equal(restored.state.selectedSessionId, first.id);
+  assert.equal(restored.session(first.id).draft, '尚未发送的独立对话');
+  assert.equal(await restored.sessionDirectory(first.id), firstDirectory);
+  assert.equal(restored.session(projectSession.id).projectId, p.id);
+  assert.throws(() => restored.createSession('missing-project'), /项目不存在/);
+});
+
 test('JSONL history selects active branch and tolerates only a truncated final line', async () => {
   const dir = await sandbox(),
     file = path.join(dir, 'session.jsonl');

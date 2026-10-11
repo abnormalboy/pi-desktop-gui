@@ -124,6 +124,28 @@ try {
   await waitFor(() => service.runtime.status === 'error');
   assert.match(service.runtime.error ?? '', /401|Invalid API key/);
   console.log('PASS provider failure reaches visible error state');
+  const chat = restored.createSession();
+  await restored.save();
+  await service.connect(chat.id);
+  assert.equal((await service.testConnection(chat.id)).text, 'OK');
+  const requestStart = provider.requests.length;
+  await service.send(chat.id, '/gui-select E2E_CHAT：不打开项目也能对话。', [], 'steer');
+  await waitFor(() => ['completed', 'error'].includes(service.runtime.status));
+  assert.equal(service.runtime.status, 'completed', service.runtime.error ?? '');
+  assert.equal(service.runtime.dialogs.length, 0);
+  assert.equal(service.runtime.tools.length, 0);
+  assert.ok(provider.requests.length > requestStart, 'extension command must reach the model as plain text');
+  for (const request of provider.requests.slice(requestStart)) assert.equal(request.tools?.length ?? 0, 0);
+  await assert.rejects(service.send(chat.id, '不能附加项目文件', ['输入 文件.txt'], 'steer'), /项目会话/);
+  const chatFile = chat.file;
+  assert.ok(chatFile);
+  assert.equal((await readSessionFile(chatFile)).cwd, await restored.sessionDirectory(chat.id));
+  await service.connect(sessionId);
+  assert.ok(service.runtime.messages.some((m) => m.role === 'toolResult'));
+  await service.connect(chat.id);
+  assert.ok(service.runtime.messages.some((m) => messageText(m).includes('E2E_CHAT')));
+  assert.equal(service.runtime.tools.length, 0);
+  console.log('PASS standalone chat, model probe, no tools/extensions and project/chat history switching');
   await fs.writeFile(
     path.join(fixture.dir, 'result.json'),
     JSON.stringify(
@@ -142,6 +164,9 @@ try {
           'steer/follow_up queue',
           'stop process tree',
           '401 error',
+          'standalone chat and connection probe',
+          'standalone tool/extension isolation and attachment rejection',
+          'project/chat switching preserves separate histories',
         ],
         events,
       },

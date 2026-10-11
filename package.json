@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop-gui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "A local desktop workspace for the Pi coding agent",
   "author": "yeyuProject",
@@ -13,6 +13,7 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:integration": "node --import tsx scripts/integration.ts",
     "test:ui": "node --import tsx scripts/test-ui.mjs",
+    "test:chat-ui": "node --import tsx scripts/test-chat-ui.mjs",
     "package": "npm run build && node scripts/package.mjs",
     "package:dir": "npm run build && electron-builder --win --dir",
     "format": "prettier --write electron shared src tests scripts vite.config.ts"

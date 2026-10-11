@@ -7,7 +7,7 @@ import { Store, readSessionFile } from './store';
 import { AgentService, redact } from './agent';
 import { Workspace, listDirectory, allFiles, previewFile, safePath } from './workspace';
 import { detectEnvironment } from './environment';
-import { busy, emptyRuntime, type AppEvent, type ApiMap, type Session } from '../shared/types';
+import { busy, emptyRuntime, type AppEvent, type ApiMap } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
 let quitting = false;
@@ -32,20 +32,8 @@ function strings(value: unknown): asserts value is string[] {
   )
     throw new Error('列表格式无效');
 }
-async function newSession(projectId: string) {
-  store.project(projectId);
-  const s: Session = {
-    id: randomUUID(),
-    projectId,
-    title: '新会话',
-    draft: '',
-    attachments: [],
-    updatedAt: Date.now(),
-    lastStatus: 'idle',
-  };
-  store.state.sessions.unshift(s);
-  store.state.selectedProjectId = projectId;
-  store.state.selectedSessionId = s.id;
+async function newSession(projectId?: string) {
+  const s = store.createSession(projectId);
   await save();
   return s;
 }
@@ -146,10 +134,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     store.state.projects = store.state.projects.filter((p) => p.id !== id);
     store.state.sessions = store.state.sessions.filter((s) => s.projectId !== id);
     if (store.state.selectedProjectId === id) {
-      store.state.selectedProjectId = store.state.projects[0]?.id;
-      store.state.selectedSessionId = store.state.sessions.find(
-        (s) => s.projectId === store.state.selectedProjectId,
-      )?.id;
+      const next = store.state.sessions[0] ?? store.createSession();
+      store.selectSession(next.id);
     }
     await save();
   },
@@ -171,7 +157,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     }
   },
   newSession: async (id) => {
-    text(id, 100);
+    if (id !== undefined) text(id, 100);
     return newSession(id);
   },
   importSession: async (projectId) => {
@@ -195,11 +181,10 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     const s = store.session(id);
     if (service.runtime.connected && !busy(service.runtime.status) && service.runtime.sessionId !== id) {
-      await service.connect(id);
+      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id);
+      else await service.disconnect();
     }
-    store.state.selectedSessionId = id;
-    store.state.selectedProjectId = s.projectId;
-    s.unread = false;
+    store.selectSession(s.id);
     await save();
     return service.history(id);
   },
@@ -475,6 +460,11 @@ else {
     .then(async () => {
       store = new Store(app.getPath('userData'));
       await store.load();
+      if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
+        const initial = store.state.sessions[0] ?? store.createSession();
+        store.selectSession(initial.id);
+        await store.save();
+      }
       workspace = new Workspace(store.dir);
       await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot);
@@ -505,10 +495,11 @@ else {
             label: '文件',
             submenu: [
               {
-                label: '新建会话',
+                label: '新建对话',
                 accelerator: 'Ctrl+N',
+                registerAccelerator: false,
                 click: () => {
-                  if (store.state.selectedProjectId) void newSession(store.state.selectedProjectId);
+                  void newSession().catch((error) => dialog.showErrorBox('无法新建对话', String(error)));
                 },
               },
               { type: 'separator' },

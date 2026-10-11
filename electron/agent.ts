@@ -316,8 +316,8 @@ export class AgentService extends EventEmitter {
   private async ensureConnected(sessionId: string) {
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
-      project = this.store.project(session.projectId);
-    if (!project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
+      project = session.projectId ? this.store.project(session.projectId) : undefined;
+    if (project && !project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
     if (busy(this.runtime.status) && this.runtime.sessionId !== sessionId)
       throw new Error('另一个会话正在运行，请先停止或等待完成');
     if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) return;
@@ -382,6 +382,17 @@ export class AgentService extends EventEmitter {
       ];
       if (session.file) args.push('--session', session.file);
       else args.push('--session-id', session.id);
+      if (!project)
+        args.push(
+          '--no-tools',
+          '--no-extensions',
+          '--no-mcp',
+          '--no-skills',
+          '--no-context-files',
+          '--no-prompt-templates',
+          '--system-prompt',
+          'You are a helpful assistant. This is a standalone conversation without access to local files or command execution.',
+        );
       // Project trust is answered in Pi's own dialog; no implicit --approve flag.
       const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
       const shellEnv: NodeJS.ProcessEnv = {
@@ -392,7 +403,7 @@ export class AgentService extends EventEmitter {
       // including installations on another drive, over Windows' legacy WSL bash launcher.
       if (environment.bash)
         shellEnv[pathKey] = path.dirname(environment.bash) + path.delimiter + (process.env[pathKey] ?? '');
-      rpc.start(resolved.spec, project.path, args, shellEnv);
+      rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
       const state = await rpc.request('get_state', {}, 120000);
       if (this.stopRequested) throw new Error('启动已取消');
       if (state.sessionFile) session.file = state.sessionFile;
@@ -462,11 +473,13 @@ export class AgentService extends EventEmitter {
       if (this.probing) throw new Error('正在测试模型连接，请稍候');
       if (!text.trim()) throw new Error('请输入任务内容');
       const session = this.store.session(id),
-        project = this.store.project(session.projectId);
+        project = session.projectId ? this.store.project(session.projectId) : undefined;
       if (busy(this.runtime.status) && this.runtime.sessionId !== id)
         throw new Error('已有会话运行中，请先等待完成或停止');
       if (this.runtime.status === 'stopping') throw new Error('正在停止，请稍候');
-      const prompt = await attachmentPrompt(project, text, attachments);
+      if (!project && attachments.length) throw new Error('引用本地文件需要在项目会话中进行');
+      if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
+      const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
       await this.ensureConnected(id);
       if (!this.runtime.model) throw new Error('请选择一个可用模型');
       const isActive = busy(this.runtime.status);
@@ -476,7 +489,7 @@ export class AgentService extends EventEmitter {
         this.runtime.tools = [];
         this.runtime.startedAt = Date.now();
         this.status('starting');
-        await this.workspace.capture(project);
+        if (project) await this.workspace.capture(project);
       }
       if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
       try {
@@ -492,7 +505,7 @@ export class AgentService extends EventEmitter {
           session.draft = '';
           session.attachments = [];
         }
-        if (session.title === '新会话') {
+        if (session.title === '新会话' || session.title === '新对话') {
           session.title = text.trim().split('\n')[0].slice(0, 28);
           void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
         }
@@ -566,7 +579,7 @@ export class AgentService extends EventEmitter {
   async testConnection(sessionId: string) {
     if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务结束');
     const session = this.store.session(sessionId);
-    const p = this.store.project(session.projectId);
+    const cwd = await this.store.sessionDirectory(session.id);
     const settings = this.store.state.settings;
     const model = this.runtime.model;
     const provider = settings.provider || model?.provider,
@@ -595,7 +608,7 @@ export class AgentService extends EventEmitter {
       settled.catch(() => {});
       probe.start(
         resolved.spec,
-        p.path,
+        cwd,
         [
           '--mode',
           'rpc',

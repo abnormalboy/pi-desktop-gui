@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { AppState, Message, Settings } from '../shared/types';
+import { randomUUID } from 'node:crypto';
+import type { AppState, Message, Session, Settings } from '../shared/types';
 
 export const defaultSettings: Settings = {
   piPath: '',
@@ -58,6 +59,35 @@ export class Store {
   }
   flush() {
     return this.writing;
+  }
+  createSession(projectId?: string) {
+    if (projectId !== undefined) this.project(projectId);
+    const session: Session = {
+      id: randomUUID(),
+      projectId,
+      title: projectId ? '新会话' : '新对话',
+      draft: '',
+      attachments: [],
+      updatedAt: Date.now(),
+      lastStatus: 'idle',
+    };
+    this.state.sessions.unshift(session);
+    this.selectSession(session.id);
+    return session;
+  }
+  selectSession(id: string) {
+    const session = this.session(id);
+    this.state.selectedSessionId = id;
+    this.state.selectedProjectId = session.projectId;
+    session.unread = false;
+  }
+  async sessionDirectory(id: string) {
+    const session = this.session(id);
+    if (session.projectId) return this.project(session.projectId).path;
+    // Pi requires a cwd even for conversations without file or command tools.
+    const directory = path.join(this.dir, 'chats', 'chat-' + encodeURIComponent(id));
+    await fs.mkdir(directory, { recursive: true });
+    return directory;
   }
   project(id: string) {
     const p = this.state.projects.find((p) => p.id === id);

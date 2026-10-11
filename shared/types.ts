@@ -20,7 +20,7 @@ export interface Project {
 }
 export interface Session {
   id: string;
-  projectId: string;
+  projectId?: string;
   title: string;
   file?: string;
   draft: string;
@@ -184,7 +184,7 @@ export interface ApiMap {
   renameProject: { args: [string, string]; result: void };
   removeProject: { args: [string]; result: void };
   trustProject: { args: [string]; result: void };
-  newSession: { args: [string]; result: Session };
+  newSession: { args: [projectId?: string]; result: Session };
   importSession: { args: [string]; result: Session | null };
   selectSession: { args: [string]; result: Message[] };
   renameSession: { args: [string, string]; result: void };

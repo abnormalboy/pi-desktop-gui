@@ -538,6 +538,7 @@ export default function App() {
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
+  const sessionEnabled = Boolean(selected && (!selected.projectId || project?.trusted));
   const ownRuntime = runtime.sessionId === selected?.id,
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
@@ -626,6 +627,10 @@ export default function App() {
   useEffect(() => {
     if (!selected) return;
     selectedRef.current = selected.id;
+    setHistory([]);
+    setFileQuery(null);
+    setFileResults([]);
+    if (!selected.projectId) setInspector(false);
     setSelectedFile('');
     setFilePreview(undefined);
     setFileDiff(undefined);
@@ -658,6 +663,16 @@ export default function App() {
   }, [runtime.startedAt]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (
+        e.ctrlKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'n' &&
+        !document.querySelector('[role="dialog"]')
+      ) {
+        e.preventDefault();
+        if (!e.repeat) void createSession();
+      }
       if (e.ctrlKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setSearchOpen(true);
@@ -673,7 +688,7 @@ export default function App() {
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [state]);
+  }, [state, compact, inspector]);
   useEffect(() => {
     if (!inspector) return;
     const key = (e: KeyboardEvent) => {
@@ -739,7 +754,7 @@ export default function App() {
   const onDraft = (value: string) => {
     persistDraft(value);
     const match = value.match(/(?:^|\s)@([^\s@]*)$/);
-    setFileQuery(match ? match[1] : null);
+    setFileQuery(project && match ? match[1] : null);
   };
   const focusComposer = () => {
     if (compact && inspector) setInspector(false);
@@ -781,9 +796,9 @@ export default function App() {
     });
     setSearchOpen(false);
   }
-  async function createSession() {
-    if (project) await attempt(() => api.invoke('newSession', project.id));
-    else await addProject();
+  async function createSession(projectId?: string) {
+    const session = await attempt(() => api.invoke('newSession', projectId));
+    if (session) focusComposer();
   }
   function openSettings(tabName = 'environment') {
     setPrefs(stateRef.current?.settings);
@@ -867,6 +882,26 @@ export default function App() {
       durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
     };
   };
+  const renderSession = (s: Session) => (
+    <div className={'session-row ' + (s.id === selected?.id ? 'active' : '')} key={s.id}>
+      <button
+        title={s.title}
+        aria-current={s.id === selected?.id ? 'page' : undefined}
+        onClick={() => void selectSession(s)}
+      >
+        <MessageSquare size={14} />
+        <span>{s.title}</span>
+        {s.unread && <i className="unread" />}
+        {s.id === runtime.sessionId && running && <LoaderCircle size={12} className="spin" />}
+      </button>
+      <IconButton
+        title={`重命名 ${s.title}`}
+        onClick={() => setRename({ kind: 'session', id: s.id, name: s.title })}
+      >
+        <Pencil size={12} />
+      </IconButton>
+    </div>
+  );
   if (!state)
     return (
       <main className="loading-screen">
@@ -876,7 +911,7 @@ export default function App() {
           <p className="inline-error">{error}</p>
         ) : (
           <p>
-            <LoaderCircle size={15} className="spin" /> 正在准备工作区…
+            <LoaderCircle size={15} className="spin" /> 正在准备 Pi…
           </p>
         )}
       </main>
@@ -897,17 +932,27 @@ export default function App() {
             <Search size={17} />
           </IconButton>
         </div>
-        <button className="new-session" onClick={createSession}>
+        <button className="new-session" onClick={() => void createSession()}>
           <Plus size={17} />
-          新建会话<kbd>Ctrl N</kbd>
+          新建对话<kbd>Ctrl N</kbd>
         </button>
-        <div className="section-heading">
-          项目
-          <IconButton title="添加项目" onClick={addProject}>
-            <Plus size={15} />
-          </IconButton>
-        </div>
         <div className="project-list">
+          <div className="section-heading">对话</div>
+          <div className="session-list standalone-sessions" aria-label="独立对话">
+            {state.sessions
+              .filter((s) => !s.projectId)
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .map(renderSession)}
+            {!state.sessions.some((s) => !s.projectId) && (
+              <p className="sidebar-empty">随时开始，无需打开项目。</p>
+            )}
+          </div>
+          <div className="section-heading">
+            项目
+            <IconButton title="添加项目" onClick={addProject}>
+              <Plus size={15} />
+            </IconButton>
+          </div>
           {state.projects.map((p) => (
             <div className={'project-group ' + (p.id === project?.id ? 'selected' : '')} key={p.id}>
               <button
@@ -922,9 +967,17 @@ export default function App() {
                 <span title={p.path}>{p.name}</span>
                 <ChevronDown size={13} />
               </button>
-              <IconButton title={`${p.name} 项目操作`} onClick={() => setMenuId(menuId === p.id ? '' : p.id)}>
-                <MoreHorizontal size={15} />
-              </IconButton>
+              <div className="project-actions">
+                <IconButton title={`在 ${p.name} 中新建会话`} onClick={() => void createSession(p.id)}>
+                  <Plus size={15} />
+                </IconButton>
+                <IconButton
+                  title={`${p.name} 项目操作`}
+                  onClick={() => setMenuId(menuId === p.id ? '' : p.id)}
+                >
+                  <MoreHorizontal size={15} />
+                </IconButton>
+              </div>
               {menuId === p.id && (
                 <div className="context-menu">
                   <button
@@ -961,39 +1014,12 @@ export default function App() {
                   {state.sessions
                     .filter((s) => s.projectId === p.id)
                     .sort((a, b) => b.updatedAt - a.updatedAt)
-                    .map((s) => (
-                      <div className={'session-row ' + (s.id === selected?.id ? 'active' : '')} key={s.id}>
-                        <button
-                          title={s.title}
-                          aria-current={s.id === selected?.id ? 'page' : undefined}
-                          onClick={() => void selectSession(s)}
-                        >
-                          <MessageSquare size={14} />
-                          <span>{s.title}</span>
-                          {s.unread && <i className="unread" />}
-                          {s.id === runtime.sessionId && running && (
-                            <LoaderCircle size={12} className="spin" />
-                          )}
-                        </button>
-                        <IconButton
-                          title={`重命名 ${s.title}`}
-                          onClick={() => setRename({ kind: 'session', id: s.id, name: s.title })}
-                        >
-                          <Pencil size={12} />
-                        </IconButton>
-                      </div>
-                    ))}
+                    .map(renderSession)}
                 </div>
               )}
             </div>
           ))}
-          {!state.projects.length && (
-            <p className="sidebar-empty">
-              打开一个文件夹
-              <br />
-              让想法从这里开始。
-            </p>
-          )}
+          {!state.projects.length && <p className="sidebar-empty">需要处理本地文件时，打开项目。</p>}
         </div>
         <div className="sidebar-footer">
           <button onClick={addProject}>
@@ -1006,7 +1032,7 @@ export default function App() {
             <span className={'connection-dot ' + (environment?.supported ? 'ready' : '')} />
           </button>
           <div className="sidebar-version">
-            本地工作区 <span>v0.1.1</span>
+            Pi Desktop <span>v0.1.2</span>
           </div>
         </div>
       </aside>
@@ -1023,7 +1049,7 @@ export default function App() {
           <div className="workspace-title">
             <h1 title={selected?.title}>{selected?.title || 'Pi Desktop'}</h1>
             <div className="breadcrumb" title={project?.path}>
-              <span>{project?.name || '本地编程工作区'}</span>
+              <span>{project?.name || '独立对话'}</span>
               {changes?.branch && (
                 <span className="branch">
                   <GitBranch size={12} />
@@ -1033,18 +1059,20 @@ export default function App() {
             </div>
           </div>
           <div className="header-actions">
-            <button
-              className={'workspace-toggle ' + (inspector ? 'active' : '')}
-              aria-label={inspector ? '收起工作区面板' : '查看工作区变更'}
-              aria-expanded={inspector}
-              aria-controls="workspace-inspector"
-              onClick={() => setInspector((v) => !v)}
-              title="变更、文件与输出"
-            >
-              {inspector ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-              <span>工作区</span>
-              {!!changes?.files.length && <span className="count">{changes.files.length}</span>}
-            </button>
+            {project && (
+              <button
+                className={'workspace-toggle ' + (inspector ? 'active' : '')}
+                aria-label={inspector ? '收起工作区面板' : '查看工作区变更'}
+                aria-expanded={inspector}
+                aria-controls="workspace-inspector"
+                onClick={() => setInspector((v) => !v)}
+                title="变更、文件与输出"
+              >
+                {inspector ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+                <span>工作区</span>
+                {!!changes?.files.length && <span className="count">{changes.files.length}</span>}
+              </button>
+            )}
           </div>
         </header>
         <div ref={columns} className={'workspace-columns' + (compact ? ' compact' : '')}>
@@ -1094,22 +1122,28 @@ export default function App() {
                   <div className="welcome-symbol" aria-hidden="true">
                     π
                   </div>
-                  <h2>{project ? '想一起完成什么？' : '从你的项目开始'}</h2>
+                  <h2>{project ? '想一起完成什么？' : '有什么想聊的？'}</h2>
                   <p>
-                    {project
-                      ? '描述一个目标，或者从下面开始。'
-                      : '打开本地文件夹，与 Pi 一起理解代码、解决问题。'}
+                    {project ? '描述一个目标，或者从下面开始。' : '直接提问、整理思路，或一起打磨一个想法。'}
                   </p>
                   {!project ? (
-                    <div className="welcome-actions">
-                      <button className="primary" onClick={addProject}>
-                        <FolderOpen size={17} />
-                        打开项目
-                      </button>
-                      <button onClick={() => openSettings()}>
-                        <Settings2 size={16} />
-                        配置 Pi
-                      </button>
+                    <div className="suggestions">
+                      {[
+                        ['解释概念', '帮我解释一个概念：'],
+                        ['整理思路', '帮我梳理一下这个想法：'],
+                        ['一起写作', '和我一起打磨这段文字：'],
+                      ].map(([label, prompt]) => (
+                        <button
+                          key={label}
+                          onClick={() => {
+                            persistDraft(prompt);
+                            focusComposer();
+                          }}
+                        >
+                          <span>{label}</span>
+                          <ChevronRight size={15} />
+                        </button>
+                      ))}
                     </div>
                   ) : (
                     <div className="suggestions">
@@ -1308,7 +1342,7 @@ export default function App() {
                 <textarea
                   ref={input}
                   aria-label="任务输入"
-                  placeholder={project ? '描述你想完成的任务，@ 引用文件…' : '先打开一个项目…'}
+                  placeholder={project ? '描述你想完成的任务，@ 引用文件…' : '给 Pi 发消息…'}
                   value={draft}
                   disabled={!selected}
                   onChange={(e) => onDraft(e.target.value)}
@@ -1347,16 +1381,18 @@ export default function App() {
                 )}
                 <div className="composer-toolbar">
                   <div>
-                    <IconButton
-                      title="引用文件"
-                      onClick={() => {
-                        setFileQuery('');
-                        input.current?.focus();
-                      }}
-                      disabled={!project}
-                    >
-                      <Paperclip size={17} />
-                    </IconButton>
+                    {project && (
+                      <IconButton
+                        title="引用文件"
+                        onClick={() => {
+                          setFileQuery('');
+                          input.current?.focus();
+                        }}
+                        disabled={!project}
+                      >
+                        <Paperclip size={17} />
+                      </IconButton>
+                    )}
                     <button
                       className="model-pill"
                       onClick={() => openSettings('models')}
@@ -1400,7 +1436,7 @@ export default function App() {
                         !draft.trim() ||
                         !selected ||
                         pending ||
-                        !project?.trusted ||
+                        !sessionEnabled ||
                         (running && !ownRuntime) ||
                         runtime.status === 'stopping'
                       }
@@ -1422,14 +1458,14 @@ export default function App() {
                         </span>
                       )}
                       {!runtime.connected && !ownRunning && (
-                        <button onClick={connect} disabled={pending || !project?.trusted}>
+                        <button onClick={connect} disabled={pending || !sessionEnabled || running}>
                           <Link2 size={12} />
                           重新连接
                         </button>
                       )}
                     </>
                   ) : (
-                    <button onClick={connect} disabled={!selected || !project?.trusted || pending}>
+                    <button onClick={connect} disabled={!sessionEnabled || pending || running}>
                       <Link2 size={12} />
                       连接 Pi
                     </button>
@@ -1444,7 +1480,11 @@ export default function App() {
                 ) : (
                   <span
                     className="composer-footnote"
-                    title="Enter 发送 · Shift+Enter 换行。Pi 会直接修改项目文件。"
+                    title={
+                      project
+                        ? 'Enter 发送 · Shift+Enter 换行。Pi 会直接修改项目文件。'
+                        : 'Enter 发送 · Shift+Enter 换行。独立对话不读取项目文件。'
+                    }
                   >
                     {ownRuntime && runtime.stats?.tokens
                       ? `${runtime.stats.tokens.toLocaleString()} tokens`
@@ -1766,7 +1806,7 @@ export default function App() {
             <div className="search-results">
               {state.sessions
                 .filter((s) =>
-                  (s.title + ' ' + state.projects.find((p) => p.id === s.projectId)?.name)
+                  (s.title + ' ' + (state.projects.find((p) => p.id === s.projectId)?.name ?? '独立对话'))
                     .toLowerCase()
                     .includes(searchQuery.toLowerCase()),
                 )
@@ -1775,7 +1815,7 @@ export default function App() {
                     <MessageSquare size={16} />
                     <span>
                       {s.title}
-                      <small>{state.projects.find((p) => p.id === s.projectId)?.name}</small>
+                      <small>{state.projects.find((p) => p.id === s.projectId)?.name ?? '独立对话'}</small>
                     </span>
                     <ChevronRight size={15} />
                   </button>
@@ -1941,7 +1981,7 @@ export default function App() {
                 <>
                   <div className="settings-heading">
                     <h3>模型与凭据</h3>
-                    <button disabled={!selected || !project?.trusted || pending || running} onClick={connect}>
+                    <button disabled={!sessionEnabled || pending || running} onClick={connect}>
                       <Link2 size={14} />
                       连接 Pi
                     </button>
@@ -1953,9 +1993,7 @@ export default function App() {
                       ? '已发现凭据配置，连接状态以实际请求为准'
                       : '尚未发现 Pi 凭据文件；也可以使用环境变量配置'}
                   </div>
-                  {!selected && (
-                    <p className="environment-note">请先打开一个项目，再连接 Pi 获取模型列表。</p>
-                  )}
+                  {!selected && <p className="environment-note">请先新建对话，再连接 Pi 获取模型列表。</p>}
                   <label className="field-label">当前模型</label>
                   <select
                     className="input"
