@@ -29,8 +29,19 @@ const launch = async () => {
 const waitStatus = async (s) => page.locator('.run-meta .status.' + s).waitFor({ timeout: 25000 });
 try {
   await launch();
-  await page.locator('.change-row').first().waitFor();
-  await page.screenshot({ path: path.join(output, 'workspace-empty.png') });
+  assert.equal(await page.locator('.inspector').count(), 0);
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: path.join(output, 'workspace-empty.png'), animations: 'disabled' });
+  await page.getByRole('button', { name: '收起项目侧栏 Ctrl+B', exact: true }).click();
+  assert.equal(await page.locator('.sidebar').isVisible(), false);
+  await page.keyboard.press('Control+b');
+  assert.equal(await page.locator('.sidebar').isVisible(), true);
+  await page.getByRole('button', { name: '理解项目', exact: true }).click();
+  assert.match(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), /梳理这个项目/);
+  assert.equal(
+    await page.getByRole('textbox', { name: '任务输入' }).evaluate((e) => e === document.activeElement),
+    true,
+  );
   const input = page.getByRole('textbox', { name: '任务输入' });
   await input.fill('@输入');
   await page.locator('.file-picker').getByRole('button', { name: '输入 文件.txt', exact: true }).click();
@@ -44,11 +55,13 @@ try {
     await fs.readFile(path.join(fixture.projectDir, '输出结果.txt'), 'utf8'),
     '真实 Pi 工具执行成功\n',
   );
+  await page.screenshot({ path: path.join(output, 'workspace-conversation.png'), animations: 'disabled' });
+  await page.getByRole('button', { name: '查看工作区变更', exact: true }).click();
   await page.getByRole('button', { name: '刷新变更', exact: true }).click();
   await page.locator('.change-row').filter({ hasText: '输出结果.txt' }).click();
   await page.locator('.diff-lines').getByText('+真实 Pi 工具执行成功', { exact: true }).waitFor();
   assert.equal(await page.locator('.tool-card.error').count(), 0);
-  await page.screenshot({ path: path.join(output, 'workspace-completed.png') });
+  await page.screenshot({ path: path.join(output, 'workspace-completed.png'), animations: 'disabled' });
   console.log('PASS UI real Pi task, attachment, tools and diff');
   await input.fill('/gui-select');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
@@ -61,15 +74,19 @@ try {
   await page.getByRole('button', { name: '外观与编辑器', exact: true }).click();
   await page.getByRole('button', { name: '深色', exact: true }).click();
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+  await page.screenshot({ path: path.join(output, 'workspace-settings.png'), animations: 'disabled' });
   await page.getByRole('button', { name: '关闭', exact: true }).last().click();
-  await page.screenshot({ path: path.join(output, 'workspace-dark.png') });
+  await page.screenshot({ path: path.join(output, 'workspace-dark.png'), animations: 'disabled' });
   await page.getByRole('textbox', { name: '任务输入' }).fill('不会自动发送的持久草稿');
+  await page.getByRole('button', { name: '收起项目侧栏 Ctrl+B', exact: true }).click();
   await page.waitForTimeout(300);
   await app.close();
   app = undefined;
   await launch();
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), '不会自动发送的持久草稿');
+  assert.equal(await page.locator('.sidebar').isVisible(), false);
+  await page.keyboard.press('Control+b');
   assert.ok((await page.locator('.message').count()) > 0);
   assert.equal(await page.locator('.run-meta .running').count(), 0);
   console.log('PASS UI theme, draft and history after restart');
@@ -89,8 +106,46 @@ try {
   await page.getByLabel('字号比例').fill('2');
   await page.getByRole('button', { name: '关闭', exact: true }).last().click();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1024, 768));
-  await page.screenshot({ path: path.join(output, 'workspace-200-percent.png') });
+  await page.waitForFunction(() => !!document.querySelector('.workspace-columns.compact'));
+  await page.screenshot({ path: path.join(output, 'workspace-200-percent.png'), animations: 'disabled' });
   assert.ok(await page.getByRole('textbox', { name: '任务输入' }).isVisible());
+  const sendBounds = await page.getByRole('button', { name: '发送任务', exact: true }).boundingBox();
+  assert.ok(
+    sendBounds &&
+      sendBounds.y >= 0 &&
+      sendBounds.y + sendBounds.height <= (await page.evaluate(() => innerHeight)),
+  );
+  await page.getByRole('button', { name: '查看工作区变更', exact: true }).click();
+  const drawer = page.getByRole('dialog', { name: '工作区检查', exact: true });
+  await drawer.waitFor();
+  await drawer.locator('.change-row').filter({ hasText: '输出结果.txt' }).click();
+  await drawer.getByRole('button', { name: '继续提问', exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '任务输入');
+  assert.equal(await drawer.count(), 0);
+  assert.match(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), /请检查 输出结果/);
+  await page.getByRole('button', { name: '查看工作区变更', exact: true }).click();
+  await drawer.waitFor();
+  await page.getByRole('button', { name: '关闭面板', exact: true }).focus();
+  // Tab must stay inside the compact inspector, even after its final action.
+  const focusable = drawer.locator(
+    'button:visible:not(:disabled), select:visible:not(:disabled), summary:visible',
+  );
+  await focusable.last().focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await drawer.evaluate((e) => e.contains(document.activeElement)), true);
+  await page.screenshot({
+    path: path.join(output, 'workspace-compact-inspector.png'),
+    animations: 'disabled',
+  });
+  await page.keyboard.press('Escape');
+  assert.equal(await drawer.count(), 0);
+  assert.equal(
+    await page
+      .getByRole('button', { name: '查看工作区变更', exact: true })
+      .evaluate((e) => e === document.activeElement),
+    true,
+  );
+  console.log('PASS UI focus layout, sidebar persistence, compact inspector and keyboard dismissal');
   assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
   assert.equal(await page.evaluate(() => typeof window.process), 'undefined');
   assert.deepEqual(errors, []);
@@ -109,6 +164,10 @@ try {
           'draft/history reload',
           'queue and stop',
           '200% font at 1024x768',
+          'collapsed inspector by default',
+          'sidebar toggle and persistence',
+          'suggestion focus and draft',
+          'compact inspector keyboard focus and Escape',
           'isolated renderer',
         ],
         consoleErrors: errors,

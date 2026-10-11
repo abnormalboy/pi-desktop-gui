@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
   ArrowUp,
   Square,
@@ -19,6 +19,8 @@ import {
   Copy,
   PanelRightClose,
   PanelRightOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   Terminal,
   Files,
   GitCompareArrows,
@@ -88,18 +90,24 @@ function IconButton({
   children,
   disabled = false,
   className = '',
+  expanded,
+  controls,
 }: {
   title: string;
   onClick: () => void;
   children: ReactNode;
   disabled?: boolean;
   className?: string;
+  expanded?: boolean;
+  controls?: string;
 }) {
   return (
     <button
       className={'icon-button ' + className}
       title={title}
       aria-label={title}
+      aria-expanded={expanded}
+      aria-controls={controls}
       onClick={onClick}
       disabled={disabled}
     >
@@ -121,6 +129,47 @@ function Badge({ status }: { status: string }) {
     </span>
   );
 }
+function useFocusScope(
+  ref: RefObject<HTMLDivElement | HTMLElement | null>,
+  active: boolean,
+  close: () => void,
+) {
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!active || !ref.current) return;
+    const old = document.activeElement as HTMLElement;
+    const selector =
+      'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],summary';
+    ref.current.querySelector<HTMLElement>(selector)?.focus();
+    const key = (e: KeyboardEvent) => {
+      if ([...document.querySelectorAll('[role="dialog"]')].at(-1) !== ref.current) return;
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        e.preventDefault();
+        closeRef.current();
+      }
+      if (e.key === 'Tab') {
+        const items = [...ref.current!.querySelectorAll<HTMLElement>(selector)].filter(
+          (e) => e.getClientRects().length,
+        );
+        if (!items.length) return;
+        const i = items.indexOf(document.activeElement as HTMLElement);
+        if (e.shiftKey && i <= 0) {
+          e.preventDefault();
+          items.at(-1)?.focus();
+        } else if (!e.shiftKey && (i < 0 || i === items.length - 1)) {
+          e.preventDefault();
+          items[0].focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('keydown', key);
+      if (old?.isConnected) old.focus();
+    };
+  }, [active, ref]);
+}
 function Modal({
   title,
   subtitle,
@@ -135,38 +184,7 @@ function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const old = document.activeElement as HTMLElement;
-    const focus = ref.current?.querySelector<HTMLElement>('input,button,select,textarea');
-    focus?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close();
-      }
-      if (e.key === 'Tab') {
-        const items = [
-          ...ref.current!.querySelectorAll<HTMLElement>(
-            'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href]',
-          ),
-        ].filter((e) => e.offsetParent !== null);
-        if (!items.length) return;
-        const i = items.indexOf(document.activeElement as HTMLElement);
-        if (e.shiftKey && i <= 0) {
-          e.preventDefault();
-          items.at(-1)?.focus();
-        } else if (!e.shiftKey && i === items.length - 1) {
-          e.preventDefault();
-          items[0].focus();
-        }
-      }
-    };
-    document.addEventListener('keydown', key);
-    return () => {
-      document.removeEventListener('keydown', key);
-      old?.focus();
-    };
-  }, []);
+  useFocusScope(ref, true, close);
   return (
     <div
       className="modal-backdrop"
@@ -485,7 +503,9 @@ export default function App() {
     [draft, setDraft] = useState(''),
     [attachments, setAttachments] = useState<string[]>([]),
     [sendMode, setSendMode] = useState<'steer' | 'followUp'>('steer');
-  const [inspector, setInspector] = useState(true),
+  const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
+    [compact, setCompact] = useState(false),
+    [inspector, setInspector] = useState(false),
     [tab, setTab] = useState<'changes' | 'files' | 'output'>('changes'),
     [changeMode, setChangeMode] = useState<'all' | 'run'>('all'),
     [changes, setChanges] = useState<Changes>(),
@@ -506,6 +526,8 @@ export default function App() {
     [diagnostic, setDiagnostic] = useState(''),
     [elapsed, setElapsed] = useState(0);
   const thread = useRef<HTMLDivElement>(null),
+    columns = useRef<HTMLDivElement>(null),
+    inspectorPanel = useRef<HTMLElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     autoScroll = useRef(true),
     previewGeneration = useRef(0),
@@ -521,6 +543,14 @@ export default function App() {
     ownRunning = ownRuntime && running;
   const messages = ownRuntime ? runtime.messages : history;
   const visibleMessages = messages.slice(-messageLimit);
+  const patchLines = fileDiff?.patch.split('\n') ?? [];
+  const diffLines = patchLines.slice(
+    Math.max(
+      0,
+      patchLines.findIndex((line) => line.startsWith('@@')),
+    ),
+  );
+  useFocusScope(inspectorPanel, inspector && compact, () => setInspector(false));
   async function attempt<T>(fn: () => Promise<T>): Promise<T | undefined> {
     try {
       return await fn();
@@ -557,13 +587,30 @@ export default function App() {
     };
   }, []);
   useEffect(() => {
+    localStorage.setItem('pi.sidebar', sidebar ? 'visible' : 'hidden');
+    if (!sidebar && document.activeElement?.closest('.sidebar')) {
+      document.querySelector<HTMLButtonElement>('[aria-controls="project-sidebar"]')?.focus();
+    }
+  }, [sidebar]);
+  useEffect(() => {
+    if (!columns.current) return;
+    const observer = new ResizeObserver(([entry]) => setCompact(entry.contentRect.width < 900));
+    observer.observe(columns.current);
+    return () => observer.disconnect();
+  }, [Boolean(state)]);
+  useEffect(() => {
+    const textarea = input.current;
+    if (!textarea) return;
     const resize = () => {
-      if (window.innerWidth < 1200) setInspector(false);
+      textarea.style.height = '0px';
+      textarea.style.height = Math.min(textarea.scrollHeight, window.innerHeight * 0.2) + 'px';
     };
     resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, []);
+    const observer = new ResizeObserver(resize);
+    // Observe the container so wrapping changes also resize the input.
+    observer.observe(textarea.parentElement!);
+    return () => observer.disconnect();
+  }, [draft, state?.settings.fontScale, Boolean(state)]);
   useEffect(() => {
     if (!state) return;
     document.documentElement.dataset.theme = state.settings.theme;
@@ -619,10 +666,25 @@ export default function App() {
         e.preventDefault();
         openSettings();
       }
+      if (e.ctrlKey && e.key.toLowerCase() === 'b' && !document.querySelector('[role="dialog"]')) {
+        e.preventDefault();
+        setSidebar((v) => !v);
+      }
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, [state]);
+  useEffect(() => {
+    if (!inspector) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('[role="dialog"]')) {
+        setInspector(false);
+        document.querySelector<HTMLButtonElement>('.workspace-toggle')?.focus();
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [inspector]);
   useEffect(() => {
     if (!project) {
       setChanges(undefined);
@@ -679,6 +741,10 @@ export default function App() {
     const match = value.match(/(?:^|\s)@([^\s@]*)$/);
     setFileQuery(match ? match[1] : null);
   };
+  const focusComposer = () => {
+    if (compact && inspector) setInspector(false);
+    requestAnimationFrame(() => input.current?.focus());
+  };
   async function addAttachment(name: string) {
     if (!project) return;
     const f = await attempt(() => api.invoke('preview', project.id, name));
@@ -690,7 +756,7 @@ export default function App() {
     const next = [...new Set([...attachments, name])];
     persistDraft(draft.replace(/(^|\s)@[^\s@]*$/, '$1'), next);
     setFileQuery(null);
-    input.current?.focus();
+    focusComposer();
   }
   async function send() {
     if (!selected || !draft.trim() || pending) return;
@@ -817,19 +883,23 @@ export default function App() {
     );
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside
+        className="sidebar"
+        id="project-sidebar"
+        aria-label="项目与会话"
+        hidden={!sidebar}
+        inert={inspector && compact}
+      >
         <div className="brand">
           <span className="brand-mark">π</span>
-          <div>
-            Pi Desktop<small>本地编程工作区</small>
-          </div>
+          <div>Pi Desktop</div>
           <IconButton title="搜索项目与会话 Ctrl+K" onClick={() => setSearchOpen(true)}>
             <Search size={17} />
           </IconButton>
         </div>
         <button className="new-session" onClick={createSession}>
           <Plus size={17} />
-          新建会话<span>Ctrl N</span>
+          新建会话<kbd>Ctrl N</kbd>
         </button>
         <div className="section-heading">
           项目
@@ -893,7 +963,11 @@ export default function App() {
                     .sort((a, b) => b.updatedAt - a.updatedAt)
                     .map((s) => (
                       <div className={'session-row ' + (s.id === selected?.id ? 'active' : '')} key={s.id}>
-                        <button onClick={() => void selectSession(s)}>
+                        <button
+                          title={s.title}
+                          aria-current={s.id === selected?.id ? 'page' : undefined}
+                          onClick={() => void selectSession(s)}
+                        >
                           <MessageSquare size={14} />
                           <span>{s.title}</span>
                           {s.unread && <i className="unread" />}
@@ -932,55 +1006,49 @@ export default function App() {
             <span className={'connection-dot ' + (environment?.supported ? 'ready' : '')} />
           </button>
           <div className="sidebar-version">
-            Pi Desktop <span>v0.1.0</span>
+            本地工作区 <span>v0.1.1</span>
           </div>
         </div>
       </aside>
       <main className="workspace">
-        <header className="workspace-header">
-          <div className="breadcrumb">
-            <Folder size={15} />
-            <span title={project?.path}>{project?.name || '工作区'}</span>
-            {changes?.branch && (
-              <>
-                <span className="slash">/</span>
-                <GitBranch size={13} />
-                <span className="branch">{changes.branch}</span>
-              </>
-            )}
-          </div>
-          <div className="header-actions">
-            <button className="model-pill" onClick={() => openSettings('models')} title="选择模型">
-              <span className="model-icon" />
-              {runtime.model?.name || state.settings.modelId || '连接 Pi'}
-              <ChevronDown size={12} />
-            </button>
-            <IconButton
-              title={inspector ? '收起文件面板' : '展开文件面板'}
-              onClick={() => setInspector((v) => !v)}
-            >
-              {inspector ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-            </IconButton>
-          </div>
-        </header>
-        <div className="workspace-columns">
-          <section className="conversation">
-            <div className="conversation-header">
-              <div>
-                <h1>{selected?.title || '开始你的下一次构建'}</h1>
-                {project && <span className="subtle">{project.path}</span>}
-              </div>
-              {ownRuntime && (
-                <div className="run-meta">
-                  <Badge status={runtime.status} />
-                  {ownRunning && (
-                    <span className="elapsed">
-                      {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
-                    </span>
-                  )}
-                </div>
+        <header className="workspace-header" inert={inspector && compact}>
+          <IconButton
+            title={sidebar ? '收起项目侧栏 Ctrl+B' : '展开项目侧栏 Ctrl+B'}
+            onClick={() => setSidebar((v) => !v)}
+            expanded={sidebar}
+            controls="project-sidebar"
+          >
+            {sidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+          </IconButton>
+          <div className="workspace-title">
+            <h1 title={selected?.title}>{selected?.title || 'Pi Desktop'}</h1>
+            <div className="breadcrumb" title={project?.path}>
+              <span>{project?.name || '本地编程工作区'}</span>
+              {changes?.branch && (
+                <span className="branch">
+                  <GitBranch size={12} />
+                  {changes.branch}
+                </span>
               )}
             </div>
+          </div>
+          <div className="header-actions">
+            <button
+              className={'workspace-toggle ' + (inspector ? 'active' : '')}
+              aria-label={inspector ? '收起工作区面板' : '查看工作区变更'}
+              aria-expanded={inspector}
+              aria-controls="workspace-inspector"
+              onClick={() => setInspector((v) => !v)}
+              title="变更、文件与输出"
+            >
+              {inspector ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+              <span>工作区</span>
+              {!!changes?.files.length && <span className="count">{changes.files.length}</span>}
+            </button>
+          </div>
+        </header>
+        <div ref={columns} className={'workspace-columns' + (compact ? ' compact' : '')}>
+          <section className="conversation" inert={inspector && compact}>
             {running && !ownRuntime && (
               <div className="banner">
                 <LoaderCircle size={15} className="spin" />
@@ -1023,15 +1091,14 @@ export default function App() {
             >
               {!messages.length && (
                 <div className="welcome">
-                  <div className="welcome-symbol">
-                    π<span />
+                  <div className="welcome-symbol" aria-hidden="true">
+                    π
                   </div>
-                  <span className="eyebrow">你的项目，你的工作方式</span>
-                  <h2>{project ? '想一起完成什么？' : '从一个想法，到下一次提交。'}</h2>
+                  <h2>{project ? '想一起完成什么？' : '从你的项目开始'}</h2>
                   <p>
                     {project
-                      ? '描述目标，交给 Pi 推进。你随时可以查看过程、补充要求和检查变更。'
-                      : '连接本地 Pi，在一个清晰的工作区里对话、修改代码与检查结果。'}
+                      ? '描述一个目标，或者从下面开始。'
+                      : '打开本地文件夹，与 Pi 一起理解代码、解决问题。'}
                   </p>
                   {!project ? (
                     <div className="welcome-actions">
@@ -1064,10 +1131,6 @@ export default function App() {
                       ))}
                     </div>
                   )}
-                  <div className="welcome-note">
-                    <span className="status-dot" />
-                    代码保留在本地 · 模型使用你的 Pi 配置
-                  </div>
                 </div>
               )}
               {messages.length > messageLimit && (
@@ -1102,7 +1165,11 @@ export default function App() {
                 return (
                   <article key={key} className={'message ' + m.role}>
                     <div className="message-heading">
-                      <span className={'avatar ' + m.role}>{m.role === 'user' ? '你' : 'π'}</span>
+                      {m.role === 'assistant' && (
+                        <span className="avatar assistant" aria-hidden="true">
+                          π
+                        </span>
+                      )}
                       <strong>{m.role === 'user' ? '你' : 'Pi'}</strong>
                       {m.timestamp && <time>{time(m.timestamp)}</time>}
                       <IconButton title="复制消息" onClick={() => void api.invoke('copy', content)}>
@@ -1246,7 +1313,10 @@ export default function App() {
                   disabled={!selected}
                   onChange={(e) => onDraft(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Escape') setFileQuery(null);
+                    if (e.key === 'Escape' && fileQuery !== null) {
+                      e.preventDefault();
+                      setFileQuery(null);
+                    }
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       if (fileQuery !== null && fileResults[0]) void addAttachment(fileResults[0]);
@@ -1287,6 +1357,17 @@ export default function App() {
                     >
                       <Paperclip size={17} />
                     </IconButton>
+                    <button
+                      className="model-pill"
+                      onClick={() => openSettings('models')}
+                      title="选择模型"
+                      aria-label="选择模型"
+                    >
+                      <span>{runtime.model?.name || state.settings.modelId || '选择模型'}</span>
+                      <ChevronDown size={12} />
+                    </button>
+                  </div>
+                  <div>
                     {ownRunning ? (
                       <select
                         aria-label="运行中发送方式"
@@ -1298,11 +1379,9 @@ export default function App() {
                       </select>
                     ) : (
                       <span className="composer-hint">
-                        Enter 发送 <span>·</span> Shift Enter 换行
+                        <kbd>↵</kbd> 发送
                       </span>
                     )}
-                  </div>
-                  <div>
                     {ownRunning && (
                       <button
                         className="stop-button"
@@ -1333,11 +1412,21 @@ export default function App() {
                 </div>
               </div>
               <div className="composer-bottom">
-                <span>
-                  {ownRuntime && runtime.connected ? (
+                <div className="run-meta" role="status" aria-live="polite">
+                  {ownRuntime ? (
                     <>
-                      <span className="connection-dot ready" />
-                      Pi 已连接{runtime.thinking && ' · ' + runtime.thinking}
+                      <Badge status={runtime.status} />
+                      {ownRunning && (
+                        <span className="elapsed" aria-hidden="true">
+                          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
+                        </span>
+                      )}
+                      {!runtime.connected && !ownRunning && (
+                        <button onClick={connect} disabled={pending || !project?.trusted}>
+                          <Link2 size={12} />
+                          重新连接
+                        </button>
+                      )}
                     </>
                   ) : (
                     <button onClick={connect} disabled={!selected || !project?.trusted || pending}>
@@ -1345,7 +1434,7 @@ export default function App() {
                       连接 Pi
                     </button>
                   )}
-                </span>
+                </div>
                 {runtime.status === 'stopping' &&
                 runtime.stopStartedAt &&
                 Date.now() - runtime.stopStartedAt > 15000 ? (
@@ -1353,17 +1442,35 @@ export default function App() {
                     强制结束
                   </button>
                 ) : (
-                  <span>
+                  <span
+                    className="composer-footnote"
+                    title="Enter 发送 · Shift+Enter 换行。Pi 会直接修改项目文件。"
+                  >
                     {ownRuntime && runtime.stats?.tokens
                       ? `${runtime.stats.tokens.toLocaleString()} tokens`
-                      : '文件变更会直接写入工作区'}
+                      : 'Shift + Enter 换行'}
                   </span>
                 )}
               </div>
             </div>
           </section>
           {inspector && (
-            <aside className="inspector">
+            <button
+              className="inspector-scrim"
+              tabIndex={-1}
+              aria-label="关闭工作区面板"
+              onClick={() => setInspector(false)}
+            />
+          )}
+          {inspector && (
+            <aside
+              ref={inspectorPanel}
+              className="inspector"
+              id="workspace-inspector"
+              aria-label="工作区检查"
+              role={compact ? 'dialog' : undefined}
+              aria-modal={compact || undefined}
+            >
               <div className="inspector-tabs">
                 {(
                   [
@@ -1374,6 +1481,7 @@ export default function App() {
                 ).map(([key, Icon, label]) => (
                   <button
                     key={key}
+                    aria-pressed={tab === key}
                     className={tab === key ? 'active' : ''}
                     onClick={() => {
                       setTab(key);
@@ -1389,7 +1497,13 @@ export default function App() {
                     )}
                   </button>
                 ))}
-                <IconButton title="关闭面板" onClick={() => setInspector(false)}>
+                <IconButton
+                  title="关闭面板"
+                  onClick={() => {
+                    setInspector(false);
+                    if (!compact) document.querySelector<HTMLButtonElement>('.workspace-toggle')?.focus();
+                  }}
+                >
                   <X size={14} />
                 </IconButton>
               </div>
@@ -1513,7 +1627,7 @@ export default function App() {
                         </div>
                       ) : (
                         <pre className="diff-lines">
-                          {fileDiff.patch.split('\n').map((l, i) => (
+                          {diffLines.map((l, i) => (
                             <div
                               key={i}
                               className={
@@ -1526,11 +1640,7 @@ export default function App() {
                                       : ''
                               }
                             >
-                              {(i < 5 && l.startsWith('--- ')
-                                ? '--- 原内容'
-                                : i < 5 && l.startsWith('+++ ')
-                                  ? '+++ 当前内容'
-                                  : l) || ' '}
+                              {l || ' '}
                             </div>
                           ))}
                         </pre>
@@ -1543,7 +1653,7 @@ export default function App() {
                         <button
                           onClick={() => {
                             persistDraft(`请检查 ${selectedFile} 的这处变更：`);
-                            input.current?.focus();
+                            focusComposer();
                           }}
                         >
                           继续提问
