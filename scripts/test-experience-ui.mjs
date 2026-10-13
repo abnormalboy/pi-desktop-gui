@@ -1,0 +1,171 @@
+import { _electron as electron } from 'playwright';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider.ts';
+
+const provider = await createLocalProvider();
+const fixture = await prepareRealPiFixture(provider.baseUrl, 'experience-ui');
+const output = path.resolve('test-results');
+await fs.mkdir(output, { recursive: true });
+const firstImage = path.join(fixture.projectDir, 'first.png');
+const secondImage = path.join(fixture.projectDir, 'second.png');
+const invalidImage = path.join(fixture.projectDir, 'unsupported.bmp');
+const textFile = path.join(fixture.projectDir, '输入 文件.txt');
+await fs.copyFile(path.resolve('build/icon.png'), firstImage);
+await fs.copyFile(firstImage, secondImage);
+await fs.writeFile(invalidImage, 'unsupported image format');
+
+let app, page;
+const errors = [];
+const launch = async () => {
+  app = await electron.launch({
+    executablePath: process.env.PI_DESKTOP_EXE,
+    args: process.env.PI_DESKTOP_EXE ? [] : [path.resolve('.')],
+    env: { ...process.env, PI_DESKTOP_DATA_DIR: fixture.dataDir, PI_OFFLINE: '1' },
+    timeout: 30000,
+  });
+  page = await app.firstWindow();
+  page.setDefaultTimeout(30000);
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+};
+const savedSession = async (id, predicate) => {
+  const start = Date.now();
+  while (Date.now() - start < 10000) {
+    const state = JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'state.json'), 'utf8'));
+    const session = state.sessions.find((s) => s.id === id);
+    if (session && predicate(session)) return session;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error('Expected draft attachments were not saved');
+};
+const drop = async (files) => {
+  await page.evaluate(() => {
+    document.querySelector('#test-drop-files')?.remove();
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.hidden = true;
+    input.id = 'test-drop-files';
+    document.body.append(input);
+  });
+  // Native File objects are needed to exercise webUtils.getPathForFile in the preload.
+  await page.locator('#test-drop-files').setInputFiles(files);
+  await page.evaluate(() => {
+    const dataTransfer = new DataTransfer();
+    for (const file of document.querySelector('#test-drop-files').files) dataTransfer.items.add(file);
+    document
+      .querySelector('.composer')
+      .dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+  });
+};
+
+try {
+  await launch();
+  const input = page.getByRole('textbox', { name: '任务输入' });
+  await input.fill('混合拖放的草稿');
+  await drop([firstImage]);
+  await savedSession(fixture.sessionId, (s) => s.images?.length === 1);
+  await drop([secondImage, textFile]);
+  const mixed = await savedSession(
+    fixture.sessionId,
+    (s) => s.images?.length === 2 && s.attachments.includes('输入 文件.txt'),
+  );
+  assert.deepEqual(
+    mixed.images.map((image) => image.name),
+    ['first.png', 'second.png'],
+  );
+  assert.equal(mixed.draft, '混合拖放的草稿');
+  assert.equal(await page.locator('.image-attachments img').count(), 2);
+  assert.equal(await input.inputValue(), mixed.draft);
+
+  await drop([invalidImage, path.join(fixture.projectDir, '已有修改.txt')]);
+  const partial = await savedSession(fixture.sessionId, (s) => s.attachments.length === 2);
+  assert.deepEqual(partial.images, mixed.images, 'a rejected image must preserve existing images');
+  assert.deepEqual(partial.attachments, ['输入 文件.txt', '已有修改.txt']);
+  console.log(
+    'PASS mixed drops preserve existing images, add images and references, and handle partial rejection',
+  );
+
+  const standalone = await page.evaluate(() => window.desktop.invoke('newSession'));
+  await page.waitForFunction(() => document.querySelector('[aria-label="任务输入"]')?.value === '');
+  await drop([firstImage, textFile]);
+  const standaloneDraft = await savedSession(standalone.id, (s) => s.images?.length === 1);
+  assert.deepEqual(standaloneDraft.attachments, []);
+  await page
+    .getByText('独立对话不能引用本地文件；打开项目后可拖入项目内的文本文件', { exact: true })
+    .waitFor();
+  console.log('PASS standalone mixed drops retain images while rejecting file references');
+
+  await page.evaluate((id) => window.desktop.invoke('selectSession', id), fixture.sessionId);
+  await page.waitForFunction(
+    () => document.querySelector('[aria-label="任务输入"]')?.value === '混合拖放的草稿',
+  );
+  await page.evaluate((id) => window.desktop.invoke('connect', id), fixture.sessionId);
+  await input.fill('E2E_SLOW Esc repeat regression');
+  await input.press('Enter');
+  await page.locator('.run-meta .status.running').waitFor();
+  await page.getByText('开始流式回复。', { exact: true }).waitFor();
+  await page.keyboard.down('Escape');
+  await page.locator('.stop-button.armed').waitFor();
+  await page.keyboard.down('Escape'); // Holding the key emits repeat=true.
+  await page.keyboard.up('Escape');
+  assert.equal(await page.locator('.stop-button.armed').count(), 1, 'key repeat must not confirm stop');
+  assert.equal(await page.locator('.run-meta .status.running').count(), 1);
+  await page.keyboard.press('Escape');
+  await page.locator('.run-meta .status.stopped').waitFor();
+  console.log('PASS held Esc does not stop the task; a second deliberate press still stops it');
+
+  const expectedBounds = await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const bounds = window.getNormalBounds();
+    window.setSize(bounds.width - 20, bounds.height - 20);
+    return window.getNormalBounds();
+  });
+  const child = app.process();
+  const closed = app.waitForEvent('close', { timeout: 15000 });
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const bounds = window.getNormalBounds();
+    window.close();
+    // A late resize must not cancel the save awaited by the close handler.
+    window.setSize(bounds.width + 20, bounds.height + 20);
+  });
+  await closed;
+  app = undefined;
+  assert.equal(child.exitCode, 0);
+  const saved = JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'window.json'), 'utf8'));
+  assert.deepEqual(saved.bounds, expectedBounds, 'close must persist the final snapshot');
+  await launch();
+  const restored = await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].getNormalBounds(),
+  );
+  // Recreating a native window at fractional Windows DPI can add a few DIP to its frame.
+  assert.ok(
+    Math.abs(restored.width - expectedBounds.width) <= 8,
+    'restored width should match the saved window',
+  );
+  assert.ok(
+    Math.abs(restored.height - expectedBounds.height) <= 8,
+    'restored height should match the saved window',
+  );
+  assert.deepEqual(errors, []);
+  console.log('PASS closing during resize exits cleanly, saves bounds, and restores dimensions on restart');
+  console.log('Experience UI PASS', fixture.dir);
+} catch (error) {
+  if (page && !page.isClosed())
+    await page.screenshot({ path: path.join(output, 'experience-ui-failure.png') });
+  throw error;
+} finally {
+  if (app) {
+    // A failed assertion during a run must not leave the exit confirmation blocking cleanup.
+    await app
+      .evaluate(({ dialog }) => {
+        dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+      })
+      .catch(() => {});
+    await app.close();
+  }
+  await provider.close();
+}

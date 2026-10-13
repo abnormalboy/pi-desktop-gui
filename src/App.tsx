@@ -1043,6 +1043,140 @@ function ExtensionPrompt({
     </Modal>
   );
 }
+const shortcutGroups: [string, [string[], string][]][] = [
+  [
+    '输入',
+    [
+      [['Enter'], '发送'],
+      [['Shift', 'Enter'], '换行'],
+      [['↑', '↓'], '输入框为空时翻看本会话发送过的提问'],
+      [['/'], '命令菜单；Tab 补全'],
+      [['@'], '引用项目文件；也可把文件拖进输入框'],
+      [['Ctrl', 'V'], '粘贴图片'],
+      [['Ctrl', 'G'], '在外部编辑器中编辑草稿'],
+    ],
+  ],
+  [
+    '运行',
+    [
+      [['Esc', 'Esc'], '执行中连按两次，停止全部并把队列恢复到草稿'],
+      [['!命令'], '执行终端命令，输出加入上下文'],
+      [['!!命令'], '执行终端命令，输出不进入上下文'],
+    ],
+  ],
+  [
+    '导航',
+    [
+      [['Ctrl', 'N'], '新建独立对话'],
+      [['Ctrl', 'K'], '搜索会话标题与内容'],
+      [['Ctrl', 'B'], '收起或展开侧栏'],
+      [['Ctrl', ','], '打开设置'],
+      [['Ctrl', '/'], '显示本页'],
+      [['Esc'], '关闭弹窗或工作区面板'],
+    ],
+  ],
+];
+function ShortcutsHelp({ close }: { close: () => void }) {
+  return (
+    <Modal title="键盘快捷键" subtitle="Ctrl / 随时打开" close={close}>
+      <div className="modal-body shortcut-help">
+        {shortcutGroups.map(([group, rows]) => (
+          <section key={group}>
+            <h3>{group}</h3>
+            {rows.map(([keys, label]) => (
+              <div key={label}>
+                <span>
+                  {keys.map((k, i) => (
+                    <kbd key={i}>{k}</kbd>
+                  ))}
+                </span>
+                <p>{label}</p>
+              </div>
+            ))}
+          </section>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+function ReadinessChecklist({
+  environment,
+  runtime,
+  ownRuntime,
+  savedModel,
+  canConnect,
+  checkEnvironment,
+  connect,
+  providers,
+}: {
+  environment?: Environment;
+  runtime: Runtime;
+  ownRuntime: boolean;
+  savedModel: string;
+  canConnect: boolean;
+  checkEnvironment: () => void;
+  connect: () => void;
+  providers: () => void;
+}) {
+  if (!environment) return null;
+  const connected = ownRuntime && runtime.connected;
+  const piReady = environment.supported;
+  const modelReady = connected ? Boolean(runtime.model) : Boolean(savedModel);
+  if (piReady && modelReady) return null;
+  const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();
+  const steps: { done: boolean; title: string; detail: string; action?: [string, () => void] }[] = [
+    {
+      done: piReady,
+      title: piReady ? `已找到 Pi ${environment.version ?? ''}` : '找到 Pi',
+      detail: piReady
+        ? environment.piPath
+        : environment.version
+          ? `检测到 Pi ${environment.version}，当前适配 1.1.0`
+          : '未检测到 Pi，请安装或在设置中指定 cli.js',
+      action: piReady ? undefined : ['检查运行环境', checkEnvironment],
+    },
+    {
+      done: modelReady,
+      title: modelReady ? `模型：${(connected && runtime.model?.name) || savedModel}` : '选择一个模型',
+      detail: !piReady
+        ? '找到 Pi 后读取可用模型'
+        : !connected
+          ? environment.authExists || environment.modelsExist
+            ? '已发现凭据配置，连接后读取可用模型'
+            : '还没有发现凭据；可先连接，再登录供应商'
+          : runtime.models.length
+            ? `共 ${runtime.models.length} 个可用模型`
+            : '没有可用模型，登录供应商或添加自定义端点',
+      action:
+        modelReady || !piReady
+          ? undefined
+          : !connected
+            ? ['连接并读取模型', connect]
+            : runtime.models.length
+              ? ['选择模型', chooseModel]
+              : ['登录供应商', providers],
+    },
+  ];
+  return (
+    <div className="readiness" role="region" aria-label="开始前检查">
+      <strong>开始前还差一步</strong>
+      {steps.map((s, i) => (
+        <div key={i} className={'readiness-step' + (s.done ? ' done' : '')}>
+          {s.done ? <CheckCircle2 size={17} /> : <span className="step-number">{i + 1}</span>}
+          <span>
+            {s.title}
+            <small title={s.detail}>{s.detail}</small>
+          </span>
+          {s.action && (
+            <button disabled={s.action[1] === connect && !canConnect} onClick={s.action[1]}>
+              {s.action[0]}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function App() {
   const [state, setState] = useState<AppState>(),
@@ -1087,6 +1221,10 @@ export default function App() {
   const [testResult, setTestResult] = useState(''),
     [diagnostic, setDiagnostic] = useState(''),
     [elapsed, setElapsed] = useState(0);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false),
+    [stopArmed, setStopArmed] = useState(false),
+    [dragging, setDragging] = useState(false);
+  const recall = useRef(-1);
   const thread = useRef<HTMLDivElement>(null),
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
@@ -1109,6 +1247,14 @@ export default function App() {
   const lastAssistant = messages.findLast((m) => m.role === 'assistant');
   const actionsLocked = pending || running || !sessionEnabled;
   const visibleMessages = messages.slice(-messageLimit);
+  const sentPrompts = messages
+    .filter((m) => m.role === 'user')
+    .map((m) => {
+      const t = messageText(m),
+        cut = t.indexOf('\n\n<project_file path=');
+      return (cut < 0 ? t : t.slice(0, cut)).trim();
+    })
+    .filter((t, i, all) => t && t !== all[i - 1]);
   const commandMatch = /^(\/\/?)([^\s]*)$/.exec(draft);
   const commandQuery = commandMatch?.[2].toLowerCase();
   const piOnly = commandMatch?.[1] === '//';
@@ -1237,6 +1383,7 @@ export default function App() {
   useEffect(() => {
     if (!selected) return;
     selectedRef.current = selected.id;
+    recall.current = -1;
     setHistory([]);
     setFileQuery(null);
     setFileResults([]);
@@ -1304,10 +1451,43 @@ export default function App() {
         e.preventDefault();
         setSidebar((v) => !v);
       }
+      if (e.ctrlKey && (e.key === '/' || e.code === 'Slash')) {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      }
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, [state, compact, inspector]);
+  useEffect(() => {
+    if (!stopArmed) return;
+    const timer = setTimeout(() => setStopArmed(false), 2000);
+    return () => clearTimeout(timer);
+  }, [stopArmed]);
+  useEffect(() => {
+    if (!ownRunning) setStopArmed(false);
+  }, [ownRunning]);
+  useEffect(() => {
+    if (!ownRunning || runtime.status === 'stopping') return;
+    const key = (e: KeyboardEvent) => {
+      if (
+        e.key !== 'Escape' ||
+        e.repeat ||
+        e.defaultPrevented ||
+        e.isComposing ||
+        document.querySelector('[role="dialog"], .context-menu') ||
+        inspector
+      )
+        return;
+      e.preventDefault();
+      if (stopArmed) {
+        setStopArmed(false);
+        void attempt(() => api.invoke('stop'));
+      } else setStopArmed(true);
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [ownRunning, runtime.status, stopArmed, inspector]);
   useEffect(() => {
     if (!inspector) return;
     const key = (e: KeyboardEvent) => {
@@ -1410,6 +1590,7 @@ export default function App() {
     if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files, pictures));
   };
   const onDraft = (value: string) => {
+    recall.current = -1;
     persistDraft(value);
     setHideCommands(false);
     setCommandIndex(0);
@@ -1497,6 +1678,7 @@ export default function App() {
     else if (cmd === 'trust') {
       if (project) await api.invoke('trustProject', project.id);
     } else if (cmd === 'bug') openSettings('diagnostic');
+    else if (cmd === 'hotkeys') setShortcutsOpen(true);
     else if (cmd === 'changelog')
       await api.invoke(
         'openLink',
@@ -1505,27 +1687,55 @@ export default function App() {
     else setFeatureTab('help');
     return true;
   }
+  async function readImages(files: File[]): Promise<ImageAttachment[]> {
+    if (files.length + images.length > 8) throw new Error('每条消息最多添加 8 张图片');
+    return Promise.all(
+      files.map(async (f) => {
+        if (
+          f.size > 8 * 1024 * 1024 ||
+          !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(f.type)
+        )
+          throw new Error('支持 PNG、JPEG、WebP、GIF，单张不超过 8 MiB');
+        const data = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result).split(',')[1]);
+          r.onerror = reject;
+          r.readAsDataURL(f);
+        });
+        return { id: crypto.randomUUID(), name: f.name || '粘贴的图片', mimeType: f.type, data };
+      }),
+    );
+  }
   async function acceptImages(files: File[]) {
     await attempt(async () => {
-      if (files.length + images.length > 8) throw new Error('每条消息最多添加 8 张图片');
-      const next = await Promise.all(
-        files.map(async (f) => {
-          if (
-            f.size > 8 * 1024 * 1024 ||
-            !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(f.type)
-          )
-            throw new Error('支持 PNG、JPEG、WebP、GIF，单张不超过 8 MiB');
-          const data = await new Promise<string>((resolve, reject) => {
-            const r = new FileReader();
-            r.onload = () => resolve(String(r.result).split(',')[1]);
-            r.onerror = reject;
-            r.readAsDataURL(f);
-          });
-          return { id: crypto.randomUUID(), name: f.name || '粘贴的图片', mimeType: f.type, data };
-        }),
-      );
+      const next = await readImages(files);
       persistDraft(draft, attachments, [...images, ...next]);
     });
+  }
+  async function acceptDrop(files: File[]) {
+    const pictures = files.filter((f) => f.type.startsWith('image/'));
+    const others = files.filter((f) => !f.type.startsWith('image/'));
+    const nextImages = pictures.length ? await attempt(() => readImages(pictures)) : [];
+    let nextFiles: string[] = [];
+    if (others.length) {
+      if (!project) {
+        setError('独立对话不能引用本地文件；打开项目后可拖入项目内的文本文件');
+      } else {
+        await attempt(async () => {
+          const paths = others.map((f) => api.pathForFile(f)).filter(Boolean);
+          const { accepted, rejected } = await api.invoke('referenceDropped', project.id, paths);
+          nextFiles = accepted;
+          if (accepted.length) setNotice(`已引用 ${accepted.length} 个文件`);
+          if (rejected.length)
+            setError(
+              `${rejected.slice(0, 3).join('、')}${rejected.length > 3 ? ` 等 ${rejected.length} 个文件` : ''} 无法引用：只支持项目内 256 KiB 以内的文本文件`,
+            );
+        });
+      }
+    }
+    if (nextImages?.length || nextFiles.length)
+      persistDraft(draft, [...new Set([...attachments, ...nextFiles])], [...images, ...(nextImages ?? [])]);
+    focusComposer();
   }
   async function addProject() {
     await action(async () => {
@@ -1975,6 +2185,16 @@ export default function App() {
                   <p>
                     {project ? '描述一个目标，或者从下面开始。' : '直接提问、整理思路，或一起打磨一个想法。'}
                   </p>
+                  <ReadinessChecklist
+                    environment={environment}
+                    runtime={runtime}
+                    ownRuntime={ownRuntime}
+                    savedModel={selected?.model?.id || state.settings.modelId}
+                    canConnect={sessionEnabled && !running && !pending}
+                    checkEnvironment={() => openSettings('environment')}
+                    connect={() => void connect()}
+                    providers={() => setFeatureTab('providers')}
+                  />
                   {!project ? (
                     <div className="suggestions">
                       {[
@@ -2254,15 +2474,26 @@ export default function App() {
                 <div className="extension-status">{Object.values(runtime.statuses).join(' · ')}</div>
               )}
               <div
-                className={'composer ' + (!selected ? 'disabled' : '')}
+                className={'composer ' + (!selected ? 'disabled' : '') + (dragging ? ' dragging' : '')}
                 onDragOver={(e) => {
-                  if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+                  if (!e.dataTransfer.types.includes('Files')) return;
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false);
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  void acceptImages(Array.from(e.dataTransfer.files));
+                  setDragging(false);
+                  if (selected) void acceptDrop(Array.from(e.dataTransfer.files));
                 }}
               >
+                {dragging && (
+                  <div className="drop-hint" aria-hidden="true">
+                    {project ? '松开以添加图片或引用项目文件' : '松开以添加图片'}
+                  </div>
+                )}
                 {!!images.length && (
                   <div className="image-attachments">
                     {images.map((img) => (
@@ -2356,6 +2587,28 @@ export default function App() {
                     if (e.key === 'Escape' && fileQuery !== null) {
                       e.preventDefault();
                       setFileQuery(null);
+                    }
+                    if (
+                      (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+                      !e.shiftKey &&
+                      !e.altKey &&
+                      !e.ctrlKey &&
+                      !e.nativeEvent.isComposing &&
+                      fileQuery === null &&
+                      sentPrompts.length &&
+                      (draft === '' || (recall.current >= 0 && draft === sentPrompts.at(-1 - recall.current)))
+                    ) {
+                      const next = recall.current + (e.key === 'ArrowUp' ? 1 : -1);
+                      if (next >= sentPrompts.length || next < -1) return;
+                      e.preventDefault();
+                      const value = next < 0 ? '' : sentPrompts.at(-1 - next)!;
+                      persistDraft(value);
+                      recall.current = next;
+                      setHideCommands(true);
+                      requestAnimationFrame(() => {
+                        input.current?.setSelectionRange(value.length, value.length);
+                      });
+                      return;
                     }
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
@@ -2480,7 +2733,8 @@ export default function App() {
                     )}
                     {ownRunning && (
                       <button
-                        className="stop-button"
+                        className={'stop-button' + (stopArmed ? ' armed' : '')}
+                        title="停止全部（连按两次 Esc）"
                         onClick={() => void attempt(() => api.invoke('stop'))}
                         disabled={runtime.status === 'stopping'}
                       >
@@ -2545,19 +2799,26 @@ export default function App() {
                   <button className="danger-link" onClick={() => void attempt(() => api.invoke('forceStop'))}>
                     强制结束
                   </button>
+                ) : stopArmed ? (
+                  <span className="composer-footnote stop-armed" role="status">
+                    再按一次 <kbd>Esc</kbd> 停止全部
+                  </span>
                 ) : (
                   <span
                     className="composer-footnote"
                     title={
                       project
-                        ? 'Enter 发送 · Shift+Enter 换行。Pi 会直接修改项目文件。'
-                        : 'Enter 发送 · Shift+Enter 换行。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。'
+                        ? 'Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · Ctrl+/ 快捷键。Pi 会直接修改项目文件。'
+                        : 'Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · Ctrl+/ 快捷键。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。'
                     }
                   >
                     {ownRuntime && runtime.stats?.tokens ? (
                       <ContextMeter stats={runtime.stats} open={() => setFeatureTab('session')} />
                     ) : (
-                      'Shift + Enter 换行'
+                      <button className="shortcut-link" onClick={() => setShortcutsOpen(true)}>
+                        Shift + Enter 换行 · <kbd>Ctrl</kbd>
+                        <kbd>/</kbd> 快捷键
+                      </button>
                     )}
                   </span>
                 )}
@@ -2916,6 +3177,7 @@ export default function App() {
           }
         />
       )}
+      {shortcutsOpen && <ShortcutsHelp close={() => setShortcutsOpen(false)} />}
       {rename && (
         <Modal
           title={rename.kind === 'project' ? '重命名项目' : '重命名会话'}
@@ -3252,6 +3514,21 @@ export default function App() {
                     />
                     <button onClick={() => void chooseSettingPath('editor')}>选择</button>
                   </div>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={prefs.notifyOnFinish}
+                      onChange={(e) => {
+                        const notifyOnFinish = e.target.checked;
+                        setPrefs({ ...prefs, notifyOnFinish });
+                        void attempt(() => api.invoke('saveSettings', { notifyOnFinish }));
+                      }}
+                    />
+                    <span>
+                      窗口在后台时发送系统通知
+                      <small>任务完成、失败或 Pi 等待你回复时提醒，并闪烁任务栏图标</small>
+                    </span>
+                  </label>
                 </>
               )}
               {settingsTab === 'diagnostic' && (

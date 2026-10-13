@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopApi, AppEvent } from '../shared/types';
 const api: DesktopApi = {
   invoke: (method, ...args) => ipcRenderer.invoke('desktop:invoke', method, args),
@@ -7,5 +7,6 @@ const api: DesktopApi = {
     ipcRenderer.on('desktop:event', handler);
     return () => ipcRenderer.removeListener('desktop:event', handler);
   },
+  pathForFile: (file) => webUtils.getPathForFile(file),
 };
 contextBridge.exposeInMainWorld('desktop', api);

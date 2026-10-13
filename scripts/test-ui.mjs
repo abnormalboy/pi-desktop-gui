@@ -26,7 +26,8 @@ const launch = async () => {
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   await page.getByText('想一起完成什么？').or(page.locator('.message')).first().waitFor();
 };
-const waitStatus = async (s) => page.locator('.run-meta .status.' + s).waitFor({ timeout: 25000 });
+// A cold Pi process on Windows can take over 25 seconds to initialize.
+const waitStatus = async (s) => page.locator('.run-meta .status.' + s).waitFor({ timeout: 60000 });
 try {
   await launch();
   assert.equal(await page.locator('.inspector').count(), 0);
@@ -182,6 +183,13 @@ try {
   console.error('Renderer errors:', errors);
   throw e;
 } finally {
-  if (app) await app.close();
+  if (app) {
+    await app
+      .evaluate(({ dialog }) => {
+        dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+      })
+      .catch(() => {});
+    await app.close();
+  }
   await provider.close();
 }

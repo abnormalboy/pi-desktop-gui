@@ -1,5 +1,17 @@
 # 实现与验收记录
 
+## v0.5.0 使用体验（2026-10-14）
+
+| 能力 | 实现 |
+| --- | --- |
+| 后台提醒 | `electron/main.ts` 的 `notifyAttention` 订阅运行时事件，比较前后状态；窗口失焦时用 Electron `Notification` 与 `flashFrame`，设置 `AppUserModelId` 以便 Windows 显示通知 |
+| 窗口状态 | `window.json` 保存 `getNormalBounds` 与最大化，400 ms 去抖、写入串行化；退出时取消定时器并等待最终状态写入，后续窗口事件不会取消退出；恢复时用 `screen.getDisplayMatching` 校验可见 |
+| 提问历史 / Esc 停止 / 快捷键 | `src/App.tsx` 输入框键盘处理、全局 `Escape` 两段确认（忽略长按自动重复事件）、`ShortcutsHelp` 弹窗 |
+| 拖入引用 | preload 暴露 `webUtils.getPathForFile`；新 IPC `referenceDropped` 复用 `previewFile` 的路径、凭据和大小校验；图片与文件引用校验后一次保存草稿，保留已有附件 |
+| 开始前检查 | `ReadinessChecklist` 读取已有的环境检测与运行时模型状态，不发送额外模型请求 |
+
+Windows 本机验证：`npm run build`、`npm test`（16 项）通过；原有 UI 验收与新增的 `scripts/test-experience-ui.mjs` 均通过。新增用例验证真实文件混合拖放、已有附件保留、部分文件拒绝、独立对话图片保留、长按 Esc 与再次按键确认、退出期间 resize、最终窗口状态落盘和重启尺寸恢复。`npm run test:ui` 已串联两套 UI 验收；原有验收的状态等待上限调整为 60 秒以覆盖 Pi 冷启动，并在失败清理时自动停止测试任务。Windows 系统通知呈现、任务栏闪烁和多显示器恢复仍需手动确认。
+
 ## v0.2.0 Pi 功能补齐（2026-10-11）
 
 新增“Pi 功能”面板，保留已有 CPA / Pi 配置。独立对话升级后使用完整的 Pi 工具、Skills、模板、扩展与 MCP；其工作目录在应用数据目录内，分支与克隆保留原目录。

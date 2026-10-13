@@ -16,6 +16,7 @@ export const defaultSettings: Settings = {
   sidebarWidth: 240,
   inspectorWidth: 380,
   onboardingDone: false,
+  notifyOnFinish: true,
 };
 export class Store {
   state: AppState = { version: 1, projects: [], sessions: [], settings: { ...defaultSettings } };

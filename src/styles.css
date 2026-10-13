@@ -3668,3 +3668,148 @@ div:has(> .tool-card) + div:has(> .tool-card) .tool-card,
   align-items: center;
   gap: 5px;
 }
+
+/* v0.5 体验：上手检查、拖放、快捷键、停止确认 */
+.readiness {
+  width: 100%;
+  margin: 4px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--signal) 35%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--signal-soft) 55%, var(--surface));
+  display: grid;
+  gap: 8px;
+  font-size: calc(13px * var(--font-scale));
+}
+.readiness > strong {
+  font-weight: 600;
+}
+.readiness-step {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.readiness-step > span:not(.step-number) {
+  display: grid;
+  min-width: 0;
+}
+.readiness-step small {
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.readiness-step > svg {
+  color: var(--accent);
+}
+.readiness-step.done > span:not(.step-number) {
+  color: var(--muted);
+}
+.step-number {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--signal);
+  color: var(--signal);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+.readiness-step > button {
+  padding: 5px 11px;
+  min-height: 28px;
+  font-size: calc(12px * var(--font-scale));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.composer.dragging {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent-soft) 88%, transparent);
+  color: var(--accent);
+  font-weight: 500;
+  pointer-events: none;
+}
+.stop-button.armed {
+  background: var(--signal);
+  color: var(--surface);
+  border-color: var(--signal);
+}
+.composer-footnote.stop-armed {
+  color: var(--signal);
+  font-weight: 500;
+}
+.composer-bottom kbd,
+.shortcut-help kbd,
+.composer-footnote.stop-armed kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 0 5px;
+  margin: 0 2px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  line-height: 1.6;
+  text-align: center;
+}
+.composer-bottom .shortcut-link {
+  gap: 2px;
+}
+.composer-bottom .shortcut-link:hover {
+  color: var(--ink);
+  background: transparent;
+}
+.shortcut-help {
+  display: grid;
+  gap: 16px;
+}
+.shortcut-help h3 {
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.shortcut-help section > div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0;
+}
+.shortcut-help section > div > span {
+  white-space: nowrap;
+}
+.shortcut-help p {
+  margin: 0;
+}
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 20px;
+  cursor: pointer;
+}
+.check-row > input {
+  margin-top: 3px;
+}
+.check-row > span {
+  display: grid;
+  gap: 2px;
+}
+.check-row small {
+  color: var(--muted);
+}

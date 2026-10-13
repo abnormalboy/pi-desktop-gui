@@ -1,4 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, clipboard, Menu } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  shell,
+  clipboard,
+  Menu,
+  Notification,
+  screen,
+  type Rectangle,
+} from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +22,7 @@ import { detectEnvironment, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
 import { validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
-import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap } from '../shared/types';
+import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
 let quitting = false;
@@ -24,6 +35,91 @@ const save = async () => {
   await store.save();
   send({ type: 'state', state: store.state });
 };
+const attention = { status: '', sessionId: '', dialogs: 0 };
+let lastToast: Notification | undefined;
+function notifyAttention(runtime: Runtime) {
+  const previous = { ...attention };
+  attention.status = runtime.status;
+  attention.sessionId = runtime.sessionId ?? '';
+  attention.dialogs = runtime.dialogs.length;
+  if (!window || window.isDestroyed() || window.isFocused()) return;
+  if (!runtime.sessionId || runtime.sessionId !== previous.sessionId) return;
+  if (!store.state.settings.notifyOnFinish || !Notification.isSupported()) return;
+  const session = store.state.sessions.find((s) => s.id === runtime.sessionId);
+  if (!session) return;
+  const finished = busy(previous.status) && !busy(runtime.status);
+  let title = '',
+    body = '';
+  if (runtime.dialogs.length > previous.dialogs) {
+    title = 'Pi 需要你的回复';
+    body = runtime.dialogs.at(-1)?.title || session.title;
+  } else if (finished && runtime.status === 'completed') {
+    title = '任务已完成 · ' + session.title;
+    const last = runtime.messages.findLast((m) => m.role === 'assistant');
+    body = (last ? messageText(last) : '').replace(/\s+/g, ' ').trim().slice(0, 120) || '点击查看结果';
+  } else if (finished && (runtime.status === 'error' || runtime.status === 'interrupted')) {
+    title = '任务未完成 · ' + session.title;
+    body = redact(runtime.error || '执行失败，点击查看详情').slice(0, 160);
+  } else return;
+  const toast = new Notification({ title, body });
+  toast.on('click', () => {
+    if (!window || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+    if (store.state.sessions.some((s) => s.id === session.id)) {
+      store.selectSession(session.id);
+      void save();
+    }
+  });
+  toast.show();
+  lastToast = toast;
+  window.flashFrame(true);
+}
+const windowFile = () => path.join(store.dir, 'window.json');
+async function loadWindowState(): Promise<{ bounds?: Rectangle; maximized: boolean }> {
+  try {
+    const value = JSON.parse(await fs.readFile(windowFile(), 'utf8'));
+    const b = value?.bounds;
+    if (!b || ![b.x, b.y, b.width, b.height].every(Number.isFinite)) return { maximized: false };
+    const area = screen.getDisplayMatching(b).workArea;
+    const visible =
+      b.x < area.x + area.width - 100 &&
+      b.x + b.width > area.x + 100 &&
+      b.y >= area.y - 8 &&
+      b.y < area.y + area.height - 100;
+    return {
+      bounds: visible
+        ? {
+            x: b.x,
+            y: b.y,
+            width: Math.min(area.width, Math.max(1024, b.width)),
+            height: Math.min(area.height, Math.max(700, b.height)),
+          }
+        : undefined,
+      maximized: value.maximized === true,
+    };
+  } catch {
+    return { maximized: false };
+  }
+}
+let windowTimer: NodeJS.Timeout | undefined;
+let windowWrite = Promise.resolve();
+function writeWindowState() {
+  if (!window || window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return windowWrite;
+  const contents = JSON.stringify({ bounds: window.getNormalBounds(), maximized: window.isMaximized() });
+  // Keep the final close snapshot behind any in-flight resize save.
+  windowWrite = windowWrite.then(() => fs.writeFile(windowFile(), contents, 'utf8')).catch(() => {});
+  return windowWrite;
+}
+function rememberWindow() {
+  if (quitting) return;
+  clearTimeout(windowTimer);
+  windowTimer = setTimeout(() => {
+    windowTimer = undefined;
+    void writeWindowState();
+  }, 400);
+}
 function text(value: unknown, max = 1024 * 1024): asserts value is string {
   if (typeof value !== 'string' || value.length > max || value.includes('\0'))
     throw new Error('输入格式无效');
@@ -470,6 +566,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
         next[key] = Math.max(min, Math.min(max, value[key]));
       }
     if (typeof value.onboardingDone === 'boolean') next.onboardingDone = value.onboardingDone;
+    if (typeof value.notifyOnFinish === 'boolean') next.notifyOnFinish = value.notifyOnFinish;
     store.state.settings = next;
     await save();
   },
@@ -752,6 +849,26 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       });
     } else shell.showItemInFolder(file);
   },
+  referenceDropped: async (id, files) => {
+    text(id, 100);
+    strings(files);
+    const project = store.project(id);
+    const accepted: string[] = [],
+      rejected: string[] = [];
+    for (const file of files.slice(0, 20)) {
+      const relative = path.isAbsolute(file) ? path.relative(project.path, file) : '';
+      try {
+        if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+          throw new Error('不在项目内');
+        const preview = await previewFile(project, relative, 256 * 1024 + 1);
+        if (preview.binary || preview.size > 256 * 1024) throw new Error('不是 256 KiB 以内的文本文件');
+        accepted.push(relative.replaceAll('\\', '/'));
+      } catch {
+        rejected.push(path.basename(file));
+      }
+    }
+    return { accepted, rejected };
+  },
   openLink: async (url) => {
     text(url, 4096);
     const parsed = new URL(url);
@@ -777,9 +894,11 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
 };
 
 async function createWindow() {
+  const saved = await loadWindowState();
   window = new BrowserWindow({
-    width: 1440,
-    height: 900,
+    width: saved.bounds?.width ?? 1440,
+    height: saved.bounds?.height ?? 900,
+    ...(saved.bounds ? { x: saved.bounds.x, y: saved.bounds.y } : {}),
     minWidth: 1024,
     minHeight: 700,
     title: 'Pi Desktop',
@@ -793,7 +912,13 @@ async function createWindow() {
       sandbox: true,
     },
   });
-  window.once('ready-to-show', () => window?.show());
+  window.once('ready-to-show', () => {
+    if (saved.maximized) window?.maximize();
+    window?.show();
+  });
+  for (const event of ['resize', 'move', 'maximize', 'unmaximize'] as const)
+    window.on(event as 'resize', () => void rememberWindow());
+  window.on('focus', () => window?.flashFrame(false));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
@@ -827,6 +952,9 @@ async function createWindow() {
           }
         }
         quitting = true;
+        clearTimeout(windowTimer);
+        windowTimer = undefined;
+        await writeWindowState();
         await service.dispose();
         window?.destroy();
         app.quit();
@@ -850,6 +978,7 @@ else {
   app
     .whenReady()
     .then(async () => {
+      app.setAppUserModelId('io.yeyuproject.pi-desktop');
       store = new Store(app.getPath('userData'));
       await store.load();
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
@@ -860,7 +989,10 @@ else {
       workspace = new Workspace(store.dir);
       await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
-      service.on('runtime', (runtime) => send({ type: 'runtime', runtime }));
+      service.on('runtime', (runtime) => {
+        send({ type: 'runtime', runtime });
+        notifyAttention(runtime);
+      });
       service.on('state', (state) => send({ type: 'state', state }));
       ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {
         if (

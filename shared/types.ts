@@ -49,6 +49,7 @@ export interface Settings {
   sidebarWidth: number;
   inspectorWidth: number;
   onboardingDone: boolean;
+  notifyOnFinish: boolean;
 }
 export interface AppState {
   version: 1;
@@ -334,6 +335,7 @@ export interface ApiMap {
   changes: { args: [string, ('all' | 'run')?]; result: Changes };
   diff: { args: [string, string, 'all' | 'run']; result: FileDiff };
   openFile: { args: [string, string]; result: void };
+  referenceDropped: { args: [string, string[]]; result: { accepted: string[]; rejected: string[] } };
   openLink: { args: [string]; result: void };
   copy: { args: [string]; result: void };
   exportOutput: { args: []; result: string | null };
@@ -345,6 +347,7 @@ export interface ApiMap {
 export interface DesktopApi {
   invoke<K extends keyof ApiMap>(method: K, ...args: ApiMap[K]['args']): Promise<ApiMap[K]['result']>;
   onEvent(listener: (event: AppEvent) => void): () => void;
+  pathForFile(file: File): string;
 }
 export const busy = (status: string) =>
   ['starting', 'running', 'waiting', 'retrying', 'compacting', 'stopping'].includes(status);

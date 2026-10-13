@@ -1040,8 +1040,9 @@ export function PiFeatures({
             <>
               <h3>快捷键</h3>
               <p>
-                Enter 发送 · Shift+Enter 换行 · Ctrl+N 新建独立对话 · Ctrl+K 搜索历史 · Ctrl+, 设置 · Ctrl+G
-                外部编辑器 · / 命令菜单 · @ 项目文件
+                Enter 发送 · Shift+Enter 换行 · ↑↓ 翻看发送过的提问 · Esc 连按两次停止 · Ctrl+N 新建独立对话 ·
+                Ctrl+K 搜索历史 · Ctrl+, 设置 · Ctrl+G 外部编辑器 · Ctrl+/ 全部快捷键 · / 命令菜单 · @
+                项目文件（也可拖入）
               </p>
               <p>
                 <code>!命令</code> 执行并将输出加入上下文；<code>!!命令</code>{' '}
