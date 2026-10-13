@@ -191,6 +191,74 @@ test('unborn repositories show additions and non-Git directories remain browsabl
   assert.equal((await ws.changes(p)).files[0].status, '新增');
   assert.equal((await ws.diff(p, 'file.txt', 'all')).before, '');
 });
+test('undo restores original bytes after restart and rejects text-only snapshots', async () => {
+  const dir = await sandbox(),
+    data = await sandbox(),
+    p = project(dir);
+  await git(dir, 'init');
+  const file = path.join(dir, 'gbk.txt');
+  const original = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0d, 0x0a]);
+  await fs.writeFile(file, original);
+  await new Workspace(data).capture(p);
+  // Both byte sequences decode to four replacement characters under UTF-8.
+  await fs.writeFile(file, Buffer.from([0xb0, 0xb1, 0xb2, 0xb3, 0x0d, 0x0a]));
+  const restored = new Workspace(data);
+  assert.deepEqual(
+    (await restored.changes(p, 'run')).files.map((f) => f.path),
+    ['gbk.txt'],
+  );
+  assert.deepEqual(await restored.revert(p, ['gbk.txt']), ['gbk.txt']);
+  assert.deepEqual(await fs.readFile(file), original);
+  await fs.unlink(file);
+  await restored.revert(p, ['gbk.txt']);
+  assert.deepEqual(await fs.readFile(file), original, 'deleted files also retain their encoding');
+
+  const snapshotFile = path.join(data, 'baselines', `${p.id}.json`);
+  const snapshot = JSON.parse(await fs.readFile(snapshotFile, 'utf8'));
+  delete snapshot.version;
+  snapshot.files['gbk.txt'] = original.toString('utf8');
+  await fs.writeFile(snapshotFile, JSON.stringify(snapshot));
+  const legacy = new Workspace(data);
+  assert.equal((await legacy.changes(p, 'run')).baselineAvailable, false);
+  await assert.rejects(legacy.revert(p, null), /运行基线不可用/);
+  assert.deepEqual(await fs.readFile(file), original);
+});
+
+test('undo excludes directory links and never removes or overwrites their targets', async () => {
+  const dir = await sandbox(),
+    data = await sandbox(),
+    p = project(dir);
+  await git(dir, 'init');
+  const originalDir = path.join(dir, 'original');
+  const replacedDir = path.join(dir, 'replaced');
+  await fs.mkdir(originalDir);
+  await fs.mkdir(replacedDir);
+  const originalFile = path.join(originalDir, 'keep.txt');
+  await fs.writeFile(originalFile, 'original content\n');
+  await fs.writeFile(path.join(replacedDir, 'keep.txt'), 'different content\n');
+  const workspace = new Workspace(data);
+  await workspace.capture(p);
+  await fs.symlink(originalDir, path.join(dir, 'new-alias'), 'junction');
+  await fs.unlink(path.join(replacedDir, 'keep.txt'));
+  await fs.rmdir(replacedDir);
+  await fs.symlink(originalDir, replacedDir, 'junction');
+  const changes = await workspace.changes(p, 'run');
+  assert.deepEqual(changes.files, []);
+  assert.ok(changes.omitted.includes('new-alias/keep.txt'));
+  assert.ok(changes.omitted.includes('replaced/keep.txt'));
+  await assert.rejects(workspace.revert(p, ['new-alias/keep.txt']), /不在本轮变更/);
+  const removed: string[] = [];
+  assert.deepEqual(
+    await workspace.revert(p, null, async (file) => {
+      removed.push(file);
+    }),
+    [],
+  );
+  assert.deepEqual(removed, []);
+  assert.equal(await fs.readFile(originalFile, 'utf8'), 'original content\n');
+  assert.equal((await fs.lstat(path.join(dir, 'new-alias'))).isSymbolicLink(), true);
+});
+
 test('real subprocess protocol lifecycle: settled, retry, cancellation, queue, extensions and crash', async () => {
   const dir = await sandbox(),
     data = await sandbox(),

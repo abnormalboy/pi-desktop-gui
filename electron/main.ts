@@ -339,6 +339,42 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.messageAction(id, action, role, timestamp);
   },
   abortRetry: () => service.abortRetry(),
+  setEntryLabel: async (id, entryId, label) => {
+    text(id, 100);
+    text(entryId, 100);
+    text(label, 200);
+    await service.admin(id, 'set_label', { entryId, label });
+  },
+  revertChanges: async (projectId, only) => {
+    text(projectId, 100);
+    if (only !== null) strings(only);
+    const project = store.project(projectId);
+    if (
+      busy(service.runtime.status) &&
+      service.runtime.sessionId &&
+      store.session(service.runtime.sessionId).projectId === projectId
+    )
+      throw new Error('请等待当前任务结束后再撤销');
+    const pending = (await workspace.changes(project, 'run')).files.filter(
+      (f) => !only || only.includes(f.path),
+    );
+    if (!pending.length) return [];
+    const created = pending.filter((f) => f.status === '新增').length;
+    const result = await dialog.showMessageBox(window!, {
+      type: 'warning',
+      message:
+        only?.length === 1 ? `撤销对 ${only[0]} 的修改？` : `撤销本轮 ${pending.length} 个文件的修改？`,
+      detail:
+        '文件会恢复为本轮任务开始前的内容。' +
+        (created ? `本轮新建的 ${created} 个文件会移到回收站。` : '') +
+        (pending.some((f) => f.existedBeforeRun) ? '\n任务开始前就已有的未提交修改会保留。' : ''),
+      buttons: ['取消', '撤销修改'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (result.response !== 1) return [];
+    return workspace.revert(project, only, (file) => shell.trashItem(file));
+  },
   saveDraft: async (id, draft, attachments, images) => {
     text(id, 100);
     text(draft);
@@ -864,6 +900,7 @@ else {
             'setSessionModel',
             'setSessionThinking',
             'messageAction',
+            'setEntryLabel',
           ].includes(method);
           if (engineOperation) {
             if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');

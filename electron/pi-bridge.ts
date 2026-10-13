@@ -78,6 +78,13 @@ export default function desktopBridge(pi: ExtensionAPI) {
             if (!(data as { cancelled: boolean }).cancelled)
               pi.appendEntry('desktop-navigation', { targetId: p.entryId });
             break;
+          case 'set_label': {
+            if (typeof p.entryId !== 'string') throw new Error('消息无效');
+            const label = typeof p.label === 'string' ? p.label.trim().slice(0, 60) : '';
+            pi.setLabel(p.entryId, label || undefined);
+            data = { label };
+            break;
+          }
           case 'reload':
             emit({ type: 'desktop_result', id, data: { reloading: true } });
             replied = true;

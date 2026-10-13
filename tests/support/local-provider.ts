@@ -56,6 +56,8 @@ export async function createLocalProvider() {
     };
     const results = body.messages.slice(lastUser + 1).filter((m: any) => m.role === 'tool');
     if (prompt.includes('E2E_MCP') && results.length === 0) return tool('mcp__desktop__ping', {});
+    if (prompt.includes('E2E_EDIT') && results.length === 0)
+      return tool('edit', { path: '输入 文件.txt', edits: [{ oldText: '输入文件', newText: '已编辑文件' }] });
     if (prompt.includes('E2E_FILES')) {
       if (results.length === 0) return tool('read', { path: '输入 文件.txt' });
       if (results.length === 1)

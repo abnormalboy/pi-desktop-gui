@@ -161,7 +161,49 @@ export async function allFiles(project: Project): Promise<string[]> {
     return files;
   }
 }
+// Snapshot and restore ordinary files only. Resolving a link is safe for a preview,
+// but would make an undo operate on the link's target instead of the named file.
+async function snapshotPath(root: string, relative: string, allowMissing = false) {
+  const canonical = await fs.realpath(root);
+  const absolute = path.resolve(canonical, relative);
+  if (
+    path.isAbsolute(relative) ||
+    relative.includes('\0') ||
+    !contained(canonical, absolute) ||
+    absolute === canonical ||
+    relative.split(/[\\/]/).includes('.git') ||
+    sensitive(relative)
+  )
+    throw new Error('该文件不能自动撤销，请在编辑器中处理');
+  let current = canonical;
+  for (const part of path.relative(canonical, absolute).split(path.sep)) {
+    current = path.join(current, part);
+    try {
+      if ((await fs.lstat(current)).isSymbolicLink())
+        throw new Error('路径包含符号链接或目录链接，不能自动撤销，请在编辑器中处理');
+    } catch (error) {
+      if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return absolute;
+      throw error;
+    }
+  }
+  return absolute;
+}
+async function snapshotBytes(project: Project, relative: string) {
+  const file = await snapshotPath(project.path, relative);
+  const handle = await fs.open(file, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MiB) throw new Error('文件不是普通文件或超过 1 MiB');
+    const bytes = await handle.readFile();
+    if (bytes.length > MiB || bytes.subarray(0, 8192).includes(0))
+      throw new Error('二进制文件或文件超过 1 MiB');
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
 interface Baseline {
+  version: 2;
   projectId: string;
   fingerprint: string;
   time: number;
@@ -182,6 +224,7 @@ export class Workspace {
     const changes = await this.changes(project);
     const names = await allFiles(project);
     const baseline: Baseline = {
+      version: 2,
       projectId: project.id,
       fingerprint: meta.fingerprint,
       time: Date.now(),
@@ -192,13 +235,13 @@ export class Workspace {
     let size = 0;
     for (const name of names) {
       try {
-        const f = await previewFile(project, name);
-        if (f.binary || f.truncated || size + f.size > 20 * MiB) {
+        const bytes = await snapshotBytes(project, name);
+        if (size + bytes.length > 20 * MiB) {
           baseline.omitted.push(name);
           continue;
         }
-        size += f.size;
-        baseline.files[name] = f.text;
+        size += bytes.length;
+        baseline.files[name] = bytes.toString('base64');
       } catch {
         baseline.omitted.push(name);
       }
@@ -233,7 +276,8 @@ export class Workspace {
       const b: Baseline = JSON.parse(
         await fs.readFile(path.join(this.dataDir, 'baselines', `${projectId}.json`), 'utf8'),
       );
-      if (Date.now() - b.time <= 7 * 86400000 && b.projectId === projectId) {
+      // Text-only snapshots cannot guarantee a lossless restore.
+      if (b.version === 2 && Date.now() - b.time <= 7 * 86400000 && b.projectId === projectId) {
         this.baselines.set(projectId, b);
         return b;
       }
@@ -256,7 +300,7 @@ export class Workspace {
       files: [],
       baselineAvailable: valid,
       baselineInvalid: !!baseline && !valid,
-      omitted: baseline?.omitted ?? [],
+      omitted: [...(baseline?.omitted ?? [])],
     };
     try {
       const raw = await git(project.path, [
@@ -307,12 +351,13 @@ export class Workspace {
           let after = '',
             present = true;
           try {
-            const f = await previewFile(project, name);
-            if (f.binary || f.truncated) continue;
-            after = f.text;
+            after = (await snapshotBytes(project, name)).toString('base64');
           } catch (e) {
             if ((e as NodeJS.ErrnoException).code === 'ENOENT') present = false;
-            else continue;
+            else {
+              result.omitted.push(name);
+              continue;
+            }
           }
           const existed = name in baseline!.files,
             before = baseline!.files[name] ?? '';
@@ -331,6 +376,34 @@ export class Workspace {
       result.error = (e as Error).message;
     }
     return result;
+  }
+  async revert(
+    project: Project,
+    only: string[] | null,
+    remove: (file: string) => Promise<void> = (file) => fs.rm(file),
+  ): Promise<string[]> {
+    const meta = await info(project.path);
+    const baseline = await this.baseline(project.id);
+    if (!baseline || baseline.fingerprint !== meta.fingerprint)
+      throw new Error('运行基线不可用或 Git 分支已经变化，无法撤销');
+    const changed = (await this.changes(project, 'run')).files.map((f) => f.path);
+    const targets = only ? changed.filter((p) => only.includes(p)) : changed;
+    if (only && targets.length !== new Set(only).size)
+      throw new Error('部分文件已不在本轮变更中，请刷新后再试');
+    const reverted: string[] = [];
+    for (const name of targets) {
+      if (baseline.omitted.includes(name) || sensitive(name)) continue;
+      const absolute = await snapshotPath(project.path, name, name in baseline.files);
+      if (name in baseline.files) {
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await snapshotPath(project.path, name, true);
+        await fs.writeFile(absolute, Buffer.from(baseline.files[name], 'base64'));
+      } else {
+        await remove(absolute);
+      }
+      reverted.push(name);
+    }
+    return reverted;
   }
   async diff(project: Project, relative: string, mode: 'all' | 'run'): Promise<FileDiff> {
     const result: FileDiff = { path: relative, patch: '', before: '', after: '' };
@@ -355,7 +428,8 @@ export class Workspace {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
-    if (mode === 'run') result.before = baseline!.files[relative] ?? '';
+    if (mode === 'run')
+      result.before = Buffer.from(baseline!.files[relative] ?? '', 'base64').toString('utf8');
     else if (meta.head) {
       try {
         result.before = await git(

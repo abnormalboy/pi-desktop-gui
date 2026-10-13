@@ -6,6 +6,7 @@ import { PiRpc } from './rpc';
 import { agentDirectory, detectEnvironment, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
 import { Workspace, attachmentPrompt } from './workspace';
+import { Configuration } from './configuration';
 import {
   busy,
   emptyRuntime,
@@ -36,6 +37,28 @@ const displayModel = (model: any): Model | undefined =>
       }
     : undefined;
 
+export const toolPatch = (result: any): string | undefined => {
+  const patch = result?.details?.patch;
+  return typeof patch === 'string' && patch ? patch.slice(0, 200000) : undefined;
+};
+export async function argumentHint(file: string) {
+  if (!/\.md$/i.test(file)) return undefined;
+  try {
+    const handle = await fs.open(file, 'r');
+    try {
+      const buffer = Buffer.alloc(4096);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const head = buffer.subarray(0, bytesRead).toString('utf8');
+      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(head)?.[1];
+      const hint = front && /^argument-hint:\s*(.+)$/m.exec(front)?.[1].trim();
+      return hint ? hint.replace(/^(['"])(.*)\1$/, '$2').slice(0, 200) : undefined;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export const redact = (s: string) =>
   s
@@ -210,6 +233,7 @@ export class AgentService extends EventEmitter {
           r.tools.push(t);
         }
         t.output = output.split('\n').slice(-200).join('\n');
+        t.patch = toolPatch(record.result);
         t.status = record.isError ? 'error' : 'done';
         t.durationMs = record.durationMs ?? Date.now() - t.startedAt;
         this.fullOutput = (this.fullOutput + `\n\n[${t.name}] ${JSON.stringify(t.args)}\n${output}`).slice(
@@ -473,6 +497,7 @@ export class AgentService extends EventEmitter {
           output: messageText(m).split('\n').slice(-200).join('\n'),
           startedAt: m.timestamp ?? 0,
           durationMs: typeof m.durationMs === 'number' ? m.durationMs : undefined,
+          patch: toolPatch(m),
         }));
       this.fullOutput = this.runtime.messages
         .filter((m) => m.role === 'toolResult')
@@ -498,7 +523,9 @@ export class AgentService extends EventEmitter {
       const currentState = await rpc.request('get_state');
       this.runtime.model = displayModel(currentState.model);
       this.runtime.thinking = currentState.thinkingLevel;
-      const thinking = session.thinking ?? (resuming ? undefined : settings.thinking);
+      // New sessions use Pi's effective default (including project overrides).
+      // Only an existing session's own choice should override it.
+      const thinking = session.thinking;
       if (thinking && thinking !== this.runtime.thinking && this.runtime.thinkingLevels.includes(thinking)) {
         await rpc.request('set_thinking_level', { level: thinking });
         this.runtime.thinking = thinking;
@@ -654,6 +681,11 @@ export class AgentService extends EventEmitter {
         await rpc.request('set_thinking_level', { level });
         this.runtime.thinking = level;
       }
+      const config = new Configuration(this.store);
+      const document = await config.read(id, 'settings', false);
+      const values = JSON.parse(document.text);
+      values.defaultThinkingLevel = level;
+      await config.save(id, 'settings', false, { ...document, text: JSON.stringify(values) });
       session.thinking = level;
       this.store.state.settings.thinking = level;
       this.save();
@@ -745,8 +777,14 @@ export class AgentService extends EventEmitter {
   }
   private async refreshCapabilities() {
     if (!this.rpc || this.rpc.closed) return;
-    this.runtime.commands = ((await this.rpc.request('get_commands')).commands ?? []).filter(
-      (c: any) => c.name !== 'desktop-internal',
+    this.runtime.commands = await Promise.all(
+      ((await this.rpc.request('get_commands')).commands ?? [])
+        .filter((c: any) => c.name !== 'desktop-internal')
+        .map(async (c: any) =>
+          c.source === 'prompt' && c.sourceInfo?.path
+            ? { ...c, argumentHint: await argumentHint(c.sourceInfo.path) }
+            : c,
+        ),
     );
     this.runtime.models = ((await this.rpc.request('get_available_models')).models ?? [])
       .map(displayModel)

@@ -48,6 +48,7 @@ import {
   Info,
   TriangleAlert,
   Gauge,
+  Undo2,
 } from 'lucide-react';
 import { PiFeatures, builtinCommands } from './PiFeatures';
 import Markdown from 'react-markdown';
@@ -72,6 +73,7 @@ import {
   type ExtensionDialog,
   type ImageAttachment,
   type MessageAction,
+  type PiCommand,
   type PiSessionInfo,
   type SessionMatch,
 } from '../shared/types';
@@ -93,6 +95,13 @@ const statusNames: Record<string, string> = {
   stopped: '已停止',
   error: '执行失败',
   interrupted: '已中断',
+};
+const commandOrder = ['desktop', 'prompt', 'skill', 'extension'];
+const commandSourceNames: Record<string, string> = {
+  desktop: '桌面命令',
+  prompt: '提示词模板',
+  skill: 'Skills',
+  extension: '扩展命令',
 };
 const relativeTime = (value: number) => {
   const minutes = Math.round((Date.now() - value) / 60000);
@@ -342,6 +351,11 @@ function UserMessage({ text }: { text: string }) {
     return <RichText text={text} />;
   }
 }
+const patchLines = (patch: string) => {
+  const all = patch.split('\n');
+  const start = all.findIndex((l) => l.startsWith('@@'));
+  return (start < 0 ? all : all.slice(start)).filter((l) => !l.startsWith('\\ No newline'));
+};
 function ToolCard({
   tool,
   expanded,
@@ -354,6 +368,17 @@ function ToolCard({
   openFile: (p: string) => void;
 }) {
   const target = String(tool.args.path ?? tool.args.file_path ?? tool.args.command ?? '');
+  const shell = tool.name === 'bash' || tool.name === 'powershell';
+  const exitCode = shell
+    ? /(?:Command exited with code|exit code:?)\s*(-?\d+)/i.exec(tool.output)?.[1]
+    : undefined;
+  const lines = tool.patch ? patchLines(tool.patch) : [];
+  const added = lines.filter((l) => l.startsWith('+')).length,
+    removed = lines.filter((l) => l.startsWith('-')).length;
+  const written =
+    tool.name === 'write' && typeof tool.args.content === 'string'
+      ? String(tool.args.content).split('\n').length
+      : undefined;
   return (
     <details
       className={'tool-card ' + tool.status}
@@ -381,6 +406,17 @@ function ToolCard({
             )[tool.name] || tool.name}
           </strong>
           {target && <code title={target}>{target}</code>}
+          {tool.patch && (
+            <span className="line-delta">
+              <ins>+{added}</ins>
+              <del>−{removed}</del>
+            </span>
+          )}
+          {written !== undefined && tool.status === 'done' && !tool.patch && (
+            <span className="line-delta">
+              <ins>{written} 行</ins>
+            </span>
+          )}
         </span>
         <span className="tool-result">
           {tool.status === 'running' ? (
@@ -393,16 +429,43 @@ function ToolCard({
           {tool.status === 'running'
             ? '运行中'
             : tool.status === 'error'
-              ? '失败'
+              ? exitCode
+                ? `退出码 ${exitCode}`
+                : '失败'
               : `${((tool.durationMs ?? 0) / 1000).toFixed(1)}s`}
         </span>
         <ChevronDown size={13} />
       </summary>
       <div className="tool-body">
-        {Object.keys(tool.args).length > 0 && (
-          <pre className="arguments">{JSON.stringify(tool.args, null, 2)}</pre>
+        {tool.patch ? (
+          <pre className="diff-lines inline-diff">
+            {lines.map((l, i) => (
+              <div
+                key={i}
+                className={
+                  l.startsWith('+')
+                    ? 'added'
+                    : l.startsWith('-')
+                      ? 'removed'
+                      : l.startsWith('@@')
+                        ? 'hunk'
+                        : ''
+                }
+              >
+                {l || ' '}
+              </div>
+            ))}
+          </pre>
+        ) : (
+          <>
+            {Object.keys(tool.args).length > 0 && (
+              <pre className="arguments">
+                {shell ? String(tool.args.command ?? '') : JSON.stringify(tool.args, null, 2)}
+              </pre>
+            )}
+            <pre>{tool.output || '等待输出…'}</pre>
+          </>
         )}
-        <pre>{tool.output || '等待输出…'}</pre>
         <div className="tool-actions">
           {Boolean(tool.args.path) && (
             <button onClick={() => openFile(String(tool.args.path))}>
@@ -678,6 +741,33 @@ function ModelPicker({
         </div>
       )}
     </div>
+  );
+}
+function ReplyMeta({ message }: { message: Message }) {
+  const usage = message.usage as
+    | { input?: number; output?: number; cacheRead?: number; totalTokens?: number; cost?: { total?: number } }
+    | undefined;
+  const model = String(message.responseModel ?? message.model ?? '');
+  if (!usage?.totalTokens && !model) return null;
+  const cost = usage?.cost?.total;
+  return (
+    <span
+      className="reply-meta"
+      title={[
+        model && `模型：${message.provider ? message.provider + ' / ' : ''}${model}`,
+        message.thinkingLevel && `推理：${String(message.thinkingLevel)}`,
+        usage?.input !== undefined && `输入 ${usage.input.toLocaleString()} tokens`,
+        usage?.cacheRead ? `缓存命中 ${usage.cacheRead.toLocaleString()}` : '',
+        usage?.output !== undefined && `输出 ${usage.output.toLocaleString()} tokens`,
+        cost ? `费用 $${cost.toFixed(4)}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')}
+    >
+      {model && <span>{model}</span>}
+      {!!usage?.totalTokens && <span>{usage.totalTokens.toLocaleString()} tokens</span>}
+      {!!cost && <span>${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)}</span>}
+    </span>
   );
 }
 function ContextMeter({ stats, open }: { stats: NonNullable<Runtime['stats']>; open: () => void }) {
@@ -1001,6 +1091,7 @@ export default function App() {
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
+    commandList = useRef<HTMLDivElement>(null),
     autoScroll = useRef(true),
     previewGeneration = useRef(0),
     selectedRef = useRef<string | undefined>(undefined),
@@ -1018,16 +1109,42 @@ export default function App() {
   const lastAssistant = messages.findLast((m) => m.role === 'assistant');
   const actionsLocked = pending || running || !sessionEnabled;
   const visibleMessages = messages.slice(-messageLimit);
-  const commandQuery = /^\/([^\s]*)$/.exec(draft)?.[1];
+  const commandMatch = /^(\/\/?)([^\s]*)$/.exec(draft);
+  const commandQuery = commandMatch?.[2].toLowerCase();
+  const piOnly = commandMatch?.[1] === '//';
+  const allCommands: (PiCommand & { prefix: string })[] = [
+    ...(piOnly ? [] : builtinCommands.map((c) => ({ ...c, prefix: '/' }))),
+    ...runtime.commands.map((c) => ({
+      ...c,
+      prefix: piOnly || builtinCommands.some((b) => b.name === c.name) ? '//' : '/',
+    })),
+  ];
   const commandOptions =
     commandQuery !== undefined && !hideCommands
-      ? [
-          ...builtinCommands,
-          ...runtime.commands.filter((c) => !builtinCommands.some((b) => b.name === c.name)),
-        ]
-          .filter((c) => c.name.toLowerCase().startsWith(commandQuery.toLowerCase()))
-          .slice(0, 12)
+      ? allCommands
+          .filter(
+            (c) =>
+              c.name.toLowerCase().includes(commandQuery) ||
+              (commandQuery.length > 1 && (c.description ?? '').toLowerCase().includes(commandQuery)),
+          )
+          .sort(
+            (a, b) =>
+              commandOrder.indexOf(a.source) - commandOrder.indexOf(b.source) ||
+              Number(!a.name.toLowerCase().startsWith(commandQuery)) -
+                Number(!b.name.toLowerCase().startsWith(commandQuery)),
+          )
+          .slice(0, 40)
       : [];
+  const typedCommand = /^(\/\/?)(\S+)\s/.exec(draft);
+  const activeCommand =
+    typedCommand && !commandOptions.length
+      ? allCommands.find((c) => c.prefix === typedCommand[1] && c.name === typedCommand[2])
+      : undefined;
+  const completeCommand = (c: PiCommand & { prefix: string }) => {
+    persistDraft(c.prefix + c.name + ' ');
+    setHideCommands(true);
+    input.current?.focus();
+  };
   const patchLines = fileDiff?.patch.split('\n') ?? [];
   const diffLines = patchLines.slice(
     Math.max(
@@ -1264,6 +1381,9 @@ export default function App() {
       document.removeEventListener('keydown', escape);
     };
   }, [menuId]);
+  useEffect(() => {
+    commandList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [commandIndex]);
   const toasts = (runtime.notifications ?? []).filter(
     (n) => n.id > seenNotification && !dismissed.includes(n.id),
   );
@@ -1324,6 +1444,9 @@ export default function App() {
       if (await handleBuiltin(sent)) {
         await api.invoke('consumeDraft', selected.id, sent);
         setHideCommands(true);
+      } else if (/^\/\/\S/.test(sent)) {
+        await api.invoke('send', selected.id, sent.slice(1), attachments, sendMode, images);
+        await api.invoke('consumeDraft', selected.id, sent);
       } else await api.invoke('send', selected.id, sent, attachments, sendMode, images);
     });
     setPending(false);
@@ -1471,6 +1594,17 @@ export default function App() {
     await attempt(() => api.invoke('copy', value));
     setNotice(label);
   }
+  async function revert(only: string[] | null) {
+    if (!project) return;
+    await action(async () => {
+      const reverted = await api.invoke('revertChanges', project.id, only);
+      if (!reverted.length) return;
+      setNotice(`已撤销 ${reverted.length} 个文件的修改`);
+      setChanges(await api.invoke('changes', project.id, changeMode));
+      setSelectedFile('');
+      setFileDiff(undefined);
+    });
+  }
   async function messageAction(m: Message, kind: MessageAction) {
     if (!selected || !m.timestamp) return;
     await action(async () => {
@@ -1521,6 +1655,7 @@ export default function App() {
       output: messageText(message).split('\n').slice(-200).join('\n'),
       startedAt: message.timestamp ?? 0,
       durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
+      patch: typeof (message.details as any)?.patch === 'string' ? (message.details as any).patch : undefined,
     };
   };
   const renderSession = (s: Session) => (
@@ -1947,6 +2082,7 @@ export default function App() {
                       )}
                       <strong>{m.role === 'user' ? '你' : 'Pi'}</strong>
                       {m.timestamp && <time>{time(m.timestamp)}</time>}
+                      {m.role === 'assistant' && <ReplyMeta message={m} />}
                       <span className="message-actions">
                         <IconButton title="复制消息" onClick={() => void copy(content, '消息已复制')}>
                           <Copy size={13} />
@@ -2199,10 +2335,17 @@ export default function App() {
                         );
                         return;
                       }
-                      if (e.key === 'Tab') {
-                        e.preventDefault();
-                        persistDraft('/' + commandOptions[commandIndex]?.name + ' ');
-                        return;
+                      if (
+                        e.key === 'Tab' ||
+                        (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)
+                      ) {
+                        const picked = commandOptions[commandIndex];
+                        const exact = picked && draft === picked.prefix + picked.name;
+                        if (e.key === 'Tab' || !exact || picked.argumentHint) {
+                          e.preventDefault();
+                          if (picked) completeCommand(picked);
+                          return;
+                        }
                       }
                       if (e.key === 'Escape') {
                         e.preventDefault();
@@ -2222,23 +2365,42 @@ export default function App() {
                   }}
                 />
                 {!!commandOptions.length && (
-                  <div className="command-picker" role="listbox" aria-label="Pi 命令">
+                  <div className="command-picker" role="listbox" aria-label="Pi 命令" ref={commandList}>
                     {commandOptions.map((c, i) => (
-                      <button
-                        key={c.name}
-                        role="option"
-                        aria-selected={commandIndex === i}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          persistDraft('/' + c.name + ' ');
-                          input.current?.focus();
-                        }}
-                      >
-                        <code>/{c.name}</code>
-                        <span>{c.description || c.source}</span>
-                      </button>
+                      <div key={c.prefix + c.name} role="presentation">
+                        {(i === 0 || commandOptions[i - 1].source !== c.source) && (
+                          <div className="command-group">{commandSourceNames[c.source] ?? c.source}</div>
+                        )}
+                        <button
+                          role="option"
+                          aria-selected={commandIndex === i}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setCommandIndex(i)}
+                          onClick={() => completeCommand(c)}
+                        >
+                          <code>
+                            {c.prefix}
+                            {c.name}
+                          </code>
+                          {c.argumentHint && <em>{c.argumentHint}</em>}
+                          <span>{c.description || c.source}</span>
+                          {c.sourceInfo?.scope === 'project' && <i>项目</i>}
+                        </button>
+                      </div>
                     ))}
-                    <small>↑↓ 选择 · Tab 补全 · Enter 执行输入的命令</small>
+                    <small>
+                      ↑↓ 选择 · Tab / Enter 补全 · 与桌面命令同名的 Pi 命令用 <code>//</code> 调用
+                    </small>
+                  </div>
+                )}
+                {activeCommand && (activeCommand.argumentHint || activeCommand.description) && (
+                  <div className="command-hint" aria-live="polite">
+                    <code>
+                      {activeCommand.prefix}
+                      {activeCommand.name}
+                    </code>
+                    {activeCommand.argumentHint && <em>{activeCommand.argumentHint}</em>}
+                    <span>{activeCommand.description}</span>
                   </div>
                 )}
                 {fileQuery !== null && (
@@ -2490,6 +2652,17 @@ export default function App() {
                     >
                       <RefreshCw size={14} />
                     </IconButton>
+                    {changeMode === 'run' && changes?.baselineAvailable && !!changes.files.length && (
+                      <button
+                        className="revert-all"
+                        disabled={ownRunning || pending}
+                        title={ownRunning ? '执行中不能撤销' : '把本轮修改过的文件恢复到任务开始前'}
+                        onClick={() => void revert(null)}
+                      >
+                        <Undo2 size={13} />
+                        撤销本轮
+                      </button>
+                    )}
                   </div>
                   {!changes ? (
                     <div className="inspector-empty">
@@ -2594,10 +2767,20 @@ export default function App() {
                         </pre>
                       )}
                       <div className="preview-foot">
-                        <button onClick={() => void api.invoke('copy', selectedFile)}>
+                        <button onClick={() => void copy(selectedFile, '路径已复制')}>
                           <Copy size={12} />
                           路径
                         </button>
+                        {changeMode === 'run' && changes?.files.some((f) => f.path === selectedFile) && (
+                          <button
+                            className="danger"
+                            disabled={ownRunning || pending}
+                            onClick={() => void revert([selectedFile])}
+                          >
+                            <Undo2 size={12} />
+                            撤销此文件
+                          </button>
+                        )}
                         <button
                           onClick={() => {
                             persistDraft(`请检查 ${selectedFile} 的这处变更：`);

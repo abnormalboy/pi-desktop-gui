@@ -86,6 +86,7 @@ export interface ToolActivity {
   output: string;
   startedAt: number;
   durationMs?: number;
+  patch?: string;
 }
 export interface ExtensionDialog {
   id: string;
@@ -116,6 +117,7 @@ export interface PiCommand {
   description?: string;
   source: string;
   sourceInfo?: { path: string; scope?: string };
+  argumentHint?: string;
 }
 export interface TreeEntry {
   id: string;
@@ -284,6 +286,8 @@ export interface ApiMap {
   setSessionThinking: { args: [string, string]; result: void };
   messageAction: { args: [string, MessageAction, 'user' | 'assistant', number]; result: void };
   abortRetry: { args: []; result: void };
+  revertChanges: { args: [string, string[] | null]; result: string[] };
+  setEntryLabel: { args: [string, string, string]; result: void };
   saveDraft: { args: [string, string, string[], ImageAttachment[]?]; result: void };
   consumeDraft: { args: [string, string]; result: void };
   saveView: { args: [string, number, string[]]; result: void };

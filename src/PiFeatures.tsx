@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, GitBranch, Copy, Download, Share2, Terminal, FolderOpen, Plus } from 'lucide-react';
+import { RefreshCw, GitBranch, Copy, Download, Share2, Terminal, FolderOpen, Plus, Tag } from 'lucide-react';
 import type {
   ConfigDocument,
   ConfigKind,
@@ -11,6 +11,7 @@ import type {
 } from '../shared/types';
 import { busy } from '../shared/types';
 import { Modal } from './App';
+import { SettingsForm } from './SettingsForm';
 const api = window.desktop;
 export const builtinCommands = [
   ['new', '新建当前范围的对话'],
@@ -60,7 +61,8 @@ export function PiFeatures({
     [notice, setNotice] = useState('');
   const [tree, setTree] = useState<TreeEntry[]>([]),
     [filter, setFilter] = useState(''),
-    [allEntries, setAllEntries] = useState(false),
+    [treeMode, setTreeMode] = useState<'conversation' | 'user' | 'labeled' | 'all'>('conversation'),
+    [labeling, setLabeling] = useState<{ id: string; text: string }>(),
     [instructions, setInstructions] = useState(''),
     [summarize, setSummarize] = useState(false);
   const [catalog, setCatalog] = useState<ResourceCatalog>(),
@@ -76,7 +78,9 @@ export function PiFeatures({
       initialTab === 'mcp' ? 'mcp' : initialTab === 'providers' ? 'models' : 'settings',
     ),
     [document, setDocument] = useState<ConfigDocument>(),
-    [dirty, setDirty] = useState(false);
+    [jsonDirty, setDirty] = useState(false),
+    [formDirty, setFormDirty] = useState(false);
+  const dirty = jsonDirty || formDirty;
   const [providerId, setProviderId] = useState(''),
     [baseUrl, setBaseUrl] = useState(''),
     [apiType, setApiType] = useState('openai-completions'),
@@ -116,6 +120,7 @@ export function PiFeatures({
       setProviders(await api.invoke('providers', session.id));
     } else if (tab === 'mcp') await read('mcp');
     else if (tab === 'settings') await read();
+    else if (tab === 'prefs') return;
     else await api.invoke('connect', session.id);
   };
   useEffect(() => {
@@ -204,6 +209,7 @@ export function PiFeatures({
             ['resources', 'Skills 与扩展'],
             ['mcp', 'MCP 服务器'],
             ['providers', '供应商与登录'],
+            ['prefs', '常用设置'],
             ['settings', '完整 Pi 设置'],
             ['help', '命令与快捷键'],
           ].map(([id, title]) => (
@@ -391,14 +397,28 @@ export function PiFeatures({
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              <label className="option-row">
-                显示工具与元数据
-                <input
-                  type="checkbox"
-                  checked={allEntries}
-                  onChange={(e) => setAllEntries(e.target.checked)}
-                />
-              </label>
+              <div className="segmented" role="radiogroup" aria-label="会话树筛选">
+                {(
+                  [
+                    ['conversation', '对话'],
+                    ['user', '只看提问'],
+                    ['labeled', '有标签'],
+                    ['all', '全部记录'],
+                  ] as const
+                ).map(([id, title]) => (
+                  <button
+                    key={id}
+                    role="radio"
+                    aria-checked={treeMode === id}
+                    onClick={() => setTreeMode(id)}
+                  >
+                    {title}
+                    {id === 'labeled' && tree.some((e) => e.label) && (
+                      <span className="count">{tree.filter((e) => e.label).length}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
               <label className="option-row">
                 切换时总结离开的分支
                 <input type="checkbox" checked={summarize} onChange={(e) => setSummarize(e.target.checked)} />
@@ -416,19 +436,68 @@ export function PiFeatures({
                 {tree
                   .filter(
                     (e) =>
-                      (allEntries || ['user', 'assistant'].includes(e.role ?? '')) &&
-                      e.text.toLowerCase().includes(filter.toLowerCase()),
+                      (treeMode === 'all' ||
+                        (treeMode === 'labeled'
+                          ? !!e.label
+                          : treeMode === 'user'
+                            ? e.role === 'user'
+                            : ['user', 'assistant'].includes(e.role ?? '') || e.type === 'branch_summary')) &&
+                      (e.text + ' ' + (e.label ?? '')).toLowerCase().includes(filter.toLowerCase()),
                   )
                   .map((e) => (
                     <article
                       key={e.id}
-                      className={e.active ? 'active' : ''}
+                      className={(e.active ? 'active ' : '') + (e.role ?? e.type)}
                       style={{ marginLeft: Math.min(e.depth, 8) * 8 }}
                     >
                       <small>
-                        {e.role || e.type} {e.active ? '· 当前分支' : ''} {e.label}
+                        {{ user: '提问', assistant: '回复', toolResult: '工具结果' }[e.role ?? ''] ??
+                          ({ branch_summary: '分支总结', compaction: '压缩摘要' }[e.type] || e.type)}
+                        {e.active ? ' · 当前分支' : ''}
+                        {e.label && (
+                          <mark className="entry-label">
+                            <Tag size={11} />
+                            {e.label}
+                          </mark>
+                        )}
                       </small>
                       <p>{e.text}</p>
+                      {labeling?.id === e.id && (
+                        <form
+                          className="label-form"
+                          onSubmit={(ev) => {
+                            ev.preventDefault();
+                            void run(async () => {
+                              await api.invoke('setEntryLabel', session.id, e.id, labeling.text);
+                              setLabeling(undefined);
+                              setTree(await api.invoke('sessionTree', session.id));
+                            });
+                          }}
+                        >
+                          <input
+                            className="input"
+                            autoFocus
+                            aria-label="标签名称"
+                            maxLength={60}
+                            placeholder="例如：可用方案、回滚点（留空清除）"
+                            value={labeling.text}
+                            onChange={(ev) => setLabeling({ id: e.id, text: ev.target.value })}
+                            onKeyDown={(ev) => {
+                              if (ev.key === 'Escape') {
+                                ev.preventDefault();
+                                ev.stopPropagation();
+                                setLabeling(undefined);
+                              }
+                            }}
+                          />
+                          <button type="submit" className="primary" disabled={disabled}>
+                            保存
+                          </button>
+                          <button type="button" onClick={() => setLabeling(undefined)}>
+                            取消
+                          </button>
+                        </form>
+                      )}
                       <div className="button-row">
                         <button
                           disabled={disabled}
@@ -463,6 +532,13 @@ export function PiFeatures({
                             从这里分支
                           </button>
                         )}
+                        <button
+                          disabled={disabled}
+                          onClick={() => setLabeling({ id: e.id, text: e.label ?? '' })}
+                        >
+                          <Tag size={13} />
+                          {e.label ? '修改标签' : '加标签'}
+                        </button>
                       </div>
                     </article>
                   ))}
@@ -935,6 +1011,18 @@ export function PiFeatures({
                   </button>
                 ))}
               </div>
+            </>
+          )}
+          {tab === 'prefs' && (
+            <>
+              <h3>常用设置</h3>
+              <SettingsForm
+                session={session}
+                disabled={disabled}
+                run={run}
+                notify={setNotice}
+                dirtyChange={setFormDirty}
+              />
             </>
           )}
           {tab === 'settings' && (
