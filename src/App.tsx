@@ -41,6 +41,13 @@ import {
   Link2,
   ImagePlus,
   Command,
+  Pin,
+  PinOff,
+  History,
+  TextSearch,
+  Info,
+  TriangleAlert,
+  Gauge,
 } from 'lucide-react';
 import { PiFeatures, builtinCommands } from './PiFeatures';
 import Markdown from 'react-markdown';
@@ -64,6 +71,9 @@ import {
   type Settings,
   type ExtensionDialog,
   type ImageAttachment,
+  type MessageAction,
+  type PiSessionInfo,
+  type SessionMatch,
 } from '../shared/types';
 declare global {
   interface Window {
@@ -83,6 +93,14 @@ const statusNames: Record<string, string> = {
   stopped: '已停止',
   error: '执行失败',
   interrupted: '已中断',
+};
+const relativeTime = (value: number) => {
+  const minutes = Math.round((Date.now() - value) / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60 * 24) return `${Math.round(minutes / 60)} 小时前`;
+  if (minutes < 60 * 24 * 7) return `${Math.round(minutes / 1440)} 天前`;
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(value);
 };
 const time = (value: number) =>
   new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(value);
@@ -468,18 +486,420 @@ function FileTree({
     </div>
   );
 }
+const contextLabel = (n?: number) =>
+  !n ? '' : n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}K`;
+function ModelPicker({
+  runtime,
+  fallback,
+  locked,
+  canConnect,
+  connect,
+  pick,
+  setThinking,
+  manage,
+}: {
+  runtime: Runtime;
+  fallback: string;
+  locked: boolean;
+  canConnect: boolean;
+  connect: () => void;
+  pick: (key: string) => void;
+  setThinking: (level: string) => void;
+  manage: (target: 'providers' | 'settings') => void;
+}) {
+  const [open, setOpen] = useState(false),
+    [query, setQuery] = useState(''),
+    [index, setIndex] = useState(0);
+  const panel = useRef<HTMLDivElement>(null),
+    list = useRef<HTMLDivElement>(null);
+  const close = () => setOpen(false);
+  useFocusScope(panel, open, close);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: MouseEvent) => {
+      if (!panel.current?.parentElement?.contains(e.target as Node)) close();
+    };
+    document.addEventListener('mousedown', outside);
+    return () => document.removeEventListener('mousedown', outside);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [open, index]);
+  const current = runtime.model ? `${runtime.model.provider}::${runtime.model.id}` : '';
+  const q = query.trim().toLowerCase();
+  const models = runtime.models.filter((m) => `${m.provider} ${m.name} ${m.id}`.toLowerCase().includes(q));
+  const providers = [...new Set(models.map((m) => m.provider))];
+  const choose = (key: string) => {
+    if (key !== current) pick(key);
+    close();
+  };
+  return (
+    <div className="model-picker-anchor">
+      <button
+        className={'model-pill' + (open ? ' open' : '')}
+        onClick={() => {
+          setQuery('');
+          setIndex(
+            Math.max(
+              0,
+              runtime.models.findIndex((m) => `${m.provider}::${m.id}` === current),
+            ),
+          );
+          setOpen((v) => !v);
+          if (!open && canConnect && !runtime.connected) connect();
+        }}
+        title="选择模型"
+        aria-label="选择模型"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <span>{runtime.model?.name || fallback || '选择模型'}</span>
+        {runtime.thinking && runtime.thinking !== 'off' && <em>{runtime.thinking}</em>}
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div ref={panel} className="model-picker" role="dialog" aria-label="模型与推理级别">
+          <div className="model-search">
+            <Search size={14} />
+            <input
+              aria-label="搜索模型"
+              placeholder="搜索模型或供应商"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setIndex(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  if (models.length)
+                    setIndex((i) => (i + (e.key === 'ArrowDown' ? 1 : -1) + models.length) % models.length);
+                }
+                if (e.key === 'Enter' && models[index] && !locked) {
+                  e.preventDefault();
+                  choose(`${models[index].provider}::${models[index].id}`);
+                }
+              }}
+            />
+          </div>
+          <div className="model-list" role="listbox" aria-label="可用模型" ref={list}>
+            {!runtime.models.length ? (
+              <div className="model-empty">
+                {runtime.status === 'starting' ? (
+                  <>
+                    <LoaderCircle size={16} className="spin" />
+                    正在连接 Pi 读取模型…
+                  </>
+                ) : !runtime.connected ? (
+                  <>
+                    <p>
+                      {runtime.error ? `连接 Pi 失败：${runtime.error}` : '尚未连接 Pi，连接后可读取模型。'}
+                    </p>
+                    <button disabled={!canConnect} onClick={connect}>
+                      重新连接 Pi
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p>还没有可用模型。登录供应商或配置自定义模型后再试。</p>
+                    <button onClick={() => manage('providers')}>管理供应商与登录</button>
+                  </>
+                )}
+              </div>
+            ) : !models.length ? (
+              <p className="model-empty">没有匹配“{query}”的模型</p>
+            ) : (
+              providers.map((provider) => (
+                <div key={provider} role="group" aria-label={provider}>
+                  {providers.length > 1 || q ? <div className="model-group">{provider}</div> : null}
+                  {models
+                    .filter((m) => m.provider === provider)
+                    .map((m) => {
+                      const key = `${m.provider}::${m.id}`,
+                        i = models.indexOf(m);
+                      return (
+                        <button
+                          key={key}
+                          role="option"
+                          aria-selected={i === index}
+                          aria-current={key === current || undefined}
+                          disabled={locked}
+                          onMouseEnter={() => setIndex(i)}
+                          onClick={() => choose(key)}
+                        >
+                          <span className="model-name">
+                            {m.name || m.id}
+                            {m.name && m.name !== m.id && <small>{m.id}</small>}
+                          </span>
+                          <span className="model-tags">
+                            {m.reasoning && <i>推理</i>}
+                            {m.input?.includes('image') && <i>图片</i>}
+                            {m.contextWindow ? <i>{contextLabel(m.contextWindow)}</i> : null}
+                          </span>
+                          {key === current ? <Check size={15} /> : <span className="check-space" />}
+                        </button>
+                      );
+                    })}
+                </div>
+              ))
+            )}
+          </div>
+          {runtime.thinkingLevels.length > 0 && (
+            <div className="thinking-row">
+              <span>推理级别</span>
+              <div role="radiogroup" aria-label="推理级别">
+                {runtime.thinkingLevels.map((level) => (
+                  <button
+                    key={level}
+                    role="radio"
+                    aria-checked={runtime.thinking === level}
+                    disabled={locked}
+                    onClick={() => level !== runtime.thinking && setThinking(level)}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="model-picker-foot">
+            {locked ? <span>执行中，结束后可切换</span> : <span>切换后从下一条消息生效</span>}
+            <button
+              onClick={() => {
+                close();
+                manage('settings');
+              }}
+            >
+              连接设置
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function ContextMeter({ stats, open }: { stats: NonNullable<Runtime['stats']>; open: () => void }) {
+  const percent = stats.contextPercent;
+  const level = percent === undefined ? '' : percent >= 85 ? 'high' : percent >= 60 ? 'mid' : '';
+  return (
+    <button
+      className={'context-meter ' + level}
+      onClick={open}
+      title={
+        (percent !== undefined && stats.contextTokens && stats.contextWindow
+          ? `上下文 ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} tokens\n`
+          : '') +
+        `累计 ${stats.tokens?.toLocaleString() ?? 0} tokens` +
+        (stats.cost ? ` · $${stats.cost.toFixed(4)}` : '') +
+        '\n点击查看会话与上下文'
+      }
+    >
+      {percent !== undefined && (
+        <>
+          <span className="meter" aria-hidden="true">
+            <i style={{ width: Math.min(100, percent) + '%' }} />
+          </span>
+          <span>上下文 {Math.round(percent)}%</span>
+        </>
+      )}
+      <span>{(stats.tokens ?? 0).toLocaleString()} tokens</span>
+      {!!stats.cost && <span>${stats.cost < 0.01 ? stats.cost.toFixed(4) : stats.cost.toFixed(2)}</span>}
+    </button>
+  );
+}
+function QuickSwitch({
+  state,
+  query,
+  setQuery,
+  close,
+  select,
+  openFile,
+}: {
+  state: AppState;
+  query: string;
+  setQuery: (v: string) => void;
+  close: () => void;
+  select: (s: Session) => void;
+  openFile: (file: string) => void;
+}) {
+  const [scope, setScope] = useState<'desktop' | 'pi'>('desktop'),
+    [matches, setMatches] = useState<SessionMatch[]>([]),
+    [external, setExternal] = useState<PiSessionInfo[] | undefined>(),
+    [index, setIndex] = useState(0);
+  const list = useRef<HTMLDivElement>(null);
+  const q = query.trim().toLowerCase();
+  const projectName = (id?: string) => state.projects.find((p) => p.id === id)?.name ?? '独立对话';
+  useEffect(() => {
+    if (scope !== 'desktop' || q.length < 2) {
+      setMatches([]);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      void api
+        .invoke('searchSessions', q)
+        .then((v) => alive && setMatches(v))
+        .catch(() => {});
+    }, 200);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [q, scope]);
+  useEffect(() => {
+    if (scope === 'pi' && !external)
+      void api
+        .invoke('piSessions')
+        .then(setExternal)
+        .catch(() => setExternal([]));
+  }, [scope]);
+  useEffect(() => setIndex(0), [q, scope]);
+  useEffect(() => {
+    list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [index]);
+  const titleHits = state.sessions
+    .filter((s) => (s.title + ' ' + projectName(s.projectId)).toLowerCase().includes(q))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const contentHits = matches.filter((m) => !titleHits.some((s) => s.id === m.sessionId));
+  const rows: {
+    key: string;
+    icon: ReactNode;
+    title: string;
+    meta: string;
+    snippet?: string;
+    run: () => void;
+  }[] =
+    scope === 'desktop'
+      ? [
+          ...titleHits.map((s) => ({
+            key: s.id,
+            icon: s.pinned ? <Pin size={15} /> : <MessageSquare size={15} />,
+            title: s.title,
+            meta: projectName(s.projectId) + ' · ' + relativeTime(s.updatedAt),
+            run: () => select(s),
+          })),
+          ...contentHits.flatMap((m) => {
+            const s = state.sessions.find((x) => x.id === m.sessionId);
+            return s
+              ? [
+                  {
+                    key: 'c' + s.id,
+                    icon: <TextSearch size={15} />,
+                    title: s.title,
+                    meta: projectName(s.projectId) + ' · 内容匹配',
+                    snippet: m.snippet,
+                    run: () => select(s),
+                  },
+                ]
+              : [];
+          }),
+        ]
+      : (external ?? [])
+          .filter((x) => `${x.name ?? ''} ${x.preview} ${x.cwd}`.toLowerCase().includes(q))
+          .map((x) => ({
+            key: x.file,
+            icon: <History size={15} />,
+            title: x.name || x.preview || '未命名会话',
+            meta: x.cwd + ' · ' + relativeTime(x.updatedAt),
+            snippet: x.name ? x.preview : undefined,
+            run: () => openFile(x.file),
+          }));
+  return (
+    <Modal title="快速切换" subtitle="搜索会话标题与内容 · Ctrl K" close={close}>
+      <div className="modal-body quick-switch">
+        <div className="search-input">
+          <Search size={18} />
+          <input
+            autoFocus
+            aria-label="搜索项目和会话"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (rows.length)
+                  setIndex((i) => (i + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length);
+              }
+              if (e.key === 'Enter' && rows[index]) {
+                e.preventDefault();
+                rows[index].run();
+              }
+            }}
+            placeholder={scope === 'desktop' ? '会话名称、项目或消息内容…' : '搜索 Pi 保存的历史会话…'}
+          />
+        </div>
+        <div className="scope-tabs" role="tablist">
+          <button role="tab" aria-selected={scope === 'desktop'} onClick={() => setScope('desktop')}>
+            桌面会话
+          </button>
+          <button role="tab" aria-selected={scope === 'pi'} onClick={() => setScope('pi')}>
+            Pi 历史会话
+          </button>
+        </div>
+        <div className="search-results" role="listbox" aria-label="搜索结果" ref={list}>
+          {scope === 'pi' && !external ? (
+            <p className="empty-small">
+              <LoaderCircle size={14} className="spin" /> 正在读取 Pi 会话目录…
+            </p>
+          ) : !rows.length ? (
+            <p className="empty-small">
+              {scope === 'pi'
+                ? '没有未打开过的 Pi 会话。在终端里用 pi 创建的会话会出现在这里。'
+                : q.length === 1
+                  ? '输入至少两个字可搜索消息内容'
+                  : '没有匹配的会话'}
+            </p>
+          ) : (
+            rows.map((r, i) => (
+              <button
+                key={r.key}
+                role="option"
+                aria-selected={i === index}
+                onMouseEnter={() => setIndex(i)}
+                onClick={r.run}
+              >
+                {r.icon}
+                <span>
+                  {r.title}
+                  <small>{r.meta}</small>
+                  {r.snippet && <em>{r.snippet}</em>}
+                </span>
+                <ChevronRight size={15} />
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
 function ExtensionPrompt({
   request,
+  remaining,
   respond,
 }: {
   request: ExtensionDialog;
+  remaining: number;
   respond: (values: { value?: string; confirmed?: boolean; cancelled?: boolean }) => void;
 }) {
   const [value, setValue] = useState(request.prefill ?? request.options?.[0] ?? '');
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!request.expiresAt) return;
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [request.expiresAt]);
+  const left = request.expiresAt ? Math.max(0, Math.ceil((request.expiresAt - now) / 1000)) : undefined;
   return (
     <Modal
       title={request.title || 'Pi 需要你的输入'}
-      subtitle={request.expiresAt ? '此请求有时间限制，过期后会自动关闭' : '来自当前 Pi 会话'}
+      subtitle={
+        (left !== undefined ? `${left} 秒后自动关闭` : '来自当前 Pi 会话') +
+        (remaining > 0 ? ` · 之后还有 ${remaining} 个问题` : '')
+      }
       close={() => respond({ cancelled: true })}
     >
       <div className="modal-body">
@@ -571,6 +991,9 @@ export default function App() {
     [searchQuery, setSearchQuery] = useState(''),
     [rename, setRename] = useState<{ kind: 'project' | 'session'; id: string; name: string }>(),
     [menuId, setMenuId] = useState('');
+  const [seenNotification, setSeenNotification] = useState(Number.MAX_SAFE_INTEGER),
+    [dismissed, setDismissed] = useState<number[]>([]),
+    [, setTick] = useState(0);
   const [testResult, setTestResult] = useState(''),
     [diagnostic, setDiagnostic] = useState(''),
     [elapsed, setElapsed] = useState(0);
@@ -592,6 +1015,8 @@ export default function App() {
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
   const messages = ownRuntime ? runtime.messages : history;
+  const lastAssistant = messages.findLast((m) => m.role === 'assistant');
+  const actionsLocked = pending || running || !sessionEnabled;
   const visibleMessages = messages.slice(-messageLimit);
   const commandQuery = /^\/([^\s]*)$/.exec(draft)?.[1];
   const commandOptions =
@@ -823,6 +1248,41 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [notice]);
+  useEffect(() => {
+    if (!menuId) return;
+    const outside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.context-menu') && !target.closest('[aria-expanded="true"]')) setMenuId('');
+    };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuId('');
+    };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [menuId]);
+  const toasts = (runtime.notifications ?? []).filter(
+    (n) => n.id > seenNotification && !dismissed.includes(n.id),
+  );
+  useEffect(() => {
+    const timers = toasts
+      .filter((n) => n.level !== 'error')
+      .map((n) =>
+        setTimeout(() => setDismissed((v) => [...v, n.id].slice(-20)), n.level === 'warning' ? 9000 : 5000),
+      );
+    return () => timers.forEach(clearTimeout);
+  }, [toasts.map((n) => n.id).join(',')]);
+  useEffect(() => {
+    setSeenNotification(Math.max(0, ...(runtime.notifications ?? []).map((n) => n.id)));
+  }, [runtime.sessionId]);
+  useEffect(() => {
+    if (runtime.status !== 'retrying' || !runtime.retry) return;
+    const timer = setInterval(() => setTick((v) => v + 1), 500);
+    return () => clearInterval(timer);
+  }, [runtime.status, runtime.retry?.startedAt]);
   const persistDraft = (value: string, files = attachments, pictures = images) => {
     setDraft(value);
     setAttachments(files);
@@ -980,6 +1440,7 @@ export default function App() {
   }
   async function connect() {
     if (!selected) return;
+    setError('');
     await action(() => api.invoke('connect', selected.id));
   }
   async function chooseSettingPath(kind: 'pi' | 'node' | 'agent' | 'editor') {
@@ -996,12 +1457,31 @@ export default function App() {
       );
   }
   async function setModel(key: string) {
+    if (!selected) return;
     const [provider, modelId] = key.split('::');
-    setPrefs((prev) => (prev ? { ...prev, provider, modelId, thinking: '' } : prev));
+    setPrefs((prev) => (prev ? { ...prev, provider, modelId } : prev));
+    await action(() => api.invoke('setSessionModel', selected.id, provider, modelId));
+  }
+  async function setThinking(thinking: string) {
+    if (!selected) return;
+    setPrefs((prev) => (prev ? { ...prev, thinking } : prev));
+    await action(() => api.invoke('setSessionThinking', selected.id, thinking));
+  }
+  async function copy(value: string, label = '已复制') {
+    await attempt(() => api.invoke('copy', value));
+    setNotice(label);
+  }
+  async function messageAction(m: Message, kind: MessageAction) {
+    if (!selected || !m.timestamp) return;
     await action(async () => {
-      await api.invoke('saveSettings', { provider, modelId, thinking: '' });
-      if (selected) await api.invoke('connect', selected.id);
+      await api.invoke('messageAction', selected.id, kind, m.role as 'user' | 'assistant', m.timestamp!);
+      if (kind === 'edit') {
+        setNotice('已回到这条消息之前，修改后发送即可；原内容保留在会话树中');
+        focusComposer();
+      }
+      if (kind === 'fork') setNotice('已从这条消息创建分支会话');
     });
+    autoScroll.current = true;
   }
   async function inspectFile(name: string, mode: typeof tab = tab) {
     if (!project) return;
@@ -1044,25 +1524,88 @@ export default function App() {
     };
   };
   const renderSession = (s: Session) => (
-    <div className={'session-row ' + (s.id === selected?.id ? 'active' : '')} key={s.id}>
+    <div
+      className={
+        'session-row ' + (s.id === selected?.id ? 'active' : '') + (menuId === s.id ? ' menu-open' : '')
+      }
+      key={s.id}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuId(s.id);
+      }}
+    >
       <button
         title={s.title}
         aria-current={s.id === selected?.id ? 'page' : undefined}
         onClick={() => void selectSession(s)}
       >
-        <MessageSquare size={14} />
+        {s.pinned ? <Pin size={14} className="pin-icon" /> : <MessageSquare size={14} />}
         <span>{s.title}</span>
         {s.unread && <i className="unread" />}
         {s.id === runtime.sessionId && running && <LoaderCircle size={12} className="spin" />}
       </button>
       <IconButton
-        title={`重命名 ${s.title}`}
-        onClick={() => setRename({ kind: 'session', id: s.id, name: s.title })}
+        title={`${s.title} 会话操作`}
+        expanded={menuId === s.id}
+        onClick={() => setMenuId(menuId === s.id ? '' : s.id)}
       >
-        <Pencil size={12} />
+        <MoreHorizontal size={14} />
       </IconButton>
+      {menuId === s.id && (
+        <div className="context-menu" role="menu">
+          <button
+            role="menuitem"
+            onClick={() => {
+              setMenuId('');
+              void attempt(() => api.invoke('pinSession', s.id, !s.pinned));
+            }}
+          >
+            {s.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+            {s.pinned ? '取消置顶' : '置顶'}
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setMenuId('');
+              setRename({ kind: 'session', id: s.id, name: s.title });
+            }}
+          >
+            <Pencil size={14} />
+            重命名
+          </button>
+          <button
+            role="menuitem"
+            disabled={!s.file}
+            onClick={() => {
+              setMenuId('');
+              void attempt(async () => {
+                const file = await api.invoke('exportSession', s.id, 'html');
+                if (file) setNotice('已导出到 ' + file);
+              });
+            }}
+          >
+            <Download size={14} />
+            导出 HTML
+          </button>
+          <button
+            role="menuitem"
+            className="danger"
+            onClick={() => {
+              setMenuId('');
+              void attempt(async () => {
+                if (await api.invoke('deleteSession', s.id)) setNotice('会话已移到回收站');
+              });
+            }}
+          >
+            <Trash2 size={14} />
+            删除
+          </button>
+        </div>
+      )}
     </div>
   );
+  const bySidebarOrder = (a: Session, b: Session) =>
+    Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt;
   if (!state)
     return (
       <main className="loading-screen">
@@ -1102,7 +1645,7 @@ export default function App() {
           <div className="session-list standalone-sessions" aria-label="独立对话">
             {state.sessions
               .filter((s) => !s.projectId)
-              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .sort(bySidebarOrder)
               .map(renderSession)}
             {!state.sessions.some((s) => !s.projectId) && (
               <p className="sidebar-empty">随时开始，无需打开项目。</p>
@@ -1134,6 +1677,7 @@ export default function App() {
                 </IconButton>
                 <IconButton
                   title={`${p.name} 项目操作`}
+                  expanded={menuId === p.id}
                   onClick={() => setMenuId(menuId === p.id ? '' : p.id)}
                 >
                   <MoreHorizontal size={15} />
@@ -1160,6 +1704,7 @@ export default function App() {
                     导入 Pi 会话
                   </button>
                   <button
+                    className="danger"
                     onClick={() => {
                       void attempt(() => api.invoke('removeProject', p.id));
                       setMenuId('');
@@ -1174,7 +1719,7 @@ export default function App() {
                 <div className="session-list">
                   {state.sessions
                     .filter((s) => s.projectId === p.id)
-                    .sort((a, b) => b.updatedAt - a.updatedAt)
+                    .sort(bySidebarOrder)
                     .map(renderSession)}
                 </div>
               )}
@@ -1298,38 +1843,40 @@ export default function App() {
                   {!project ? (
                     <div className="suggestions">
                       {[
-                        ['解释概念', '帮我解释一个概念：'],
-                        ['整理思路', '帮我梳理一下这个想法：'],
-                        ['一起写作', '和我一起打磨这段文字：'],
-                      ].map(([label, prompt]) => (
+                        ['解释概念', '帮我解释一个概念：', '从直觉讲到细节，配上例子'],
+                        ['整理思路', '帮我梳理一下这个想法：', '把零散的想法理成结构'],
+                        ['一起写作', '和我一起打磨这段文字：', '改稿、润色或换个语气'],
+                      ].map(([label, prompt, hint]) => (
                         <button
                           key={label}
+                          aria-label={label}
                           onClick={() => {
                             persistDraft(prompt);
                             focusComposer();
                           }}
                         >
                           <span>{label}</span>
-                          <ChevronRight size={15} />
+                          <small>{hint}</small>
                         </button>
                       ))}
                     </div>
                   ) : (
                     <div className="suggestions">
                       {[
-                        ['理解项目', '梳理这个项目的结构、运行方式和主要模块。'],
-                        ['修复问题', '帮我定位并修复一个问题：'],
-                        ['补充测试', '检查项目中缺少测试的关键逻辑，先给出建议。'],
-                      ].map(([label, prompt]) => (
+                        ['理解项目', '梳理这个项目的结构、运行方式和主要模块。', '结构、运行方式和主要模块'],
+                        ['修复问题', '帮我定位并修复一个问题：', '描述现象，Pi 定位并修改'],
+                        ['补充测试', '检查项目中缺少测试的关键逻辑，先给出建议。', '找出缺少测试的关键逻辑'],
+                      ].map(([label, prompt, hint]) => (
                         <button
                           key={label}
+                          aria-label={label}
                           onClick={() => {
                             persistDraft(prompt);
                             input.current?.focus();
                           }}
                         >
                           <span>{label}</span>
-                          <ChevronRight size={15} />
+                          <small>{hint}</small>
                         </button>
                       ))}
                     </div>
@@ -1383,7 +1930,11 @@ export default function App() {
                   !content &&
                   !m.errorMessage &&
                   typeof m.content !== 'string' &&
-                  !m.content.some((b) => b.type === 'thinking' && b.thinking)
+                  !m.content.some(
+                    (b) =>
+                      (b.type === 'thinking' && b.thinking) ||
+                      (ownRunning && typeof b.partialJson === 'string'),
+                  )
                 )
                   return null;
                 return (
@@ -1396,9 +1947,38 @@ export default function App() {
                       )}
                       <strong>{m.role === 'user' ? '你' : 'Pi'}</strong>
                       {m.timestamp && <time>{time(m.timestamp)}</time>}
-                      <IconButton title="复制消息" onClick={() => void api.invoke('copy', content)}>
-                        <Copy size={13} />
-                      </IconButton>
+                      <span className="message-actions">
+                        <IconButton title="复制消息" onClick={() => void copy(content, '消息已复制')}>
+                          <Copy size={13} />
+                        </IconButton>
+                        {m.role === 'user' && m.timestamp && (
+                          <>
+                            <IconButton
+                              title="编辑后重新发送"
+                              disabled={actionsLocked}
+                              onClick={() => void messageAction(m, 'edit')}
+                            >
+                              <Pencil size={13} />
+                            </IconButton>
+                            <IconButton
+                              title="从这里分支到新会话"
+                              disabled={actionsLocked}
+                              onClick={() => void messageAction(m, 'fork')}
+                            >
+                              <GitBranch size={13} />
+                            </IconButton>
+                          </>
+                        )}
+                        {m.role === 'assistant' && m.timestamp && m === lastAssistant && (
+                          <IconButton
+                            title="重新生成这条回复"
+                            disabled={actionsLocked}
+                            onClick={() => void messageAction(m, 'regenerate')}
+                          >
+                            <RefreshCw size={13} />
+                          </IconButton>
+                        )}
+                      </span>
                     </div>
                     <div className="message-content">
                       {typeof m.content !== 'string' &&
@@ -1421,6 +2001,22 @@ export default function App() {
                       ) : null}
                       {m.errorMessage && <p className="inline-error">{m.errorMessage}</p>}
                       <MessageImages message={m} />
+                      {ownRunning &&
+                        typeof m.content !== 'string' &&
+                        m.content
+                          .filter(
+                            (b) =>
+                              b.type === 'toolCall' &&
+                              typeof b.partialJson === 'string' &&
+                              !runtime.tools.some((t) => t.id === b.id),
+                          )
+                          .map((b) => (
+                            <div className="tool-drafting" key={String(b.id)}>
+                              <LoaderCircle size={13} className="spin" />
+                              <strong>正在准备 {String(b.name ?? '工具')}</strong>
+                              <code>{String(b.partialJson).slice(-160) || '…'}</code>
+                            </div>
+                          ))}
                     </div>
                   </article>
                 );
@@ -1467,6 +2063,19 @@ export default function App() {
                   <IconButton title="关闭错误提示" onClick={() => setError('')}>
                     <X size={14} />
                   </IconButton>
+                </div>
+              )}
+              {ownRuntime && runtime.status === 'retrying' && runtime.retry && (
+                <div className="retry-banner" role="status">
+                  <RefreshCw size={14} className="spin" />
+                  <span>
+                    第 {runtime.retry.attempt}/{runtime.retry.maxAttempts} 次重试
+                    {runtime.retry.delayMs > 0 &&
+                      Date.now() < runtime.retry.startedAt + runtime.retry.delayMs &&
+                      `，${Math.ceil((runtime.retry.startedAt + runtime.retry.delayMs - Date.now()) / 1000)} 秒后开始`}
+                    {runtime.retry.error && <small>{runtime.retry.error}</small>}
+                  </span>
+                  <button onClick={() => void attempt(() => api.invoke('abortRetry'))}>取消重试</button>
                 </div>
               )}
               {ownRuntime && runtime.error && runtime.error !== error && (
@@ -1679,15 +2288,18 @@ export default function App() {
                         <Paperclip size={17} />
                       </IconButton>
                     )}
-                    <button
-                      className="model-pill"
-                      onClick={() => openSettings('models')}
-                      title="选择模型"
-                      aria-label="选择模型"
-                    >
-                      <span>{runtime.model?.name || state.settings.modelId || '选择模型'}</span>
-                      <ChevronDown size={12} />
-                    </button>
+                    <ModelPicker
+                      runtime={ownRuntime ? runtime : { ...runtime, connected: false }}
+                      fallback={state.settings.modelId}
+                      locked={running || pending}
+                      canConnect={sessionEnabled && !running && !pending}
+                      connect={() => void connect()}
+                      pick={(key) => void setModel(key)}
+                      setThinking={(level) => void setThinking(level)}
+                      manage={(target) =>
+                        target === 'providers' ? setFeatureTab('providers') : openSettings('models')
+                      }
+                    />
                   </div>
                   <div>
                     {ownRunning ? (
@@ -1780,9 +2392,11 @@ export default function App() {
                         : 'Enter 发送 · Shift+Enter 换行。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。'
                     }
                   >
-                    {ownRuntime && runtime.stats?.tokens
-                      ? `${runtime.stats.tokens.toLocaleString()} tokens`
-                      : 'Shift + Enter 换行'}
+                    {ownRuntime && runtime.stats?.tokens ? (
+                      <ContextMeter stats={runtime.stats} open={() => setFeatureTab('session')} />
+                    ) : (
+                      'Shift + Enter 换行'
+                    )}
                   </span>
                 )}
               </div>
@@ -2078,45 +2692,46 @@ export default function App() {
           )}
         </div>
       </main>
-      {notice && (
-        <div className="toast" role="status">
-          <CheckCircle2 size={16} />
-          {notice}
+      {(notice || toasts.length > 0) && (
+        <div className="toast-stack" aria-live="polite">
+          {toasts.map((n) => (
+            <div className={'toast ' + n.level} role={n.level === 'error' ? 'alert' : 'status'} key={n.id}>
+              {n.level === 'error' ? (
+                <AlertCircle size={16} />
+              ) : n.level === 'warning' ? (
+                <TriangleAlert size={16} />
+              ) : (
+                <Info size={16} />
+              )}
+              <span>{n.text}</span>
+              <IconButton title="关闭通知" onClick={() => setDismissed((v) => [...v, n.id].slice(-20))}>
+                <X size={13} />
+              </IconButton>
+            </div>
+          ))}
+          {notice && (
+            <div className="toast" role="status">
+              <CheckCircle2 size={16} />
+              <span>{notice}</span>
+            </div>
+          )}
         </div>
       )}
       {searchOpen && (
-        <Modal title="快速切换" subtitle="搜索项目和会话 · Ctrl K" close={() => setSearchOpen(false)}>
-          <div className="modal-body">
-            <div className="search-input">
-              <Search size={18} />
-              <input
-                autoFocus
-                aria-label="搜索项目和会话"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="输入项目或会话名称…"
-              />
-            </div>
-            <div className="search-results">
-              {state.sessions
-                .filter((s) =>
-                  (s.title + ' ' + (state.projects.find((p) => p.id === s.projectId)?.name ?? '独立对话'))
-                    .toLowerCase()
-                    .includes(searchQuery.toLowerCase()),
-                )
-                .map((s) => (
-                  <button key={s.id} onClick={() => void selectSession(s)}>
-                    <MessageSquare size={16} />
-                    <span>
-                      {s.title}
-                      <small>{state.projects.find((p) => p.id === s.projectId)?.name ?? '独立对话'}</small>
-                    </span>
-                    <ChevronRight size={15} />
-                  </button>
-                ))}
-            </div>
-          </div>
-        </Modal>
+        <QuickSwitch
+          state={state}
+          query={searchQuery}
+          setQuery={setSearchQuery}
+          close={() => setSearchOpen(false)}
+          select={(s) => void selectSession(s)}
+          openFile={(file) =>
+            void attempt(async () => {
+              const s = await api.invoke('openPiSession', file);
+              setSearchOpen(false);
+              await selectSession(s);
+            })
+          }
+        />
       )}
       {rename && (
         <Modal
@@ -2311,14 +2926,7 @@ export default function App() {
                     aria-label="推理级别"
                     disabled={!runtime.thinkingLevels.length || running || pending}
                     value={runtime.thinking || ''}
-                    onChange={(e) =>
-                      void action(async () => {
-                        const thinking = e.target.value;
-                        setPrefs((prev) => (prev ? { ...prev, thinking } : prev));
-                        await api.invoke('saveSettings', { thinking });
-                        if (selected) await api.invoke('connect', selected.id);
-                      })
-                    }
+                    onChange={(e) => void setThinking(e.target.value)}
                   >
                     {runtime.thinkingLevels.length ? (
                       runtime.thinkingLevels.map((v) => <option key={v}>{v}</option>)
@@ -2534,6 +3142,7 @@ export default function App() {
         <ExtensionPrompt
           key={runtime.dialogs[0].id}
           request={runtime.dialogs[0]}
+          remaining={runtime.dialogs.length - 1}
           respond={(v) => void attempt(() => api.invoke('respond', runtime.dialogs[0].id, v))}
         />
       )}

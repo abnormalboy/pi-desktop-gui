@@ -10,7 +10,8 @@ import { Workspace, listDirectory, allFiles, previewFile, safePath } from './wor
 import { detectEnvironment, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
 import { validateImages } from './images';
-import { busy, emptyRuntime, type AppEvent, type ApiMap } from '../shared/types';
+import { listPiSessions, searchSessionContents } from './history';
+import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
 let quitting = false;
@@ -37,6 +38,38 @@ function strings(value: unknown): asserts value is string[] {
 }
 async function newSession(projectId?: string) {
   const s = store.createSession(projectId);
+  await save();
+  return s;
+}
+function sessionRoots() {
+  return [path.join(agentDirectory(store.state.settings), 'sessions'), path.join(store.dir, 'sessions')];
+}
+async function adoptSessionFile(file: string, projectId?: string) {
+  const existing = store.state.sessions.find(
+    (s) => s.file && path.resolve(s.file).toLowerCase() === path.resolve(file).toLowerCase(),
+  );
+  if (existing) {
+    store.selectSession(existing.id);
+    await save();
+    return existing;
+  }
+  const data = await readSessionFile(file);
+  const cwd = await fs.realpath(data.cwd).catch(() => data.cwd);
+  const p = projectId
+    ? store.project(projectId)
+    : store.state.projects.find((p) => p.path.toLowerCase() === cwd.toLowerCase());
+  if (projectId && cwd.toLowerCase() !== p!.path.toLowerCase())
+    throw new Error('会话工作目录与当前项目不一致，请先添加对应项目');
+  const s = store.createSession(p?.id);
+  if (!p) s.cwd = cwd;
+  s.file = file;
+  s.title =
+    data.name ||
+    messageText(data.messages.find((m) => m.role === 'user') ?? { content: '' })
+      .trim()
+      .split('\n')[0]
+      .slice(0, 28) ||
+    path.basename(file, '.jsonl');
   await save();
   return s;
 }
@@ -202,18 +235,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const p = projectId ? store.project(projectId) : undefined;
     const file = await chooseFile('导入 Pi 会话', [{ name: 'Pi 会话', extensions: ['jsonl'] }]);
     if (!file) return null;
-    const data = await readSessionFile(file);
-    const cwd = await fs.realpath(data.cwd);
-    if (p && cwd.toLowerCase() !== p.path.toLowerCase())
-      throw new Error('会话工作目录与当前项目不一致，请先添加对应项目');
-    const existing = store.state.sessions.find((s) => s.file === file);
-    if (existing) return existing;
-    const s = await newSession(projectId);
-    if (!p) s.cwd = cwd;
-    s.file = file;
-    s.title = data.name || path.basename(file, '.jsonl');
-    await save();
-    return s;
+    return adoptSessionFile(file, p?.id);
   },
   selectSession: async (id) => {
     text(id, 100);
@@ -234,6 +256,89 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.rename(id, name.trim());
     await save();
   },
+  deleteSession: async (id) => {
+    text(id, 100);
+    const s = store.session(id);
+    if (service.runtime.sessionId === id && busy(service.runtime.status))
+      throw new Error('请先停止这个会话的任务');
+    const result = await dialog.showMessageBox(window!, {
+      type: 'warning',
+      message: `删除会话“${s.title}”？`,
+      detail: s.file ? 'Pi 会话文件会移到回收站，可从回收站恢复。' : '这个会话还没有内容，将直接移除。',
+      buttons: ['取消', '删除'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (result.response !== 1) return false;
+    if (service.runtime.sessionId === id) {
+      await service.disconnect();
+      service.runtime = emptyRuntime();
+      service.publish(true);
+    }
+    if (s.file) {
+      const exists = await fs.lstat(s.file).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return false;
+          throw error;
+        },
+      );
+      if (exists) await shell.trashItem(s.file);
+    }
+    store.state.sessions = store.state.sessions.filter((x) => x.id !== id);
+    if (store.state.selectedSessionId === id) {
+      const next =
+        store.state.sessions.find((x) => x.projectId === s.projectId) ??
+        store.state.sessions.find((x) => !x.projectId) ??
+        store.createSession();
+      store.selectSession(next.id);
+    }
+    await save();
+    return true;
+  },
+  pinSession: async (id, pinned) => {
+    text(id, 100);
+    store.session(id).pinned = pinned === true;
+    await save();
+  },
+  searchSessions: async (query) => {
+    text(query, 200);
+    return searchSessionContents(store.state.sessions, query);
+  },
+  piSessions: async () => {
+    const known = new Set(
+      store.state.sessions.filter((s) => s.file).map((s) => path.resolve(s.file!).toLowerCase()),
+    );
+    return listPiSessions(sessionRoots(), known);
+  },
+  openPiSession: async (file) => {
+    text(file, 4096);
+    const resolved = path.resolve(file);
+    const inside = sessionRoots().some((root) => {
+      const relative = path.relative(root, resolved);
+      return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+    });
+    if (!inside || !resolved.endsWith('.jsonl')) throw new Error('只能打开 Pi 会话目录中的会话');
+    return adoptSessionFile(resolved);
+  },
+  setSessionModel: async (id, provider, modelId) => {
+    text(id, 100);
+    text(provider, 200);
+    text(modelId, 400);
+    await service.setModel(id, provider, modelId);
+  },
+  setSessionThinking: async (id, level) => {
+    text(id, 100);
+    text(level, 40);
+    await service.setThinking(id, level);
+  },
+  messageAction: async (id, action, role, timestamp) => {
+    text(id, 100);
+    if (!['edit', 'regenerate', 'fork'].includes(action)) throw new Error('消息操作无效');
+    if (!['user', 'assistant'].includes(role) || !Number.isFinite(timestamp)) throw new Error('消息无效');
+    await service.messageAction(id, action, role, timestamp);
+  },
+  abortRetry: () => service.abortRetry(),
   saveDraft: async (id, draft, attachments, images) => {
     text(id, 100);
     text(draft);
@@ -291,7 +396,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   saveSettings: async (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置格式无效');
-    const engineKeys = ['piPath', 'nodePath', 'agentDir', 'provider', 'modelId', 'thinking'];
+    const engineKeys = ['piPath', 'nodePath', 'agentDir'];
     if (
       Object.keys(value).some(
         (k) =>
@@ -754,6 +859,11 @@ else {
             'logout',
             'configSave',
             'openPiTerminal',
+            'deleteSession',
+            'openPiSession',
+            'setSessionModel',
+            'setSessionThinking',
+            'messageAction',
           ].includes(method);
           if (engineOperation) {
             if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');

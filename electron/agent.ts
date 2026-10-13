@@ -18,6 +18,8 @@ import {
   type Model,
   type ImageAttachment,
   type TreeEntry,
+  type MessageAction,
+  type RuntimeNotification,
 } from '../shared/types';
 import { validateImages } from './images';
 
@@ -54,6 +56,7 @@ export class AgentService extends EventEmitter {
   private probing = false;
   private stopEpoch = 0;
   private queuedImages: { text: string; images: ImageAttachment[] }[] = [];
+  private notificationId = 0;
   constructor(
     readonly store: Store,
     readonly workspace: Workspace,
@@ -107,6 +110,11 @@ export class AgentService extends EventEmitter {
     this.runtime.diagnostic = this.runtime.diagnostic.slice(-100);
     this.publish();
   }
+  private notify(text: string, level: RuntimeNotification['level'] = 'info') {
+    const r = this.runtime;
+    r.notices.push(text);
+    r.notifications = [...(r.notifications ?? []), { id: ++this.notificationId, text, level }].slice(-5);
+  }
   private clearDialogs() {
     for (const timer of this.dialogTimers.values()) clearTimeout(timer);
     this.dialogTimers.clear();
@@ -153,6 +161,12 @@ export class AgentService extends EventEmitter {
           m.content[i].thinking = (m.content[i].thinking ?? '') + (e.delta ?? '');
         }
         if (e.type === 'thinking_end') m.content[i] = { type: 'thinking', thinking: e.content ?? '' };
+        if (e.type === 'toolcall_start')
+          m.content[i] = { type: 'toolCall', id: e.id, name: e.toolName, arguments: {}, partialJson: '' };
+        if (e.type === 'toolcall_delta' && m.content[i]?.type === 'toolCall')
+          m.content[i].partialJson = (String(m.content[i].partialJson ?? '') + (e.delta ?? '')).slice(
+            -200000,
+          );
         if (e.type === 'toolcall_end') m.content[i] = e.toolCall;
         break;
       }
@@ -212,19 +226,28 @@ export class AgentService extends EventEmitter {
         if (!this.stopRequested) this.status('compacting');
         break;
       case 'compaction_end':
-        if (record.errorMessage) r.notices.push(record.errorMessage);
+        if (record.errorMessage) this.notify(`上下文压缩失败：${record.errorMessage}`, 'warning');
         if (!this.stopRequested)
           this.status(record.reason === 'manual' && !record.willRetry ? 'idle' : 'running');
         break;
       case 'auto_retry_start':
         r.notices.push(`正在重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`);
+        r.retry = {
+          attempt: record.attempt,
+          maxAttempts: record.maxAttempts,
+          delayMs: record.delayMs ?? 0,
+          startedAt: Date.now(),
+          error: record.errorMessage,
+        };
         if (!this.stopRequested) this.status('retrying');
         break;
       case 'auto_retry_end':
+        r.retry = undefined;
         if (!record.success) r.error = record.finalError;
         if (!this.stopRequested) this.status('running');
         break;
       case 'agent_settled': {
+        r.retry = undefined;
         if (this.stopRequested) break;
         const last = r.messages.findLast((m) => m.role === 'assistant');
         const failed = last?.stopReason === 'error';
@@ -248,7 +271,7 @@ export class AgentService extends EventEmitter {
         r.thinking = record.level;
         break;
       case 'extension_error':
-        r.notices.push(`扩展错误：${record.error}`);
+        this.notify(`扩展错误：${record.error}`, 'error');
         break;
       case 'extension_ui_request':
         this.extension(record);
@@ -275,7 +298,11 @@ export class AgentService extends EventEmitter {
             this.publish(true);
           }, record.timeout),
         );
-    } else if (record.method === 'notify') r.notices.push(String(record.message ?? ''));
+    } else if (record.method === 'notify')
+      this.notify(
+        String(record.message ?? ''),
+        record.notifyType === 'error' ? 'error' : record.notifyType === 'warning' ? 'warning' : 'info',
+      );
     else if (record.method === 'setStatus') {
       if (record.statusText) r.statuses[record.statusKey] = record.statusText;
       else delete r.statuses[record.statusKey];
@@ -287,7 +314,7 @@ export class AgentService extends EventEmitter {
       this.store.session(r.sessionId).draft = String(record.text ?? '');
       this.save();
     } else if (record.method === 'setTitle') r.title = String(record.title ?? 'Pi Desktop');
-    else r.notices.push(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`);
+    else this.notify(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`, 'warning');
   }
   async respond(id: string, values: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
     const d = this.runtime.dialogs.find((d) => d.id === id);
@@ -327,6 +354,8 @@ export class AgentService extends EventEmitter {
             tokens: stats.tokens?.total ?? stats.totalTokens,
             cost: stats.cost ?? stats.totalCost,
             contextPercent: stats.contextUsage?.percent,
+            contextTokens: stats.contextUsage?.tokens,
+            contextWindow: stats.contextUsage?.contextWindow,
           };
       } catch {}
     }
@@ -339,6 +368,7 @@ export class AgentService extends EventEmitter {
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
       project = session.projectId ? this.store.project(session.projectId) : undefined;
+    const resuming = Boolean(session.file);
     if (project && !project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
     if (busy(this.runtime.status) && this.runtime.sessionId !== sessionId)
       throw new Error('另一个会话正在运行，请先停止或等待完成');
@@ -453,28 +483,33 @@ export class AgentService extends EventEmitter {
         .map(displayModel)
         .filter(Boolean);
       const settings = this.store.state.settings;
+      const wanted =
+        session.model ?? (resuming ? undefined : { provider: settings.provider, id: settings.modelId });
       if (
-        settings.provider &&
-        settings.modelId &&
-        this.runtime.models.some((m) => m.provider === settings.provider && m.id === settings.modelId)
+        wanted?.provider &&
+        wanted.id &&
+        this.runtime.models.some((m) => m.provider === wanted.provider && m.id === wanted.id)
       ) {
         this.runtime.model = displayModel(
-          await rpc.request('set_model', {
-            provider: settings.provider,
-            modelId: settings.modelId,
-          }),
+          await rpc.request('set_model', { provider: wanted.provider, modelId: wanted.id }),
         );
       }
-      const levels = await rpc.request('get_available_thinking_levels');
-      this.runtime.thinkingLevels =
-        levels.levels ?? levels.thinkingLevels ?? (Array.isArray(levels) ? levels : []);
-      if (settings.thinking && this.runtime.thinkingLevels.includes(settings.thinking)) {
-        const result = await rpc.request('set_thinking_level', { level: settings.thinking });
-        this.runtime.thinking = result?.level ?? settings.thinking;
+      await this.loadThinkingLevels(rpc);
+      const currentState = await rpc.request('get_state');
+      this.runtime.model = displayModel(currentState.model);
+      this.runtime.thinking = currentState.thinkingLevel;
+      const thinking = session.thinking ?? (resuming ? undefined : settings.thinking);
+      if (thinking && thinking !== this.runtime.thinking && this.runtime.thinkingLevels.includes(thinking)) {
+        await rpc.request('set_thinking_level', { level: thinking });
+        this.runtime.thinking = thinking;
       }
       this.runtime.connected = true;
       this.status('idle');
       await this.refreshCapabilities();
+      session.model = this.runtime.model
+        ? { provider: this.runtime.model.provider, id: this.runtime.model.id }
+        : undefined;
+      session.thinking = this.runtime.thinking;
       this.save();
     } catch (e) {
       this.runtime.error = errorText(e);
@@ -580,6 +615,100 @@ export class AgentService extends EventEmitter {
         throw e;
       }
     });
+  }
+  private async loadThinkingLevels(rpc: PiRpc) {
+    const levels = await rpc.request('get_available_thinking_levels');
+    this.runtime.thinkingLevels =
+      levels.levels ?? levels.thinkingLevels ?? (Array.isArray(levels) ? levels : []);
+  }
+  setModel(id: string, provider: string, modelId: string) {
+    return this.exclusive(async () => {
+      const session = this.store.session(id);
+      if (this.runtime.sessionId === id && busy(this.runtime.status))
+        throw new Error('执行中不能切换模型，请等待本轮结束');
+      const rpc = this.rpc;
+      if (rpc && !rpc.closed && this.runtime.sessionId === id) {
+        if (!this.runtime.models.some((m) => m.provider === provider && m.id === modelId))
+          throw new Error('该模型当前不可用，请刷新模型列表');
+        this.runtime.model = displayModel(await rpc.request('set_model', { provider, modelId }));
+        await this.loadThinkingLevels(rpc);
+        const state = await rpc.request('get_state');
+        this.runtime.thinking = state.thinkingLevel;
+        session.thinking = state.thinkingLevel;
+      }
+      session.model = { provider, id: modelId };
+      this.store.state.settings.provider = provider;
+      this.store.state.settings.modelId = modelId;
+      this.save();
+      this.publish(true);
+    });
+  }
+  setThinking(id: string, level: string) {
+    return this.exclusive(async () => {
+      const session = this.store.session(id);
+      if (this.runtime.sessionId === id && busy(this.runtime.status))
+        throw new Error('执行中不能切换推理级别，请等待本轮结束');
+      const rpc = this.rpc;
+      if (rpc && !rpc.closed && this.runtime.sessionId === id) {
+        if (!this.runtime.thinkingLevels.includes(level)) throw new Error('当前模型不支持这个推理级别');
+        await rpc.request('set_thinking_level', { level });
+        this.runtime.thinking = level;
+      }
+      session.thinking = level;
+      this.store.state.settings.thinking = level;
+      this.save();
+      this.publish(true);
+    });
+  }
+  async abortRetry() {
+    if (!this.rpc || this.rpc.closed || !this.runtime.retry) return;
+    await this.rpc.request('abort_retry');
+    this.runtime.retry = undefined;
+    this.publish(true);
+  }
+  private async entryFor(rpc: PiRpc, role: string, timestamp: number) {
+    const { entries = [], leafId } = await rpc.request('get_entries');
+    const byId = new Map<string, any>(entries.map((e: any) => [e.id, e]));
+    const branch: any[] = [];
+    for (let e = byId.get(leafId); e; e = e.parentId ? byId.get(e.parentId) : undefined) branch.push(e);
+    const index = branch.findIndex(
+      (e) => e.type === 'message' && e.message?.role === role && e.message?.timestamp === timestamp,
+    );
+    if (index < 0) throw new Error('这条消息不在当前分支上，请在会话树中切换后再试');
+    const userIndex =
+      role === 'user' ? index : branch.findIndex((e, i) => i > index && e.message?.role === 'user');
+    if (userIndex < 0) throw new Error('找不到这条回复对应的提问');
+    return branch[userIndex];
+  }
+  async messageAction(id: string, action: MessageAction, role: string, timestamp: number) {
+    if (action === 'fork') {
+      const entry = await this.idleTask(id, (rpc) => this.entryFor(rpc, role, timestamp));
+      return this.branch(id, 'fork', entry.id);
+    }
+    const restored = await this.idleTask(id, async (rpc) => {
+      const entry = await this.entryFor(rpc, role, timestamp);
+      const content = entry.message.content;
+      const text = typeof content === 'string' ? content : messageText(entry.message);
+      const images: ImageAttachment[] = (Array.isArray(content) ? content : [])
+        .filter((b: any) => b.type === 'image' && typeof b.data === 'string')
+        .map((b: any, i: number) => ({
+          id: randomUUID(),
+          name: `历史图片 ${i + 1}`,
+          data: b.data,
+          mimeType: b.mimeType,
+        }));
+      const result = await rpc.bridge('navigate', { entryId: entry.id, summarize: false, instructions: '' });
+      if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+      return { text, images };
+    });
+    const session = this.store.session(id);
+    if (action === 'regenerate') return this.send(id, restored.text, [], 'steer', restored.images);
+    const cut = restored.text.indexOf('\n\n<project_file path=');
+    session.draft = cut >= 0 ? restored.text.slice(0, cut) : restored.text;
+    session.attachments = [];
+    session.images = restored.images;
+    await this.store.save();
+    this.emit('state', this.store.state);
   }
   async clearQueue() {
     if (!this.rpc || this.rpc.closed) return;

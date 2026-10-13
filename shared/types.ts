@@ -32,6 +32,9 @@ export interface Session {
   scrollTop?: number;
   expandedTools?: string[];
   unread?: boolean;
+  pinned?: boolean;
+  model?: { provider: string; id: string };
+  thinking?: string;
 }
 export interface Settings {
   piPath: string;
@@ -167,7 +170,15 @@ export interface Runtime {
   error?: string;
   startedAt?: number;
   connected: boolean;
-  stats?: { tokens?: number; cost?: number; contextPercent?: number };
+  stats?: {
+    tokens?: number;
+    cost?: number;
+    contextPercent?: number;
+    contextTokens?: number;
+    contextWindow?: number;
+  };
+  notifications?: RuntimeNotification[];
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; startedAt: number; error?: string };
   diagnostic: string[];
   stopStartedAt?: number;
   commands: PiCommand[];
@@ -180,6 +191,23 @@ export interface Runtime {
   steeringMode?: string;
   followUpMode?: string;
 }
+export interface RuntimeNotification {
+  id: number;
+  text: string;
+  level: 'info' | 'warning' | 'error';
+}
+export interface PiSessionInfo {
+  file: string;
+  name?: string;
+  cwd: string;
+  preview: string;
+  updatedAt: number;
+}
+export interface SessionMatch {
+  sessionId: string;
+  snippet: string;
+}
+export type MessageAction = 'edit' | 'regenerate' | 'fork';
 export interface Environment {
   piPath: string;
   version?: string;
@@ -247,6 +275,15 @@ export interface ApiMap {
   importSession: { args: [projectId?: string]; result: Session | null };
   selectSession: { args: [string]; result: Message[] };
   renameSession: { args: [string, string]; result: void };
+  deleteSession: { args: [string]; result: boolean };
+  pinSession: { args: [string, boolean]; result: void };
+  searchSessions: { args: [string]; result: SessionMatch[] };
+  piSessions: { args: []; result: PiSessionInfo[] };
+  openPiSession: { args: [string]; result: Session };
+  setSessionModel: { args: [string, string, string]; result: void };
+  setSessionThinking: { args: [string, string]; result: void };
+  messageAction: { args: [string, MessageAction, 'user' | 'assistant', number]; result: void };
+  abortRetry: { args: []; result: void };
   saveDraft: { args: [string, string, string[], ImageAttachment[]?]; result: void };
   consumeDraft: { args: [string, string]; result: void };
   saveView: { args: [string, number, string[]]; result: void };

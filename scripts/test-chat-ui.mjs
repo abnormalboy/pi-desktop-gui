@@ -10,6 +10,18 @@ fixture.store.state.projects = [];
 fixture.store.state.sessions = [];
 delete fixture.store.state.selectedProjectId;
 delete fixture.store.state.selectedSessionId;
+const piPath = fixture.store.state.settings.piPath;
+fixture.store.state.settings.piPath = path.join(fixture.dir, 'missing-pi.js');
+const modelsPath = path.join(fixture.agentDir, 'models.json');
+const modelConfig = JSON.parse(await fs.readFile(modelsPath, 'utf8'));
+const baseModel = modelConfig.providers['local-e2e'].models[0];
+const extraModels = Array.from({ length: 24 }, (_, i) => ({
+  ...baseModel,
+  id: `local-e2e-${i}`,
+  name: `滚动测试模型 ${i}`,
+}));
+modelConfig.providers['local-e2e'].models.push(...extraModels);
+await fs.writeFile(modelsPath, JSON.stringify(modelConfig));
 await fixture.store.save();
 const output = path.resolve('test-results');
 await fs.mkdir(output, { recursive: true });
@@ -49,7 +61,55 @@ try {
   await page.screenshot({ path: path.join(output, 'standalone-empty.png'), animations: 'disabled' });
 
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
-  await page.getByRole('dialog').getByRole('button', { name: '连接 Pi', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: '模型与推理级别' });
+  await picker.getByText(/^连接 Pi 失败：/).waitFor();
+  assert.equal(await picker.locator('.spin').count(), 0);
+  await page.evaluate((value) => window.desktop.invoke('saveSettings', { piPath: value }), piPath);
+  await picker.getByRole('button', { name: '重新连接 Pi', exact: true }).click();
+  await picker.getByText('正在连接 Pi 读取模型…', { exact: true }).waitFor();
+  await picker
+    .getByRole('option', { name: /local-e2e/ })
+    .first()
+    .waitFor({ timeout: 25000 });
+  const search = picker.getByRole('textbox', { name: '搜索模型' });
+  const lastModel = extraModels.at(-1);
+  await search.fill(lastModel.id);
+  await search.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
+  assert.equal(await picker.isVisible(), true, 'IME confirmation must keep the model picker open');
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'state.json'), 'utf8')).settings.modelId,
+    baseModel.id,
+    'IME confirmation must not change the model',
+  );
+  await search.press('Enter');
+  await picker.waitFor({ state: 'detached' });
+  await waitForSaved((state) => state.settings.modelId === lastModel.id);
+  await page.waitForFunction(
+    (name) => document.querySelector('.model-pill > span')?.textContent === name,
+    lastModel.name,
+  );
+  const currentModelVisible = () => {
+    const list = document.querySelector('.model-list');
+    const current = list?.querySelector('[aria-current="true"]');
+    if (!list || !current) return false;
+    const bounds = list.getBoundingClientRect(),
+      selected = current.getBoundingClientRect();
+    return selected.top >= bounds.top - 1 && selected.bottom <= bounds.bottom + 1;
+  };
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await page.waitForFunction(currentModelVisible);
+  await search.press('Escape');
+  await picker.waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await page.waitForFunction(currentModelVisible);
+  await search.fill(baseModel.name);
+  await search.press('Enter');
+  await picker.waitFor({ state: 'detached' });
+  await waitForSaved((state) => state.settings.modelId === baseModel.id);
+  await page.locator('.run-meta .status.idle').waitFor({ timeout: 25000 });
+  console.log('PASS model picker connection failure/retry, IME confirmation and reopen scroll');
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await picker.getByRole('button', { name: '连接设置', exact: true }).click();
   await page.getByRole('combobox', { name: '选择模型', exact: true }).waitFor({ state: 'visible' });
   await page.waitForFunction(
     () => document.querySelector('select[aria-label="选择模型"]')?.value === 'local-e2e::local-e2e',
@@ -91,10 +151,19 @@ try {
   console.log('PASS fresh startup, model selection/probe, send, Ctrl+N, separate histories and restart');
 
   await page.keyboard.press('Control+k');
-  await page.getByRole('textbox', { name: '搜索项目和会话' }).fill('第二条独立对话');
+  const sessionSearch = page.getByRole('textbox', { name: '搜索项目和会话' });
+  await sessionSearch.fill('第二条独立对话');
+  await page.getByRole('option', { name: /第二条独立对话/ }).waitFor();
+  await sessionSearch.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true });
+  assert.equal(await page.getByRole('dialog', { name: '快速切换' }).isVisible(), true);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'state.json'), 'utf8')).selectedSessionId,
+    first.id,
+    'IME confirmation must not switch the selected session',
+  );
   await page
     .locator('.search-results')
-    .getByRole('button', { name: /第二条独立对话/ })
+    .getByRole('option', { name: /第二条独立对话/ })
     .click();
   await page.getByRole('heading', { level: 1, name: '第二条独立对话' }).waitFor();
   // Native picker is supplied a temporary test project; no user folders or settings are touched.
@@ -121,6 +190,27 @@ try {
   assert.equal(await page.locator('.project-group .session-row').count(), 2);
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 3);
   console.log('PASS standalone search, global new chat from project, project creation and trust retained');
+
+  const saved = await waitForSaved((state) =>
+    state.sessions.some((session) => session.title === '第二条独立对话'),
+  );
+  const missingFileSession = saved.sessions.find((session) => session.title === '第二条独立对话');
+  assert.ok(missingFileSession.file);
+  const sessionFile = path.resolve(missingFileSession.file);
+  const sessionDirectory = path.resolve(fixture.dataDir, 'sessions');
+  assert.equal(path.dirname(sessionFile), sessionDirectory, 'only remove the isolated test session file');
+  await fs.unlink(sessionFile);
+  await app.evaluate(({ dialog }) => {
+    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+  });
+  await page.getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true }).click();
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+  await waitForSaved((state) => !state.sessions.some((session) => session.id === missingFileSession.id));
+  await page
+    .getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true })
+    .waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.standalone-sessions .session-row').count(), 2);
+  console.log('PASS IME session search and deletion after the session file is missing');
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'chat-ui-result.json'),
@@ -131,12 +221,17 @@ try {
         checks: [
           'zero-project startup',
           'model picker and connection probe',
+          'model picker connection failure and retry',
+          'model picker IME confirmation',
+          'model picker current model visible after reopening',
           'plain @ text',
           'real Pi response with tools available',
           'Ctrl+N',
           'independent histories',
           'draft/history restart',
           'search',
+          'session search IME confirmation',
+          'delete session with missing history file',
           'global new chat',
           'project new session',
           'project trust retained',
