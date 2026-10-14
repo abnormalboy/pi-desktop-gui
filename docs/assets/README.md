@@ -7,7 +7,7 @@
 | [hero-banner.png](hero-banner.png) | README 首屏品牌海报 | 约 16:9 横版 |
 | [architecture-bridge.png](architecture-bridge.png) | 本机 GUI 与 Pi CLI 通信关系 | 约 16:9 横版 |
 | [features-bento.png](features-bento.png) | 六项能力的卡片概览 | 约 16:9 横版 |
-| [logo.png](logo.png) | README 顶部 π 图标 | 1:1，图标外透明 |
+| [logo.png](logo.png) | 早期 README π 图标，保留为历史素材 | 1:1，图标外透明 |
 
 ## 使用说明
 
@@ -16,7 +16,7 @@
 - 架构图省略了 Electron 内部 IPC 和桌面适配扩展，重点表示 GUI 通过本机 stdio 上的 Pi RPC（JSONL）驱动 CLI。它不表示标准 JSON-RPC 2.0。
 - 图中的模型服务、MCP 服务表示可连接的资源；模型和 MCP 可以部署在本机或远程，联网情况取决于用户配置。“Local Workspace”不表示离线推理或系统沙箱。
 - 图中的 Undo 指受运行基线支持的文件撤销，不表示撤销命令造成的外部操作。
-- `logo.png` 用于 README 品牌展示；应用打包仍使用 `build/` 内的图标。
+- v0.6.1 起 README 顶部与应用统一使用 `build/` 内的新图标；原图及生成提示词见 `build/icon-source-v2.png` 和 `build/icon-source-v2.prompt.txt`。`logo.png` 保留为历史素材。
 - 修改能力标签时，同步更新 README 的文字说明与图片 alt，确保图片无法显示时仍能了解产品。
 
 ## 生成提示词

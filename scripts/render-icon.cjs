@@ -1,36 +1,37 @@
-// Render the repository-owned SVG with Electron, then wrap the PNG in an ICO.
-const { app, BrowserWindow } = require('electron');
+// Export the approved source artwork for runtime and platform packaging.
+const { app, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 app.disableHardwareAcceleration();
 app
   .whenReady()
   .then(async () => {
-    const win = new BrowserWindow({
-      width: 256,
-      height: 256,
-      show: false,
-      frame: false,
-      transparent: true,
-      webPreferences: { offscreen: true },
-    });
-    const svg = fs.readFileSync(path.resolve('build/icon.svg'), 'utf8');
-    await win.loadURL(
-      'data:text/html,' +
-        encodeURIComponent('<body style="margin:0;background:transparent">' + svg + '</body>'),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const icon = (await win.webContents.capturePage()).resize({ width: 256, height: 256 }).toPNG();
-    fs.writeFileSync(path.resolve('build/icon.png'), icon);
-    const header = Buffer.alloc(22);
+    const buildDir = path.resolve(__dirname, '..', 'build');
+    const source = nativeImage.createFromPath(path.join(buildDir, 'icon-source-v2.png'));
+    const { width, height } = source.getSize();
+    if (source.isEmpty() || width !== 1024 || height !== 1024)
+      throw new Error('图标原图必须是可读取的 1024 × 1024 PNG：build/icon-source-v2.png');
+    const pngAt = (size) => source.resize({ width: size, height: size, quality: 'best' }).toPNG();
+    fs.writeFileSync(path.join(buildDir, 'icon.png'), pngAt(256));
+    fs.writeFileSync(path.join(buildDir, 'icon-mac.png'), source.toPNG());
+
+    const sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+    const frames = sizes.map(pngAt);
+    const header = Buffer.alloc(6 + sizes.length * 16);
     header.writeUInt16LE(1, 2);
-    header.writeUInt16LE(1, 4);
-    header.writeUInt16LE(1, 10);
-    header.writeUInt16LE(32, 12);
-    header.writeUInt32LE(icon.length, 14);
-    header.writeUInt32LE(22, 18);
-    fs.writeFileSync(path.resolve('build/icon.ico'), Buffer.concat([header, icon]));
-    win.destroy();
+    header.writeUInt16LE(sizes.length, 4);
+    let offset = header.length;
+    sizes.forEach((size, index) => {
+      const entry = 6 + index * 16;
+      header[entry] = header[entry + 1] = size === 256 ? 0 : size;
+      header.writeUInt16LE(1, entry + 4);
+      header.writeUInt16LE(32, entry + 6);
+      header.writeUInt32LE(frames[index].length, entry + 8);
+      header.writeUInt32LE(offset, entry + 12);
+      offset += frames[index].length;
+    });
+    fs.writeFileSync(path.join(buildDir, 'icon.ico'), Buffer.concat([header, ...frames]));
+    console.log(`已生成窗口 PNG、macOS/Linux PNG 和 ${sizes.length} 种尺寸的 Windows ICO。`);
     app.quit();
   })
   .catch((error) => {

@@ -1,0 +1,6 @@
+Generator: built-in imagegen
+Output: icon-source-v2.png, 1024 x 1024 PNG
+The generated artwork was exported at the requested size with Electron nativeImage.
+
+Final generation prompt:
+Use case: logo-brand. Asset type: production desktop app icon source artwork, one icon only, exactly 1024x1024 pixels, square composition. Design a flagship desktop app icon (1024x1024, full-bleed square) for an AI coding desktop app named "Pi Desktop". Core Symbol: A bold, geometric, modern Greek letter π (Pi) integrated cleverly with a subtle terminal prompt/cursor motif (>_), centered and large so it remains ultra-crisp even at 16x16 taskbar size. Color & Material: Deep obsidian-emerald gradient background (#132a23 to #2d5a49) with a crisp, subtle bright mint-silver inner border rim light so it stands out sharply against dark Windows taskbars and macOS docks. The central π symbol is rendered in luminous warm white (#ffffff) with a subtle emerald glow and clean 3D tactile depth. Style: Raycast / Linear / Zed / macOS Sequoia app icon style, minimalist, no tiny details, no text other than the π symbol, clean solid background. Deliver the icon artwork itself filling the square canvas, not a mockup or presentation. Keep the π as the clear dominant silhouette, the terminal motif subtle and integrated rather than extra lettering. No caption, no watermark, no extra objects.

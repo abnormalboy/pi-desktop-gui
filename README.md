@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="96" height="96" alt="Pi Desktop：森林绿 π 图标" />
+<img src="build/icon-mac.png" width="96" height="96" alt="Pi Desktop：翡翠绿 π 与终端光标图标" />
 
 # Pi Desktop
 
@@ -192,8 +192,11 @@ npm run build            # TypeScript 类型检查 + 生产环境构建
 npm test                 # 运行核心单元测试
 npm run test:integration # 运行 Pi RPC 与工具链集成测试
 npm run test:ui          # 运行 Playwright + Electron 端到端桌面交互测试
+npm run icons            # 从 1024 × 1024 原图重新导出各平台图标（在桌面环境执行）
 npm run package          # 打包当前操作系统的发行安装包 (输出至 release/)
 ```
+
+应用图标原图为 `build/icon-source-v2.png`，生成提示词保存在同目录的 `.prompt.txt` 文件中。运行 `npm run icons` 后一并提交 `icon.png`、`icon-mac.png`、`icon.ico`；CI 直接使用这些文件打包。
 
 ### GitHub 自动构建与发布
 

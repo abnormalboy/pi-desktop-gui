@@ -304,29 +304,31 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   return <span className="muted">[图片：{alt || '附件'}]</span>;
 }
 function MessageImages({ message }: { message: Message }) {
+  const images =
+    typeof message.content === 'string'
+      ? []
+      : message.content.filter(
+          (b) =>
+            b.type === 'image' &&
+            typeof b.data === 'string' &&
+            ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(b.mimeType)),
+        );
+  if (!images.length) return null;
   return (
     <div className="message-images">
-      {typeof message.content !== 'string' &&
-        message.content
-          .filter(
-            (b) =>
-              b.type === 'image' &&
-              typeof b.data === 'string' &&
-              ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(b.mimeType)),
-          )
-          .map((b, i) => (
-            <button
-              key={i}
-              className="image-preview"
-              onClick={(e) => e.currentTarget.classList.toggle('expanded-image')}
-            >
-              <img
-                className="message-image"
-                src={`data:${b.mimeType};base64,${b.data}`}
-                alt={`附件图片 ${i + 1}`}
-              />
-            </button>
-          ))}
+      {images.map((b, i) => (
+        <button
+          key={i}
+          className="image-preview"
+          onClick={(e) => e.currentTarget.classList.toggle('expanded-image')}
+        >
+          <img
+            className="message-image"
+            src={`data:${b.mimeType};base64,${b.data}`}
+            alt={`附件图片 ${i + 1}`}
+          />
+        </button>
+      ))}
     </div>
   );
 }

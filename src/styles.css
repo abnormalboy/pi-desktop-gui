@@ -2657,13 +2657,37 @@ select:hover:not(:disabled) {
   overflow: visible;
   margin: 0 0 0 10px;
   border: 0;
-  border-left: 1px solid var(--line-strong);
   border-radius: 0;
   background: transparent;
 }
 .tool-card:hover,
 .tool-card[open] {
   background: transparent;
+}
+.tool-card + .tool-card::before,
+div:has(> .tool-card) + div:has(> .tool-card) > .tool-card::before,
+div:has(> .tool-card) + .tool-card::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -17px;
+  height: 31px;
+  width: 1px;
+  background: var(--line-strong);
+  pointer-events: none;
+}
+.tool-card[open]::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 21px;
+  bottom: 10px;
+  width: 1px;
+  background: var(--line-strong);
+  pointer-events: none;
+}
+.tool-card.error[open]::after {
+  background: color-mix(in srgb, var(--red) 45%, var(--line));
 }
 .tool-card summary {
   padding: 6px 10px 6px 18px;
@@ -2684,6 +2708,7 @@ select:hover:not(:disabled) {
   background: var(--surface);
   border: 1.5px solid var(--line-strong);
   box-sizing: border-box;
+  z-index: 1;
 }
 .tool-card.done summary::before {
   background: var(--accent);
@@ -2697,9 +2722,6 @@ select:hover:not(:disabled) {
 .tool-card.error summary::before {
   background: var(--red);
   border-color: var(--red);
-}
-.tool-card.error {
-  border-left-color: color-mix(in srgb, var(--red) 45%, var(--line));
 }
 .tool-card.running .tool-result {
   color: var(--signal);
@@ -2739,27 +2761,43 @@ div:has(> .tool-card) + div:has(> .tool-card) .tool-card,
     var(--shadow-soft);
 }
 .conversation:has(.stop-button) .composer {
-  border-color: color-mix(in srgb, var(--signal) 55%, var(--line));
+  border-color: color-mix(in srgb, var(--signal) 42%, var(--line));
+}
+.conversation:has(.stop-button) .composer:focus-within {
+  border-color: color-mix(in srgb, var(--signal) 65%, var(--line));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--signal) 12%, transparent),
+    var(--shadow-soft);
 }
 .conversation:has(.stop-button) .composer::before {
   content: '';
   position: absolute;
-  left: 16px;
-  right: 16px;
+  left: 22px;
+  right: 22px;
   top: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, transparent, var(--signal), transparent);
-  background-size: 40% 100%;
+  height: 1.5px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--signal) 35%, transparent) 25%,
+    var(--signal) 50%,
+    color-mix(in srgb, var(--signal) 35%, transparent) 75%,
+    transparent 100%
+  );
+  background-size: 35% 100%;
   background-repeat: no-repeat;
-  animation: scan 1.8s ease-in-out infinite;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+  animation: scan 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 @keyframes scan {
   from {
-    background-position: -40% 0;
+    background-position: -65% 0;
   }
   to {
-    background-position: 140% 0;
+    background-position: 165% 0;
   }
 }
 .composer textarea {
