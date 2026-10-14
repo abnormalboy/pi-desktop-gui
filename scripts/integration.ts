@@ -92,8 +92,11 @@ try {
     assert.ok(service.runtime.notices.some((n) => n.includes('GUI_REPLY:' + method)));
   }
   await service.send(sessionId, '/gui-timeout', [], 'steer');
+  // Pi's timeout starts before the desktop receives the dialog request over RPC.
+  await waitFor(() => service.runtime.dialogs.length === 0, 2000);
   assert.equal(service.runtime.status, 'idle');
   assert.equal(service.runtime.dialogs.length, 0);
+  assert.ok(service.runtime.notices.some((n) => n.includes('GUI_REPLY:timeout:undefined')));
   const other = randomUUID();
   restored.state.sessions.push({
     id: other,
