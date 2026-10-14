@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { listPiSessions, searchSessionContents } from '../electron/history';
+import { pathKey } from '../electron/platform';
 import type { Session } from '../shared/types';
 
 async function sandbox() {
@@ -39,7 +40,8 @@ test('content search matches decoded Windows paths and quoted text', async () =>
 
 test('Pi history keeps complete image records and sessions without a text preview', async () => {
   const dir = await sandbox();
-  const data = (await fs.readFile(path.resolve('docs/assets/features-v0.2.0.png'))).toString('base64');
+  // History reads image data as opaque text; exceed the 64 KiB preview budget without a docs asset.
+  const data = Buffer.alloc(64 * 1024, 1).toString('base64');
   assert.ok(data.length > 64 * 1024);
   const image = { type: 'image', mimeType: 'image/png', data };
   for (const [name, content] of [
@@ -67,6 +69,6 @@ test('Pi history keeps complete image records and sessions without a text previe
     'Find this screenshot',
   );
   assert.equal(sessions.find((session) => path.basename(session.file) === 'image-only.jsonl')?.preview, '');
-  const known = new Set(sessions.map((session) => path.resolve(session.file).toLowerCase()));
+  const known = new Set(sessions.map((session) => pathKey(session.file)));
   assert.deepEqual(await listPiSessions([dir], known), []);
 });

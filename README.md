@@ -1,108 +1,204 @@
-# Pi Desktop · pi桌面gui
+<div align="center">
 
-面向 **Pi 编程智能体**的本地 Windows 桌面客户端。Electron + React + TypeScript，中文界面，通过 Pi RPC 驱动真实编程任务。
+<img src="docs/assets/logo.png" width="96" height="96" alt="Pi Desktop：森林绿 π 图标" />
 
-**v0.5.0 使用体验。** 窗口在后台时，任务完成、失败或 Pi 等待回复会发送系统通知并闪烁任务栏，点击通知回到对应会话；窗口大小、位置和最大化状态会被记住。空输入框按 `↑`/`↓` 翻看本会话发送过的提问，执行中连按两次 `Esc` 停止全部，`Ctrl+/` 打开快捷键速查。把项目内文本文件拖进输入框即成为引用。还没准备好时，欢迎页显示“开始前检查”，指出缺 Pi 还是缺模型并给出一键入口。
+# Pi Desktop
 
-**v0.2.0 补齐 Pi 功能入口。** 图片、会话树/分支/克隆、压缩与队列策略、供应商登录、MCP、Skills/扩展/模板管理和完整会话导出均可从桌面操作。右上角“Pi 功能”集中管理，输入 `/` 可检索桌面与已加载扩展命令。真实 Pi 1.1.0 的验证记录见 [实现与验收](docs/IMPLEMENTATION.md)。
+**为开发者打造的本地 AI 编程工作台 —— 终端的自由，桌面的直觉。**<br />
+*The Native Desktop Workspace for the Pi Coding Agent.*
 
-![v0.2.0 Pi 功能面板，打包程序的实际验收截图](docs/assets/features-v0.2.0.png)
+[![Releases](https://img.shields.io/badge/download-GitHub%20Releases-386e5a?style=flat-square)](https://github.com/yeyuProject/pi-desktop-gui/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0f172a?style=flat-square)](#-快速开始)
+[![Electron](https://img.shields.io/badge/Electron-44-47848f?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![React](https://img.shields.io/badge/React-19-149eca?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-**v0.1.2 独立对话**：无需打开文件夹即可提问、选择模型和继续历史对话。左上角“新建对话”和 `Ctrl+N` 始终创建独立对话，项目右侧的 `+` 创建项目会话；草稿和历史分别保存。
+[设计理念](#-设计理念) · [核心特性](#-核心特性) · [快速开始](#-快速开始) · [快捷键与指令](#-快捷键与指令) · [参与开发](#-参与开发)
 
-![v0.1.2 独立对话，使用本地验收模型](docs/assets/standalone-v0.1.2.png)
+<br />
 
-**v0.1.1 界面更新**：对话优先，工作区检查面板按需展开；统一中性色、字体层级、控件和深色主题。模型选择位于输入框内，工具过程采用紧凑行，侧栏可收起并记住选择。小窗口中的检查面板支持键盘焦点、Esc 关闭与返回输入。
+<img src="docs/assets/hero-banner.png" width="100%" alt="Pi Desktop 品牌概念图：会话侧栏、内联代码差异与相连的终端窗口" />
 
-![v0.1.1 实际运行界面，使用本地验收模型](docs/assets/workspace-v0.1.1.png)
+<p><sub>AI 生成品牌概念图</sub></p>
 
-## 能做什么
+</div>
 
-- 项目与会话侧栏、置顶、重命名、删除到回收站、导入 Pi JSONL、草稿与历史恢复。
-- `Ctrl+K` 按标题和消息内容搜索；可直接打开 Pi 会话目录里在终端创建的历史会话。
-- 消息悬停：编辑后重新发送、从这里分支、重新生成最后一条回复，原分支保留在会话树。
-- 输入框内就地切换模型与推理级别，不重启 Pi，每个会话记住自己的选择。
-- 扩展通知分级弹出，自动重试可取消，底部显示上下文占用、tokens 与费用。
-- 工具卡片内联显示 edit 差异与命令退出码；每条回复可查看实际模型、tokens 与费用。
-- 一键撤销本轮或单个文件的修改，恢复到任务开始前，新建文件移到回收站。
-- `/` 菜单按模板、Skills、扩展分组并显示模板参数提示；同名 Pi 命令用 `//` 调用。
-- 会话树标签与筛选；常用 Pi 设置（压缩、重试、工具、Shell、代理）表单化编辑。
-- 独立对话：首次启动即可输入，不要求项目授权；与项目会话共用已配置的模型。
-- Markdown 流式对话、思考内容、工具输入与输出、失败和重试状态。
-- `@` 引用项目文本文件，发送前检查路径、大小与文件类型。
-- 运行中“立即补充”和“完成后执行”；停止全部先清空队列，再等待 Pi 停稳，未执行队列恢复到草稿。
-- 文件预览、全部未提交变更、运行期间变更，以及运行前已有修改标记。
-- Pi/Node 路径与配置目录、模型和推理级别、连接测试、深浅主题、字号、外部编辑器和诊断导出。
-- Pi 扩展的选择、确认、输入、编辑器、超时、通知与状态组件。
-- 粘贴、拖入或选择 PNG/JPEG/WebP/GIF，预览并发送给支持图片的模型；图片随草稿和历史保存。
-- 会话树检索、切换分支（可生成总结）、从用户消息 fork、克隆活跃分支；原始会话保留。
-- 手动压缩与自定义要求、自动压缩/重试开关、steer/follow-up 发送策略、上下文用量与费用。
-- `!命令` / `!!命令` 直接执行终端命令，并选择是否将输出加入模型上下文。
-- 内置供应商 API Key / OAuth 登录及退出，自定义兼容端点；Pi 设置和 MCP 配置的个人/项目范围编辑。
-- Skills、扩展、提示词模板和主题的发现/开关；npm、Git 或本地资源包的安装、更新、移除。
-- MCP 服务器添加、启停、工具暴露设置、连接状态、登录/退出及重连。
-- HTML / JSONL 完整会话导出；通过本机 GitHub CLI 创建 Gist 分享链接，上传前确认。
-- 终端专用自定义 UI 可使用“在 Pi 终端继续”，沿用同一会话。关闭终端后在 GUI 重新连接。
+---
 
-## 运行
+## 💡 设计理念
 
-要求 Windows x64、Node.js **22.19+**、Git for Windows，以及固定的 **Pi 1.1.0**。桌面包连接外部 Pi；不包含模型服务或账户凭据。
+命令行编程智能体（CLI Coding Agent）拥有极高的执行效率与可组合性，但在面对**大段代码 Diff 审查、多分支思路探索、多模态图表输入、以及 MCP / Skills 生态配置**时，纯终端界面往往显得局促。
 
-```powershell
+**Pi Desktop** 为此而生：
+
+- **桌面与智能体在本机通信**：通过本地 `stdio` 上的 Pi RPC（按行传输 JSON，即 JSONL）驱动你机器上的 `pi`，桌面与智能体之间无需额外中转服务。
+- **终端与 GUI 共用会话**：复用 Pi 会话历史、模型凭据与扩展配置。通过「在 Pi 终端继续」交接同一会话；关闭终端后回到桌面重新连接，也可从桌面打开终端创建的历史会话。
+- **对话优先，审查随行**：保持简洁的对话流；当智能体修改代码时，按需展开工作区变更与内联 Diff，并可撤销纳入运行基线的文件修改。
+
+<img src="docs/assets/architecture-bridge.png" width="100%" alt="架构概念图：Pi Desktop GUI 通过本机 stdio RPC（JSONL）连接 Pi CLI，复用 Skills、扩展与 Git 工作区，并由 Pi 连接模型服务和 MCP" />
+
+会话与工作区保存在本机；模型请求沿用 Pi 的供应商配置，远程 MCP 也可能联网。「本地工作台」不代表所有推理都在本机完成。
+
+---
+
+## ✨ 核心特性
+
+<img src="docs/assets/features-bento.png" width="100%" alt="六项能力概览：内联 Diff 与撤销、分支会话、MCP 与 Skills、终端与桌面交接、本地工作区、键盘操作" />
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🧠 可视化智能体工作流</h3>
+      <p>实时呈现模型返回的思考内容（Thinking）、工具调用参数与命令退出状态。代码修改直接在对话流内联渲染 Diff，底部显示上下文用量、Token 消耗与费用。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🌿 像 Git 一样分支对话</h3>
+      <p>从历史用户消息编辑重发或 Fork 独立分支，切换分支时可生成总结，也可克隆活跃分支，围绕同一问题探索多种实现方案。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>⏪ 代码快照与文件撤销</h3>
+      <p>在 Git 项目中，任务开始前为受支持文件建立基线。支持<strong>撤销本轮文件修改</strong>或<strong>单独回滚指定文件</strong>；撤销本轮新建文件时移入回收站。未纳入基线的文件会明确提示，命令产生的外部副作用不在文件撤销范围内。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🔌 全栈生态控制中心</h3>
+      <p>告别手写繁琐的配置文件。图形化管理多模型供应商（API Key / OAuth）、MCP 服务器工具暴露、Skills 技能包、扩展插件与提示词模板。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>⚡ 随手提问 vs 深度工程</h3>
+      <p>启动即可开启<strong>独立对话</strong>，无需绑定代码仓库也能使用全套工具与联网扩展；进入<strong>项目会话</strong>则自动挂载文件树、Git 状态对比与工作区快照。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🖥️ 终端与桌面交接</h3>
+      <p>支持在运行途中补充要求（Steer）或追加后续队列（Follow-up）。需要终端专用扩展界面时，点击<strong>「在 Pi 终端继续」</strong>沿用同一会话；关闭终端后可回到桌面重新连接。</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 🚀 快速开始
+
+### 1. 安装底层智能体引擎
+
+Pi Desktop 依赖本机 Node.js（`>= 22.19`）与 Pi Coding Agent CLI：
+
+```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
-pi
 ```
 
-在“Pi 功能 → 供应商与登录”中配置提供商；已有 `auth.json`、`models.json` 或环境变量配置可以直接复用。已有密钥不会回显，编辑配置时以占位符保留。自定义接口参见 [Pi 模型配置](https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/models.md)。
+> **Windows 用户提示**：请确保已安装 [Git for Windows](https://git-scm.com/download/win)（提供智能体执行命令所需的 Git Bash 环境）。
 
-启动 `Pi-Desktop-0.2.0-win-x64.exe`，在“设置 → 运行环境”检查 Pi，然后直接在独立对话中提问，在输入框左下角连接并选择模型。独立对话同样具有工具、Skills、MCP 和扩展；默认工作目录在应用数据目录内，可从“Pi 功能”打开。打开项目后可使用项目文件和 Git 面板。连接测试会发送一次简短模型请求。便携包首次启动需要解压运行时；应用数据保存在系统用户数据目录，不写入 exe 所在目录。
+### 2. 下载桌面客户端
 
-项目会话右上角的“工作区”打开变更、文件和输出。`Ctrl+B` 收起或展开侧栏；`Esc` 关闭检查面板并返回原位置。`Ctrl+K` 按标题或内容搜索会话，`Ctrl+N` 新建独立对话，`Ctrl+,` 打开设置，`Ctrl+/` 查看全部快捷键。输入框会随文字自动增高，`Enter` 发送，`Shift+Enter` 换行；输入框为空时 `↑` 调出上一条提问。执行中连按两次 `Esc` 停止全部。后台通知可在“设置 → 外观与编辑器”关闭。
+前往 [GitHub Releases](https://github.com/yeyuProject/pi-desktop-gui/releases) 下载对应系统的安装包：
 
-如果 Pi 未被自动找到，可选择 npm 包的 `dist/bundle/cli.js` 和 `node.exe`。Git 安装在其他盘符时，应用会为 Pi 优先设置已检测到的 Git Bash 路径。
+| 平台 | 支持架构 | 分发格式 |
+| :--- | :--- | :--- |
+| **Windows** | `x64` | `.exe` 便携版（双击即用，无需安装） |
+| **macOS** | `Apple Silicon (M系列)` / `Intel` | `.dmg` 磁盘映像 / `.zip` |
+| **Linux** | `x86_64` | `.AppImage` / `.deb` |
 
-## 开发与构建
+<details>
+<summary><b>macOS 首次打开提示「无法验证开发者」或「已损坏」？</b></summary>
 
-```powershell
+应用目前尚未注入 Apple Developer 签名，首次打开请按住 `Control` 键点击应用图标并选择「打开」，或在终端运行以下命令解除隔离属性：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"
+```
+</details>
+
+### 3. 连接模型并开始编程
+
+1. 启动 **Pi Desktop**，应用会自动扫描系统及 `nvm` / `Homebrew` 路径下的 `pi` 运行时。
+2. 点击右上角 **「Pi 功能 → 供应商与登录」**，配置你的模型服务商（支持 OAuth 登录、API Key 或任意 OpenAI 兼容接口；若终端已配置过 `~/.pi` 将自动识别）。
+3. 在左下角选择模型与推理深度，即可开始对话或打开本地项目文件夹。
+
+---
+
+## ⌨️ 快捷键与指令
+
+### 输入框指令语法
+
+在输入框中通过前缀字符即可快速调用上下文与工具：
+
+| 指令前缀 | 作用 | 用法示例 |
+| :---: | :--- | :--- |
+| **`@`** | 引用项目文件（也支持直接将文件或图片拖入输入框） | `@src/App.tsx 优化这里的渲染性能` |
+| **`/`** | 唤起斜杠菜单，检索并调用 Skills、提示词模板与扩展命令 | `/commit` |
+| **`//`** | 绕过桌面同名快捷键，直接调用底层 Pi 原生斜杠命令 | `//compact` |
+| **`!`** | 直接在当前工作目录执行 Shell 命令，并将输出注入对话上下文 | `!npm test` |
+| **`!!`** | 直接执行 Shell 命令，仅在本地查看结果，**不消耗**模型上下文 | `!!git status` |
+
+### 常用全局快捷键
+
+| 功能 | Windows / Linux | macOS |
+| :--- | :---: | :---: |
+| 新建独立对话 | `Ctrl + N` | `⌘ + N` |
+| 全局搜索会话与历史消息 | `Ctrl + K` | `⌘ + K` |
+| 展开 / 收起左侧边栏 | `Ctrl + B` | `⌘ + B` |
+| 打开设置中心 | `Ctrl + ,` | `⌘ + ,` |
+| 查看快捷键速查面板 | `Ctrl + /` | `⌘ + /` |
+| 翻阅当前会话发送历史（空输入框时） | `↑` / `↓` | `↑` / `↓` |
+| 关闭右侧检查面板并聚焦输入框 | `Esc` | `Esc` |
+| **紧急熔断**：停止全部正在执行的任务 | `连按两次 Esc` | `连按两次 Esc` |
+
+---
+
+## 🛠️ 参与开发
+
+### 项目结构
+
+```text
+pi-desktop/
+├── electron/           # Electron 主进程与系统桥接层
+│   ├── main.ts         # 窗口生命周期、菜单与 IPC 路由
+│   ├── rpc.ts          # Pi Agent stdio RPC 通信（JSONL）
+│   ├── workspace.ts    # 工作区文件监控、Git Diff 与快照回滚
+│   ├── history.ts      # JSONL 会话树解析与全文检索
+│   └── ...
+├── src/                # React 19 渲染进程前端
+│   ├── App.tsx         # 主工作台、对话流与消息分支交互
+│   ├── PiFeatures.tsx  # MCP / Skills / 供应商 / 会话树管理中心
+│   └── SettingsForm.tsx# 环境诊断与偏好设置
+├── shared/             # 主进程与渲染进程共享类型契约
+└── scripts/            # 构建、打包与端到端自动化验收脚本
+```
+
+### 本地启动与构建
+
+开发环境已内置锁定版本的 Pi 依赖，克隆仓库后即可直接运行：
+
+```bash
+# 克隆仓库
+git clone https://github.com/yeyuProject/pi-desktop-gui.git
+cd pi-desktop-gui
+
+# 安装依赖
 npm ci
+
+# 启动热更新开发环境
 npm run dev
 ```
 
-开发模式默认使用项目内固定版本的 Pi；无需另行全局安装。仍需自行配置模型凭据。`npm run dev` 热更新界面；主进程变更需要重启。
+其他常用工程命令：
 
-```powershell
-npm run build            # 类型检查与生产构建
-npm start                # 运行生产构建
-npm test                 # 文件、存储、协议与状态测试
-npm run test:integration # 真实 Pi + 本地 HTTP 接口 + 真实工具/扩展
-npm run test:ui          # 真实 Electron 窗口，含混合拖放、Esc 停止确认和退出状态回归
-npm run test:chat-ui     # 无项目启动、独立对话、模型连接、切换与历史恢复
-npm run test:features    # 图片、树/分支、压缩、登录、资源、MCP 的真实 Pi 验收
-npm run test:features-ui # 新增功能的实际 Electron 操作、配置、导出和资源包管理
-npm run package         # Windows x64 便携 exe，输出 release/
+```bash
+npm run build            # TypeScript 类型检查 + 生产环境构建
+npm test                 # 运行核心单元测试
+npm run test:integration # 运行 Pi RPC 与工具链集成测试
+npm run test:ui          # 运行 Playwright + Electron 端到端桌面交互测试
+npm run package          # 打包当前操作系统的发行安装包 (输出至 release/)
 ```
 
-测试只在 `work/` 下创建隔离项目与 Pi 配置；截图在 `test-results/`。验收模型只监听 `127.0.0.1`，不需要 API Key，不调用付费模型。要测试打包后的应用，可设置 `PI_DESKTOP_EXE` 为 `release/win-unpacked/Pi Desktop.exe` 后运行 `npm run test:ui`。
+---
 
-如果 Electron 二进制下载失败，可按 [Electron 官方安装说明](https://www.electronjs.org/docs/latest/tutorial/installation#mirror) 设置镜像，然后运行 `npx install-electron --no`。本次构建核对了 Electron npm 包提供的 SHA-256。应用构建依赖均在开发依赖中，运行代码打包进 `dist` / `dist-electron`。
+## 📄 开源说明与致谢
 
-## 数据与执行方式
-
-默认用户数据目录为 `%APPDATA%/pi-desktop-gui`，可在“设置 → 诊断”中打开。项目索引与草稿为 `state.json`，会话正文使用 Pi JSONL；凭据通过 Pi 原生存储写入 `auth.json`，自定义供应商配置写入 `models.json`，应用索引不保存密钥。`PI_DESKTOP_DATA_DIR` 可用于独立测试环境。
-
-独立对话使用应用数据目录内按会话分开的目录，工具与资源沿用 Pi 的配置。历史保存在与项目会话相同的 `sessions/` 目录中；分支和克隆保留原工作目录。升级保留现有项目、会话和设置，v0.1.2 的独立对话升级后也会启用工具。它不是文件访问沙箱。
-
-每条消息最多 8 张图片，单张 8 MiB、合计 16 MiB。配置保存时保留 `.desktop-backup` 备份，并拒绝覆盖读取后被其他程序修改的文件。完整设置通过 JSON 编辑器提供；终端专用外观选项只影响 Pi 原生终端。Pi RPC 无法渲染终端 `custom()` 组件，因此这类扩展通过同会话终端入口使用，不宣称所有扩展都能原生渲染为桌面组件。
-
-Pi 使用当前用户权限直接修改文件和执行命令；“停止”不会撤销已经写入的文件。变更面板只读，“运行期间”包含该时段内用户或其他程序的修改。Electron 渲染进程隔离不等于 Pi 的文件/命令沙箱。
-
-首版只允许一个会话执行任务。文件预览上限 1 MiB，单个引用 256 KiB，消息与引用总计 1 MiB；运行基线每项目最多 20 MiB，保存 7 天、总计 200 MiB。工具卡显示末尾 200 行，导出最多最近 10 MiB 的已接收结果；Pi 自身截断长日志时，以工具返回的完整日志路径为准。
-
-## 文档
-
-- [产品需求文档](docs/PRD.md)
-- [实现范围、验收证据与剩余事项](docs/IMPLEMENTATION.md)
-- [原始工作区线框图](docs/assets/pi-workspace.png)
-- [原始首次使用线框图](docs/assets/pi-setup.png)
-
-本项目是独立的 Pi GUI 客户端，不是 Pi 官方桌面发行版。
+- 核心智能体引擎基于 [@earendil-works/pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建。
+- 本项目为社区驱动的独立桌面客户端，非官方发行版本。欢迎提交 Issue 与 Pull Request！
+- README 插图与生成提示词见 [视觉素材说明](docs/assets/README.md)。

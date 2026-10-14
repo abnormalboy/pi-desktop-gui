@@ -345,6 +345,7 @@ export interface ApiMap {
   quit: { args: []; result: void };
 }
 export interface DesktopApi {
+  platform: 'win32' | 'darwin' | 'linux' | string;
   invoke<K extends keyof ApiMap>(method: K, ...args: ApiMap[K]['args']): Promise<ApiMap[K]['result']>;
   onEvent(listener: (event: AppEvent) => void): () => void;
   pathForFile(file: File): string;

@@ -13,7 +13,7 @@ import {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
 import { AgentService, redact } from './agent';
@@ -22,10 +22,21 @@ import { detectEnvironment, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
 import { validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
+import {
+  isMac,
+  loadLoginShellPath,
+  openTerminal,
+  openTextEditor,
+  openWithApp,
+  pathKey,
+  samePath,
+  terminalOpen,
+} from './platform';
 import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
 let quitting = false;
+let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
 const send = (event: AppEvent) => {
@@ -141,9 +152,7 @@ function sessionRoots() {
   return [path.join(agentDirectory(store.state.settings), 'sessions'), path.join(store.dir, 'sessions')];
 }
 async function adoptSessionFile(file: string, projectId?: string) {
-  const existing = store.state.sessions.find(
-    (s) => s.file && path.resolve(s.file).toLowerCase() === path.resolve(file).toLowerCase(),
-  );
+  const existing = store.state.sessions.find((s) => s.file && samePath(s.file, file));
   if (existing) {
     store.selectSession(existing.id);
     await save();
@@ -151,11 +160,8 @@ async function adoptSessionFile(file: string, projectId?: string) {
   }
   const data = await readSessionFile(file);
   const cwd = await fs.realpath(data.cwd).catch(() => data.cwd);
-  const p = projectId
-    ? store.project(projectId)
-    : store.state.projects.find((p) => p.path.toLowerCase() === cwd.toLowerCase());
-  if (projectId && cwd.toLowerCase() !== p!.path.toLowerCase())
-    throw new Error('会话工作目录与当前项目不一致，请先添加对应项目');
+  const p = projectId ? store.project(projectId) : store.state.projects.find((p) => samePath(p.path, cwd));
+  if (projectId && !samePath(cwd, p!.path)) throw new Error('会话工作目录与当前项目不一致，请先添加对应项目');
   const s = store.createSession(p?.id);
   if (!p) s.cwd = cwd;
   s.file = file;
@@ -175,18 +181,11 @@ async function chooseFile(title: string, filters?: Electron.FileFilter[]) {
 }
 let diagnosticPreview = '';
 const exec = promisify(execFile);
-let terminalPid: number | undefined;
 let updatingConfiguration = false;
-function assertTerminalClosed() {
-  if (terminalPid) {
-    try {
-      process.kill(terminalPid, 0);
-    } catch {
-      terminalPid = undefined;
-      return;
-    }
+const terminalLock = () => path.join(store.dir, 'terminal.lock');
+async function assertTerminalClosed() {
+  if (await terminalOpen(terminalLock()))
     throw new Error('当前会话已交给 Pi 终端，请关闭该终端后再使用桌面会话');
-  }
 }
 async function exportSession(id: string, format: 'html' | 'jsonl') {
   if (!['html', 'jsonl'].includes(format)) throw new Error('导出格式无效');
@@ -202,8 +201,7 @@ async function exportSession(id: string, format: 'html' | 'jsonl') {
   else {
     const file = store.session(id).file;
     if (!file) throw new Error('会话尚未产生可导出的内容');
-    if (path.resolve(file).toLowerCase() === path.resolve(chosen.filePath).toLowerCase())
-      throw new Error('请选择不同于原会话文件的导出位置');
+    if (samePath(file, chosen.filePath)) throw new Error('请选择不同于原会话文件的导出位置');
     await fs.copyFile(file, chosen.filePath);
   }
   return chosen.filePath;
@@ -253,7 +251,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     });
     if (chosen.canceled) return null;
     const folder = await fs.realpath(chosen.filePaths[0]);
-    const existing = store.state.projects.find((p) => p.path.toLowerCase() === folder.toLowerCase());
+    const existing = store.state.projects.find((p) => samePath(p.path, folder));
     if (existing) {
       store.state.selectedProjectId = existing.id;
       store.state.selectedSessionId = store.state.sessions.find((s) => s.projectId === existing.id)?.id;
@@ -402,9 +400,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     return searchSessionContents(store.state.sessions, query);
   },
   piSessions: async () => {
-    const known = new Set(
-      store.state.sessions.filter((s) => s.file).map((s) => path.resolve(s.file!).toLowerCase()),
-    );
+    const known = new Set(store.state.sessions.filter((s) => s.file).map((s) => pathKey(s.file!)));
     return listPiSessions(sessionRoots(), known);
   },
   openPiSession: async (file) => {
@@ -738,35 +734,23 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.connect(id);
     await service.disconnect();
     const spec = (await resolvePi(store.state.settings, developmentRoot)).spec;
-    const quote = (v: string) => "'" + v.replaceAll("'", "''") + "'";
     const s = store.session(id);
     const args = s.file
       ? ['--session', s.file]
       : ['--session-id', s.id, '--session-dir', path.join(store.dir, 'sessions')];
-    const script = `Set-Location -LiteralPath ${quote(await store.sessionDirectory(id))}\n$env:PI_CODING_AGENT_DIR=${quote(agentDirectory(store.state.settings))}\n& ${[spec.command, ...spec.args, ...args].map(quote).join(' ')}\n`;
-    const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    const launch = `$p = Start-Process -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-EncodedCommand','${encoded}') -WindowStyle Normal -PassThru\n$p.Id`;
-    const result = await exec(
-      'powershell.exe',
-      ['-NoProfile', '-EncodedCommand', Buffer.from(launch, 'utf16le').toString('base64')],
-      { windowsHide: true },
+    await openTerminal(
+      [spec.command, ...spec.args, ...args],
+      await store.sessionDirectory(id),
+      { PI_CODING_AGENT_DIR: agentDirectory(store.state.settings) },
+      terminalLock(),
     );
-    terminalPid = Number(result.stdout.trim());
   },
   editDraft: async (id) => {
     text(id, 100);
     const s = store.session(id);
     const file = path.join(store.dir, 'draft-' + encodeURIComponent(id) + '.txt');
     await fs.writeFile(file, s.draft, 'utf8');
-    const editor = store.state.settings.editorPath || 'notepad.exe';
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(editor, [file], { windowsHide: false, detached: true, stdio: 'ignore' });
-      child.once('error', reject);
-      child.once('spawn', () => {
-        child.unref();
-        resolve();
-      });
-    });
+    await openTextEditor(file, store.state.settings.editorPath || undefined);
     const result = await dialog.showMessageBox(window!, {
       type: 'info',
       message: '在外部编辑器中编辑草稿',
@@ -837,17 +821,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(relative, 4096);
     const file = await safePath(store.project(id).path, relative);
     const editor = store.state.settings.editorPath;
-    if (editor) {
-      if (!path.isAbsolute(editor) || !/\.exe$/i.test(editor)) throw new Error('请选择编辑器的 .exe 文件');
-      await new Promise<void>((resolve, reject) => {
-        const p = spawn(editor, [file], { windowsHide: true, detached: true, stdio: 'ignore' });
-        p.once('error', reject);
-        p.once('spawn', () => {
-          p.unref();
-          resolve();
-        });
-      });
-    } else shell.showItemInFolder(file);
+    if (editor) await openWithApp(editor, file);
+    else shell.showItemInFolder(file);
   },
   referenceDropped: async (id, files) => {
     text(id, 100);
@@ -905,6 +880,7 @@ async function createWindow() {
     icon: path.join(app.getAppPath(), 'build', 'icon.png'),
     backgroundColor: '#f8f9f7',
     show: false,
+    ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -927,6 +903,10 @@ async function createWindow() {
   window.on('close', (event) => {
     if (quitting) return;
     event.preventDefault();
+    if (isMac && !appQuitRequested) {
+      window?.hide();
+      return;
+    }
     if (closing) return;
     closing = true;
     void (async () => {
@@ -960,6 +940,7 @@ async function createWindow() {
         app.quit();
       } finally {
         closing = false;
+        appQuitRequested = false;
       }
     })();
   });
@@ -979,6 +960,7 @@ else {
     .whenReady()
     .then(async () => {
       app.setAppUserModelId('io.yeyuproject.pi-desktop');
+      await loadLoginShellPath();
       store = new Store(app.getPath('userData'));
       await store.load();
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
@@ -1036,7 +1018,7 @@ else {
           ].includes(method);
           if (engineOperation) {
             if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');
-            assertTerminalClosed();
+            await assertTerminalClosed();
           }
           const configOperation = ['configSave', 'packageAction'].includes(method);
           if (configOperation) updatingConfiguration = true;
@@ -1051,19 +1033,49 @@ else {
       });
       Menu.setApplicationMenu(
         Menu.buildFromTemplate([
+          ...(isMac
+            ? [
+                {
+                  label: app.name,
+                  submenu: [
+                    { role: 'about' as const, label: '关于 Pi Desktop' },
+                    { type: 'separator' as const },
+                    {
+                      label: '设置…',
+                      accelerator: 'Cmd+,',
+                      registerAccelerator: false,
+                      click: () =>
+                        window?.webContents.sendInputEvent({
+                          type: 'keyDown',
+                          keyCode: ',',
+                          modifiers: ['meta'],
+                        }),
+                    },
+                    { type: 'separator' as const },
+                    { role: 'services' as const, label: '服务' },
+                    { type: 'separator' as const },
+                    { role: 'hide' as const, label: '隐藏 Pi Desktop' },
+                    { role: 'hideOthers' as const, label: '隐藏其他' },
+                    { role: 'unhide' as const, label: '全部显示' },
+                    { type: 'separator' as const },
+                    { role: 'quit' as const, label: '退出 Pi Desktop' },
+                  ],
+                },
+              ]
+            : []),
           {
             label: '文件',
             submenu: [
               {
                 label: '新建对话',
-                accelerator: 'Ctrl+N',
+                accelerator: 'CmdOrCtrl+N',
                 registerAccelerator: false,
                 click: () => {
                   void newSession().catch((error) => dialog.showErrorBox('无法新建对话', String(error)));
                 },
               },
               { type: 'separator' },
-              { role: 'quit', label: '退出' },
+              isMac ? { role: 'close', label: '关闭窗口' } : { role: 'quit', label: '退出' },
             ],
           },
           {
@@ -1087,6 +1099,19 @@ else {
               { role: 'togglefullscreen', label: '全屏' },
             ],
           },
+          ...(isMac
+            ? [
+                {
+                  label: '窗口',
+                  submenu: [
+                    { role: 'minimize' as const, label: '最小化' },
+                    { role: 'zoom' as const, label: '缩放' },
+                    { type: 'separator' as const },
+                    { role: 'front' as const, label: '全部置于顶层' },
+                  ],
+                },
+              ]
+            : []),
         ]),
       );
       await createWindow();
@@ -1095,10 +1120,16 @@ else {
       dialog.showErrorBox('Pi Desktop 无法启动', String(error));
       app.quit();
     });
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => {
+    if (!isMac) app.quit();
+  });
+  app.on('activate', () => {
+    if (window && !window.isDestroyed()) window.show();
+  });
   app.on('before-quit', (event) => {
     if (!quitting && window && !window.isDestroyed()) {
       event.preventDefault();
+      appQuitRequested = true;
       window.close();
     }
   });

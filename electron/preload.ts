@@ -8,5 +8,6 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener('desktop:event', handler);
   },
   pathForFile: (file) => webUtils.getPathForFile(file),
+  platform: process.platform,
 };
 contextBridge.exposeInMainWorld('desktop', api);

@@ -5,6 +5,7 @@ import { createLocalProvider, prepareRealPiFixture } from '../tests/support/loca
 import { AgentService } from '../electron/agent';
 import { Workspace } from '../electron/workspace';
 import { listPiSessions, searchSessionContents } from '../electron/history';
+import { pathKey } from '../electron/platform';
 import { messageText, busy } from '../shared/types';
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
@@ -149,7 +150,7 @@ try {
   assert.ok(listed.some((x) => x.preview.includes('WORKFLOW_FIRST')));
   const hidden = await listPiSessions(
     roots,
-    new Set(f.store.state.sessions.filter((x) => x.file).map((x) => path.resolve(x.file!).toLowerCase())),
+    new Set(f.store.state.sessions.filter((x) => x.file).map((x) => pathKey(x.file!))),
   );
   assert.equal(hidden.length, 0, 'sessions already in the app are not listed again');
   console.log('PASS content search and Pi session discovery');

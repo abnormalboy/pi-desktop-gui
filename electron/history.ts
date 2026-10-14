@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { PiSessionInfo, Session, SessionMatch } from '../shared/types';
+import { pathKey } from './platform';
 
 const HEAD_BYTES = 64 * 1024;
 const SEARCH_LIMIT = 16 * 1024 * 1024;
@@ -51,7 +52,7 @@ export async function listPiSessions(roots: string[], known: Set<string>): Promi
   const files = [...new Set((await Promise.all(roots.map((r) => jsonlFiles(r)))).flat())];
   const result: PiSessionInfo[] = [];
   for (const file of files) {
-    if (known.has(path.resolve(file).toLowerCase())) continue;
+    if (known.has(pathKey(file))) continue;
     try {
       const stat = await fs.stat(file);
       const lines = await head(file);

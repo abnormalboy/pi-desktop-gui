@@ -58,7 +58,9 @@ export async function resolvePi(
   if (/\.(m?js|cjs)$/i.test(entry)) {
     const node = settings.nodePath || (await locate('node'));
     if (!node || !(await exists(node)))
-      throw new Error('运行此 Pi 入口需要 Node.js 22.19 或更高版本，请选择 node.exe。');
+      throw new Error(
+        `运行此 Pi 入口需要 Node.js 22.19 或更高版本，请选择 ${process.platform === 'win32' ? 'node.exe' : 'node 可执行文件'}。`,
+      );
     const { stdout } = await exec(node, ['--version'], { windowsHide: true, timeout: 5000 });
     const [major, minor] = stdout.trim().replace(/^v/, '').split('.').map(Number);
     if (major < 22 || (major === 22 && minor < 19))
@@ -87,12 +89,18 @@ export async function detectEnvironment(settings: Settings, developmentRoot?: st
     if (typeof config.shellPath === 'string' && (await exists(config.shellPath)))
       shellPath = config.shellPath;
   } catch {}
-  const bashCandidates = [
-    shellPath || '',
-    process.env['ProgramFiles'] ? path.join(process.env['ProgramFiles']!, 'Git', 'bin', 'bash.exe') : '',
-    result.git ? path.resolve(result.git, '..', '..', 'bin', 'bash.exe') : '',
-    await locate('bash'),
-  ].filter(Boolean);
+  const bashCandidates = (
+    process.platform === 'win32'
+      ? [
+          shellPath || '',
+          process.env['ProgramFiles']
+            ? path.join(process.env['ProgramFiles']!, 'Git', 'bin', 'bash.exe')
+            : '',
+          result.git ? path.resolve(result.git, '..', '..', 'bin', 'bash.exe') : '',
+          await locate('bash'),
+        ]
+      : [shellPath || '', await locate('bash'), '/bin/bash']
+  ).filter(Boolean);
   for (const candidate of bashCandidates)
     if (await exists(candidate)) {
       result.bash = candidate;
@@ -115,6 +123,10 @@ export async function detectEnvironment(settings: Settings, developmentRoot?: st
     result.errors.push((e as Error).message);
   }
   if (!result.bash)
-    result.errors.push('未检测到 Git Bash，命令执行可能失败。请安装 Git for Windows 或配置 shellPath。');
+    result.errors.push(
+      process.platform === 'win32'
+        ? '未检测到 Git Bash，命令执行可能失败。请安装 Git for Windows 或配置 shellPath。'
+        : '未检测到 bash，命令执行可能失败。请安装 bash 或在 Pi 设置中配置 shellPath。',
+    );
   return result;
 }

@@ -2,6 +2,49 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child
 import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const exec = promisify(execFile);
+
+async function killPosixTree(pid: number) {
+  const signal = (target: number, value: NodeJS.Signals) => {
+    try {
+      process.kill(target, value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  };
+  // Pause Pi before inspecting its children so it cannot start the next tool while we stop this one.
+  signal(-pid, 'SIGSTOP');
+  try {
+    const { stdout } = await exec('ps', ['-A', '-o', 'pid=,ppid=,pgid='], { timeout: 5000 });
+    const processes = stdout
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const [child, parent, group] = line.trim().split(/\s+/).map(Number);
+        return { child, parent, group };
+      });
+    const descendants: typeof processes = [];
+    const parents = new Set([pid]);
+    for (const parent of parents) {
+      for (const process of processes) {
+        if (process.parent !== parent || parents.has(process.child)) continue;
+        parents.add(process.child);
+        descendants.push(process);
+      }
+    }
+    // Pi's shell tools start their own groups. Killing only Pi's group leaves those commands running.
+    for (const child of descendants.reverse()) {
+      if (child.group === child.child) signal(-child.group, 'SIGKILL');
+      signal(child.child, 'SIGKILL');
+    }
+    signal(-pid, 'SIGKILL');
+  } catch (error) {
+    signal(-pid, 'SIGCONT');
+    throw new Error('无法确认所有命令已结束，请重试强制结束。', { cause: error });
+  }
+}
 
 export interface CommandSpec {
   command: string;
@@ -50,6 +93,8 @@ export class PiRpc extends EventEmitter {
     this.child = spawn(spec.command, [...spec.args, ...args], {
       cwd,
       windowsHide: true,
+      // Own process group on POSIX so killTree can stop commands Pi spawned, not just Pi itself.
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...spec.env, ...env },
     });
@@ -188,7 +233,7 @@ export class PiRpc extends EventEmitter {
           error && !this.closed ? reject(error) : resolve(),
         ),
       );
-    else this.child!.kill('SIGKILL');
+    else await killPosixTree(pid);
     await this.waitExit(5000);
     if (!this.closed) throw new Error('进程未确认退出');
   }

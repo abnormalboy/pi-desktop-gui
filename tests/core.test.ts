@@ -244,7 +244,8 @@ test('undo excludes directory links and never removes or overwrites their target
   await fs.symlink(originalDir, replacedDir, 'junction');
   const changes = await workspace.changes(p, 'run');
   assert.deepEqual(changes.files, []);
-  assert.ok(changes.omitted.includes('new-alias/keep.txt'));
+  // Git lists a Windows junction's contents but a POSIX symlink as a single entry.
+  assert.ok(changes.omitted.some((name) => name === 'new-alias/keep.txt' || name === 'new-alias'));
   assert.ok(changes.omitted.includes('replaced/keep.txt'));
   await assert.rejects(workspace.revert(p, ['new-alias/keep.txt']), /不在本轮变更/);
   const removed: string[] = [];

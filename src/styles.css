@@ -3813,3 +3813,22 @@ div:has(> .tool-card) + div:has(> .tool-card) .tool-card,
 .check-row small {
   color: var(--muted);
 }
+
+/* macOS hidden-inset title bar: leave room for the traffic lights and make chrome draggable. */
+:root[data-platform='darwin'] .brand,
+:root[data-platform='darwin'] .workspace-header {
+  -webkit-app-region: drag;
+}
+:root[data-platform='darwin'] .brand button,
+:root[data-platform='darwin'] .workspace-header button,
+:root[data-platform='darwin'] .workspace-header input,
+:root[data-platform='darwin'] .workspace-title {
+  -webkit-app-region: no-drag;
+}
+:root[data-platform='darwin'] .brand {
+  padding-top: 26px;
+  min-height: 78px;
+}
+:root[data-platform='darwin'] .sidebar[hidden] + .workspace .workspace-header {
+  padding-left: 84px;
+}

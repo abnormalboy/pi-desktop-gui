@@ -42,9 +42,7 @@ Windows 本机验证：`npm run build`、`npm test`（16 项）通过；原有 U
 
 打包后的 `app.asar` 中主进程、preload、Pi 桥接模块与页面入口逐字节匹配生产构建。使用本机 Electron 44.7.0 发行目录生成便携包，文件 `Pi-Desktop-0.2.0-win-x64.exe` 为 111,241,000 字节，SHA-256：`34aae91a1730b0047d7707b5b0483bf6a43f444a5a46eab3a19dfbf80516ff2a`。交付副本已再次校验同一哈希。
 
-![打包程序中的会话与上下文管理](assets/features-v0.2.0.png)
-
-![打包程序中的会话树](assets/tree-v0.2.0.png)
+界面测试生成的截图保存在 `test-results/`，与 README 展示素材分开维护。
 
 外部服务边界：没有用测试证明每一家供应商 OAuth 账户或任意第三方扩展兼容。Gist 上传需要本机已登录的 `gh`，外部编辑器需要用户保存并导入草稿。原生终端入口用于 RPC 无法渲染的 `custom()` 等 TUI 界面；这些不是桌面 React 组件。下方 v0.1.x 内容为历史验收记录。
 

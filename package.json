@@ -17,7 +17,7 @@
     "test:features": "node --import tsx scripts/test-features.ts && node --import tsx scripts/test-management.ts && node --import tsx scripts/test-workflow.ts && node --import tsx scripts/test-coding.ts",
     "test:features-ui": "node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs",
     "package": "npm run build && node scripts/package.mjs",
-    "package:dir": "npm run build && electron-builder --win --dir",
+    "package:dir": "npm run build && node scripts/package.mjs --dir",
     "format": "prettier --write electron shared src tests scripts vite.config.ts"
   },
   "build": {
@@ -40,6 +40,67 @@
     },
     "portable": {
       "artifactName": "Pi-Desktop-${version}-win-x64.exe"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon-mac.png",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "Pi-Desktop-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "Pi-Desktop-${version}-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon-mac.png",
+      "category": "Development",
+      "maintainer": "yeyuProject",
+      "synopsis": "A local desktop workspace for the Pi coding agent",
+      "artifactName": "Pi-Desktop-${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ]
     }
   },
   "devDependencies": {

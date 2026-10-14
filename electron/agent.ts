@@ -470,7 +470,7 @@ export class AgentService extends EventEmitter {
       };
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
       // including installations on another drive, over Windows' legacy WSL bash launcher.
-      if (environment.bash)
+      if (environment.bash && process.platform === 'win32')
         shellEnv[pathKey] = path.dirname(environment.bash) + path.delimiter + (process.env[pathKey] ?? '');
       rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
       this.runtime.cwd = await this.store.sessionDirectory(sessionId);

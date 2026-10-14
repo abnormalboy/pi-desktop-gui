@@ -12,9 +12,13 @@ const firstImage = path.join(fixture.projectDir, 'first.png');
 const secondImage = path.join(fixture.projectDir, 'second.png');
 const invalidImage = path.join(fixture.projectDir, 'unsupported.bmp');
 const textFile = path.join(fixture.projectDir, '输入 文件.txt');
+const delayedFile = path.join(fixture.projectDir, '延迟校验.txt');
+const switchedFile = path.join(fixture.projectDir, '切换会话.txt');
 await fs.copyFile(path.resolve('build/icon.png'), firstImage);
 await fs.copyFile(firstImage, secondImage);
 await fs.writeFile(invalidImage, 'unsupported image format');
+await fs.writeFile(delayedFile, 'delayed reference');
+await fs.writeFile(switchedFile, 'reference cancelled by switching sessions');
 
 let app, page;
 const errors = [];
@@ -61,6 +65,33 @@ const drop = async (files) => {
   });
 };
 
+const holdNextDrop = () =>
+  app.evaluate(({ ipcMain }) => {
+    const handler = ipcMain._invokeHandlers.get('desktop:invoke');
+    ipcMain.removeHandler('desktop:invoke');
+    ipcMain.handle('desktop:invoke', async (event, method, args) => {
+      const result = await handler(event, method, args);
+      if (method !== 'referenceDropped') return result;
+      return new Promise((resolve) => {
+        globalThis.releaseTestDrop = () => {
+          ipcMain.removeHandler('desktop:invoke');
+          ipcMain.handle('desktop:invoke', handler);
+          delete globalThis.releaseTestDrop;
+          resolve(result);
+        };
+      });
+    });
+  });
+const releaseDrop = () =>
+  app.evaluate(async () => {
+    const deadline = Date.now() + 5000;
+    while (!globalThis.releaseTestDrop) {
+      if (Date.now() > deadline) throw new Error('No pending drop validation');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    globalThis.releaseTestDrop();
+  });
+
 try {
   await launch();
   const input = page.getByRole('textbox', { name: '任务输入' });
@@ -88,8 +119,41 @@ try {
     'PASS mixed drops preserve existing images, add images and references, and handle partial rejection',
   );
 
+  await holdNextDrop();
+  await drop([delayedFile]);
+  await input.fill('校验期间补充的重要要求');
+  await page.getByRole('button', { name: '移除图片 first.png', exact: true }).click();
+  await page.getByRole('button', { name: '移除引用 输入 文件.txt', exact: true }).click();
+  await savedSession(fixture.sessionId, (s) => s.images?.length === 1 && s.attachments.length === 1);
+  await releaseDrop();
+  const editedDuringDrop = await savedSession(fixture.sessionId, (s) =>
+    s.attachments.includes('延迟校验.txt'),
+  );
+  assert.equal(editedDuringDrop.draft, '校验期间补充的重要要求');
+  assert.deepEqual(
+    editedDuringDrop.images.map((image) => image.name),
+    ['second.png'],
+  );
+  assert.deepEqual(editedDuringDrop.attachments, ['已有修改.txt', '延迟校验.txt']);
+  assert.equal(await input.inputValue(), editedDuringDrop.draft);
+  console.log('PASS delayed file validation preserves new draft text and attachment removals');
+  await input.fill('混合拖放的草稿');
+
+  await holdNextDrop();
+  await drop([switchedFile]);
   const standalone = await page.evaluate(() => window.desktop.invoke('newSession'));
   await page.waitForFunction(() => document.querySelector('[aria-label="任务输入"]')?.value === '');
+  await input.fill('另一个会话的草稿');
+  await releaseDrop();
+  await page.waitForTimeout(150); // Let the cancelled callback finish before checking both sessions.
+  assert.equal(await input.inputValue(), '另一个会话的草稿');
+  const afterSwitch = JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'state.json'), 'utf8'));
+  assert.deepEqual(
+    afterSwitch.sessions.find((s) => s.id === fixture.sessionId).attachments,
+    editedDuringDrop.attachments,
+  );
+  assert.deepEqual(afterSwitch.sessions.find((s) => s.id === standalone.id).attachments, []);
+  console.log('PASS switching sessions cancels a pending drop without changing either conversation');
   await drop([firstImage, textFile]);
   const standaloneDraft = await savedSession(standalone.id, (s) => s.images?.length === 1);
   assert.deepEqual(standaloneDraft.attachments, []);

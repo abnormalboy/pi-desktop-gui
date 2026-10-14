@@ -83,6 +83,14 @@ declare global {
   }
 }
 const api = window.desktop;
+export const platform = {
+  mac: api.platform === 'darwin',
+  trash: api.platform === 'win32' ? '回收站' : '废纸篓',
+  fileManager: api.platform === 'win32' ? '资源管理器' : api.platform === 'darwin' ? '访达' : '文件管理器',
+};
+export const modKey = platform.mac ? '⌘' : 'Ctrl';
+export const shortcut = (key: string) => (platform.mac ? '⌘' + key : 'Ctrl+' + key);
+const mod = (e: { ctrlKey: boolean; metaKey: boolean }) => (platform.mac ? e.metaKey : e.ctrlKey);
 const statusNames: Record<string, string> = {
   idle: '就绪',
   starting: '启动中',
@@ -897,7 +905,7 @@ function QuickSwitch({
             run: () => openFile(x.file),
           }));
   return (
-    <Modal title="快速切换" subtitle="搜索会话标题与内容 · Ctrl K" close={close}>
+    <Modal title="快速切换" subtitle={`搜索会话标题与内容 · ${shortcut('K')}`} close={close}>
       <div className="modal-body quick-switch">
         <div className="search-input">
           <Search size={18} />
@@ -1052,8 +1060,8 @@ const shortcutGroups: [string, [string[], string][]][] = [
       [['↑', '↓'], '输入框为空时翻看本会话发送过的提问'],
       [['/'], '命令菜单；Tab 补全'],
       [['@'], '引用项目文件；也可把文件拖进输入框'],
-      [['Ctrl', 'V'], '粘贴图片'],
-      [['Ctrl', 'G'], '在外部编辑器中编辑草稿'],
+      [[modKey, 'V'], '粘贴图片'],
+      [[modKey, 'G'], '在外部编辑器中编辑草稿'],
     ],
   ],
   [
@@ -1067,18 +1075,18 @@ const shortcutGroups: [string, [string[], string][]][] = [
   [
     '导航',
     [
-      [['Ctrl', 'N'], '新建独立对话'],
-      [['Ctrl', 'K'], '搜索会话标题与内容'],
-      [['Ctrl', 'B'], '收起或展开侧栏'],
-      [['Ctrl', ','], '打开设置'],
-      [['Ctrl', '/'], '显示本页'],
+      [[modKey, 'N'], '新建独立对话'],
+      [[modKey, 'K'], '搜索会话标题与内容'],
+      [[modKey, 'B'], '收起或展开侧栏'],
+      [[modKey, ','], '打开设置'],
+      [[modKey, '/'], '显示本页'],
       [['Esc'], '关闭弹窗或工作区面板'],
     ],
   ],
 ];
 function ShortcutsHelp({ close }: { close: () => void }) {
   return (
-    <Modal title="键盘快捷键" subtitle="Ctrl / 随时打开" close={close}>
+    <Modal title="键盘快捷键" subtitle={`${shortcut('/')} 随时打开`} close={close}>
       <div className="modal-body shortcut-help">
         {shortcutGroups.map(([group, rows]) => (
           <section key={group}>
@@ -1225,6 +1233,8 @@ export default function App() {
     [stopArmed, setStopArmed] = useState(false),
     [dragging, setDragging] = useState(false);
   const recall = useRef(-1);
+  const composerDraft = useRef({ draft, attachments, images });
+  composerDraft.current = { draft, attachments, images };
   const thread = useRef<HTMLDivElement>(null),
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
@@ -1362,6 +1372,7 @@ export default function App() {
   useEffect(() => {
     if (!state) return;
     document.documentElement.dataset.theme = state.settings.theme;
+    document.documentElement.dataset.platform = api.platform;
     document.documentElement.style.setProperty('--font-scale', String(state.settings.fontScale));
     document.documentElement.style.setProperty('--sidebar-width', state.settings.sidebarWidth + 'px');
     document.documentElement.style.setProperty('--inspector-width', state.settings.inspectorWidth + 'px');
@@ -1421,7 +1432,7 @@ export default function App() {
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (
-        e.ctrlKey &&
+        mod(e) &&
         !e.shiftKey &&
         !e.altKey &&
         e.key.toLowerCase() === 'n' &&
@@ -1430,28 +1441,23 @@ export default function App() {
         e.preventDefault();
         if (!e.repeat) void createSession();
       }
-      if (e.ctrlKey && e.key.toLowerCase() === 'k') {
+      if (mod(e) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setSearchOpen(true);
       }
-      if (e.ctrlKey && e.key === ',') {
+      if (mod(e) && e.key === ',') {
         e.preventDefault();
         openSettings();
       }
-      if (
-        e.ctrlKey &&
-        e.key.toLowerCase() === 'g' &&
-        selected &&
-        !document.querySelector('[role="dialog"]')
-      ) {
+      if (mod(e) && e.key.toLowerCase() === 'g' && selected && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
         void action(() => api.invoke('editDraft', selected.id));
       }
-      if (e.ctrlKey && e.key.toLowerCase() === 'b' && !document.querySelector('[role="dialog"]')) {
+      if (mod(e) && e.key.toLowerCase() === 'b' && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
         setSidebar((v) => !v);
       }
-      if (e.ctrlKey && (e.key === '/' || e.code === 'Slash')) {
+      if (mod(e) && (e.key === '/' || e.code === 'Slash')) {
         e.preventDefault();
         setShortcutsOpen((v) => !v);
       }
@@ -1584,10 +1590,23 @@ export default function App() {
     return () => clearInterval(timer);
   }, [runtime.status, runtime.retry?.startedAt]);
   const persistDraft = (value: string, files = attachments, pictures = images) => {
+    if (!selected || stateRef.current?.selectedSessionId !== selected.id) return;
+    composerDraft.current = { draft: value, attachments: files, images: pictures };
     setDraft(value);
     setAttachments(files);
     setImages(pictures);
     if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files, pictures));
+  };
+  const mergeDraftAttachments = (id: string, files: string[], pictures: ImageAttachment[]) => {
+    if (stateRef.current?.selectedSessionId !== id) return false;
+    const latest = composerDraft.current;
+    if (latest.images.length + pictures.length > 8) throw new Error('每条消息最多添加 8 张图片');
+    persistDraft(
+      latest.draft,
+      [...new Set([...latest.attachments, ...files])],
+      [...latest.images, ...pictures],
+    );
+    return true;
   };
   const onDraft = (value: string) => {
     recall.current = -1;
@@ -1707,12 +1726,14 @@ export default function App() {
     );
   }
   async function acceptImages(files: File[]) {
+    if (!selected) return;
     await attempt(async () => {
       const next = await readImages(files);
-      persistDraft(draft, attachments, [...images, ...next]);
+      mergeDraftAttachments(selected.id, [], next);
     });
   }
   async function acceptDrop(files: File[]) {
+    if (!selected) return;
     const pictures = files.filter((f) => f.type.startsWith('image/'));
     const others = files.filter((f) => !f.type.startsWith('image/'));
     const nextImages = pictures.length ? await attempt(() => readImages(pictures)) : [];
@@ -1724,6 +1745,7 @@ export default function App() {
         await attempt(async () => {
           const paths = others.map((f) => api.pathForFile(f)).filter(Boolean);
           const { accepted, rejected } = await api.invoke('referenceDropped', project.id, paths);
+          if (stateRef.current?.selectedSessionId !== selected.id) return;
           nextFiles = accepted;
           if (accepted.length) setNotice(`已引用 ${accepted.length} 个文件`);
           if (rejected.length)
@@ -1733,8 +1755,9 @@ export default function App() {
         });
       }
     }
+    if (stateRef.current?.selectedSessionId !== selected.id) return;
     if (nextImages?.length || nextFiles.length)
-      persistDraft(draft, [...new Set([...attachments, ...nextFiles])], [...images, ...(nextImages ?? [])]);
+      await attempt(async () => mergeDraftAttachments(selected.id, nextFiles, nextImages ?? []));
     focusComposer();
   }
   async function addProject() {
@@ -1938,7 +1961,7 @@ export default function App() {
             onClick={() => {
               setMenuId('');
               void attempt(async () => {
-                if (await api.invoke('deleteSession', s.id)) setNotice('会话已移到回收站');
+                if (await api.invoke('deleteSession', s.id)) setNotice(`会话已移到${platform.trash}`);
               });
             }}
           >
@@ -1977,13 +2000,13 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark">π</span>
           <div>Pi Desktop</div>
-          <IconButton title="搜索项目与会话 Ctrl+K" onClick={() => setSearchOpen(true)}>
+          <IconButton title={`搜索项目与会话 ${shortcut('K')}`} onClick={() => setSearchOpen(true)}>
             <Search size={17} />
           </IconButton>
         </div>
         <button className="new-session" onClick={() => void createSession()}>
           <Plus size={17} />
-          新建对话<kbd>Ctrl N</kbd>
+          新建对话<kbd>{shortcut('N')}</kbd>
         </button>
         <div className="project-list">
           <div className="section-heading">对话</div>
@@ -2090,7 +2113,7 @@ export default function App() {
       <main className="workspace">
         <header className="workspace-header" inert={inspector && compact}>
           <IconButton
-            title={sidebar ? '收起项目侧栏 Ctrl+B' : '展开项目侧栏 Ctrl+B'}
+            title={`${sidebar ? '收起' : '展开'}项目侧栏 ${shortcut('B')}`}
             onClick={() => setSidebar((v) => !v)}
             expanded={sidebar}
             controls="project-sidebar"
@@ -2592,7 +2615,7 @@ export default function App() {
                       (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
                       !e.shiftKey &&
                       !e.altKey &&
-                      !e.ctrlKey &&
+                      !mod(e) &&
                       !e.nativeEvent.isComposing &&
                       fileQuery === null &&
                       sentPrompts.length &&
@@ -2808,15 +2831,15 @@ export default function App() {
                     className="composer-footnote"
                     title={
                       project
-                        ? 'Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · Ctrl+/ 快捷键。Pi 会直接修改项目文件。'
-                        : 'Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · Ctrl+/ 快捷键。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。'
+                        ? `Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · ${shortcut('/')} 快捷键。Pi 会直接修改项目文件。`
+                        : `Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · ${shortcut('/')} 快捷键。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。`
                     }
                   >
                     {ownRuntime && runtime.stats?.tokens ? (
                       <ContextMeter stats={runtime.stats} open={() => setFeatureTab('session')} />
                     ) : (
                       <button className="shortcut-link" onClick={() => setShortcutsOpen(true)}>
-                        Shift + Enter 换行 · <kbd>Ctrl</kbd>
+                        Shift + Enter 换行 · <kbd>{modKey}</kbd>
                         <kbd>/</kbd> 快捷键
                       </button>
                     )}
@@ -3504,7 +3527,7 @@ export default function App() {
                     }}
                   />
                   <label className="field-label">
-                    代码编辑器 <small>留空时在资源管理器中定位文件</small>
+                    代码编辑器 <small>留空时在{platform.fileManager}中定位文件</small>
                   </label>
                   <div className="path-field">
                     <input
