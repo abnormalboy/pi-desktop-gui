@@ -5,13 +5,67 @@ import {
   DefaultPackageManager,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent';
-import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { toggleResourceSetting } from './resources-config';
+import {
+  APPROVAL_ALLOW,
+  APPROVAL_ALWAYS,
+  APPROVAL_DENY,
+  APPROVAL_PREFIX,
+  alwaysKey,
+  decide,
+  describe,
+  type ApprovalMode,
+} from '../shared/approval';
 
 export default function desktopBridge(pi: ExtensionAPI) {
   let authAbort: AbortController | undefined;
+  let approvalMode: ApprovalMode =
+    (['auto', 'confirm', 'readonly'] as const).find((m) => m === process.env.PI_DESKTOP_APPROVAL) ?? 'auto';
+  const alwaysAllowed = new Set<string>();
+  pi.on('session_start', () => {
+    alwaysAllowed.clear();
+  });
+  async function approve(toolName: string, input: unknown, ctx: ExtensionContext) {
+    const verdict = decide(approvalMode, toolName);
+    if (verdict === 'allow') return;
+    if (verdict === 'deny')
+      return {
+        block: true as const,
+        reason: `当前为只读模式，桌面端拒绝了 ${toolName}。请只读取和分析，不要修改文件或执行命令。`,
+      };
+    const request = describe(toolName, input);
+    if (alwaysAllowed.has(alwaysKey(request))) return;
+    const choice = await ctx.ui.select(APPROVAL_PREFIX + JSON.stringify(request), [
+      APPROVAL_ALLOW,
+      APPROVAL_ALWAYS,
+      APPROVAL_DENY,
+    ]);
+    if (choice === APPROVAL_ALLOW) return;
+    if (choice === APPROVAL_ALWAYS) {
+      alwaysAllowed.add(alwaysKey(request));
+      return;
+    }
+    const reason = choice?.startsWith(APPROVAL_DENY + '：')
+      ? choice.slice(APPROVAL_DENY.length + 1).trim()
+      : '';
+    return {
+      block: true as const,
+      reason: `用户拒绝了这次 ${toolName} 调用${reason ? '，原因：' + reason : ''}。请按用户意见调整，不要重复同样的操作。`,
+    };
+  }
+  pi.on('tool_call', (event, ctx) => approve(event.toolName, event.input, ctx));
+  pi.on('user_bash', async (event, ctx) => {
+    const blocked = await approve('bash', { command: event.command }, ctx);
+    if (blocked)
+      return { result: { output: blocked.reason, exitCode: 1, cancelled: false, truncated: false } };
+  });
   async function models(ctx: ExtensionCommandContext) {
     const m = await ModelRuntime.create();
     for (const id of ctx.modelRegistry.getRegisteredProviderIds()) {
@@ -35,7 +89,13 @@ export default function desktopBridge(pi: ExtensionAPI) {
         let data: unknown;
         switch (request.method) {
           case 'options':
-            data = { autoRetry: pi.getSettings().retry?.enabled !== false };
+            data = { autoRetry: pi.getSettings().retry?.enabled !== false, approvalMode };
+            break;
+          case 'approval_mode':
+            if (!['auto', 'confirm', 'readonly'].includes(p.mode)) throw new Error('审批模式无效');
+            approvalMode = p.mode;
+            if (p.mode !== 'confirm') alwaysAllowed.clear();
+            data = { approvalMode };
             break;
           case 'tree': {
             const active = new Set(ctx.sessionManager.getBranch().map((e) => e.id));

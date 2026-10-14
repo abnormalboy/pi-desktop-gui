@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop-gui",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "description": "A local desktop workspace for the Pi coding agent",
   "author": "yeyuProject",
@@ -15,8 +15,8 @@
     "test:integration": "node --import tsx scripts/integration.ts",
     "test:ui": "node --import tsx scripts/test-ui.mjs && node --import tsx scripts/test-experience-ui.mjs",
     "test:chat-ui": "node --import tsx scripts/test-chat-ui.mjs",
-    "test:features": "node --import tsx scripts/test-features.ts && node --import tsx scripts/test-management.ts && node --import tsx scripts/test-workflow.ts && node --import tsx scripts/test-coding.ts",
-    "test:features-ui": "node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs",
+    "test:features": "node --import tsx scripts/test-features.ts && node --import tsx scripts/test-management.ts && node --import tsx scripts/test-workflow.ts && node --import tsx scripts/test-coding.ts && node --import tsx scripts/test-approval.ts",
+    "test:features-ui": "node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs && node --import tsx scripts/test-approval-ui.mjs",
     "package": "npm run build && node scripts/package.mjs",
     "package:dir": "npm run build && node scripts/package.mjs --dir",
     "format": "prettier --write electron shared src tests scripts vite.config.ts"

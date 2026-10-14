@@ -191,7 +191,7 @@ test('unborn repositories show additions and non-Git directories remain browsabl
   assert.equal((await ws.changes(p)).files[0].status, '新增');
   assert.equal((await ws.diff(p, 'file.txt', 'all')).before, '');
 });
-test('undo restores original bytes after restart and rejects text-only snapshots', async () => {
+test('undo restores original bytes after restart and rejects older snapshot formats', async () => {
   const dir = await sandbox(),
     data = await sandbox(),
     p = project(dir);
@@ -215,13 +215,55 @@ test('undo restores original bytes after restart and rejects text-only snapshots
 
   const snapshotFile = path.join(data, 'baselines', `${p.id}.json`);
   const snapshot = JSON.parse(await fs.readFile(snapshotFile, 'utf8'));
-  delete snapshot.version;
+  snapshot.version = 2;
   snapshot.files['gbk.txt'] = original.toString('utf8');
   await fs.writeFile(snapshotFile, JSON.stringify(snapshot));
   const legacy = new Workspace(data);
   assert.equal((await legacy.changes(p, 'run')).baselineAvailable, false);
   await assert.rejects(legacy.revert(p, null), /运行基线不可用/);
   assert.deepEqual(await fs.readFile(file), original);
+});
+
+test('Git snapshots restore binaries, modes and line endings without touching the project repository', async () => {
+  const dir = await sandbox(),
+    data = await sandbox(),
+    p = project(dir);
+  await git(dir, 'init');
+  await fs.writeFile(path.join(dir, 'crlf.txt'), 'a\r\nb\r\n');
+  await fs.writeFile(path.join(dir, '.gitattributes'), '*.txt text eol=lf\n');
+  await git(dir, 'add', '.');
+  await git(dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture');
+  const image = Buffer.from(Array.from({ length: 2 * 1024 * 1024 }, (_, i) => i % 251));
+  await fs.writeFile(path.join(dir, 'image.png'), image);
+  await fs.writeFile(path.join(dir, 'run.sh'), '#!/bin/sh\n', { mode: 0o755 });
+  const repoState = async () => [
+    await git(dir, 'for-each-ref'),
+    await git(dir, 'stash', 'list'),
+    await git(dir, 'count-objects'),
+    await git(dir, 'status', '--porcelain'),
+  ];
+  const before = await repoState();
+  const ws = new Workspace(data);
+  await ws.capture(p);
+  assert.deepEqual(await repoState(), before, 'snapshot must not write to the project repository');
+  await fs.writeFile(path.join(dir, 'image.png'), Buffer.alloc(8, 1));
+  await fs.writeFile(path.join(dir, 'crlf.txt'), 'changed\n');
+  await fs.rm(path.join(dir, 'run.sh'));
+  await fs.writeFile(path.join(dir, 'added.bin'), Buffer.from([0, 1, 2]));
+  assert.deepEqual((await ws.changes(p, 'run')).files.map((f) => f.path).sort(), [
+    'added.bin',
+    'crlf.txt',
+    'image.png',
+    'run.sh',
+  ]);
+  assert.match((await ws.diff(p, 'image.png', 'run')).unavailable ?? '', /可撤销/);
+  await new Workspace(data).revert(p, null);
+  assert.deepEqual(await fs.readFile(path.join(dir, 'image.png')), image);
+  assert.equal(await fs.readFile(path.join(dir, 'crlf.txt'), 'utf8'), 'a\r\nb\r\n');
+  await assert.rejects(fs.stat(path.join(dir, 'added.bin')));
+  if (process.platform !== 'win32')
+    assert.equal((await fs.stat(path.join(dir, 'run.sh'))).mode & 0o777, 0o755);
+  assert.equal((await ws.changes(p, 'run')).files.length, 0);
 });
 
 test('undo excludes directory links and never removes or overwrites their targets', async () => {

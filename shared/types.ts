@@ -1,3 +1,5 @@
+import type { ApprovalMode, ApprovalRequest } from './approval';
+export type { ApprovalMode, ApprovalRequest } from './approval';
 export type RunStatus =
   | 'idle'
   | 'starting'
@@ -35,6 +37,7 @@ export interface Session {
   pinned?: boolean;
   model?: { provider: string; id: string };
   thinking?: string;
+  approvalMode?: ApprovalMode;
 }
 export interface Settings {
   piPath: string;
@@ -93,6 +96,8 @@ export interface ExtensionDialog {
   id: string;
   method: 'select' | 'confirm' | 'input' | 'editor';
   title: string;
+  /** Present when the dialog is a tool approval request from the desktop bridge. */
+  approval?: ApprovalRequest;
   message?: string;
   options?: string[];
   placeholder?: string;
@@ -191,6 +196,7 @@ export interface Runtime {
   widgetPlacements?: Record<string, string>;
   autoCompaction?: boolean;
   autoRetry?: boolean;
+  approvalMode?: ApprovalMode;
   steeringMode?: string;
   followUpMode?: string;
 }
@@ -261,7 +267,37 @@ export interface FileDiff {
   after: string;
   unavailable?: string;
 }
-export type AppEvent = { type: 'state'; state: AppState } | { type: 'runtime'; runtime: Runtime };
+/**
+ * Incremental runtime update. Scalar fields are always current; `messages` and `tools` replace the
+ * receiver's arrays from `messagesFrom` / `toolsFrom` onwards (a full resync uses 0).
+ */
+export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
+  messagesFrom: number;
+  messages: Message[];
+  messageCount: number;
+  toolsFrom: number;
+  tools: ToolActivity[];
+  toolCount: number;
+};
+export type AppEvent =
+  | { type: 'state'; state: AppState }
+  | { type: 'runtime'; runtime: Runtime }
+  | { type: 'runtimePatch'; patch: RuntimePatch };
+/** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
+export function applyRuntimePatch(previous: Runtime, patch: RuntimePatch): Runtime {
+  const { messagesFrom, messages, messageCount, toolsFrom, tools, toolCount, ...rest } = patch;
+  const sameSession = previous.sessionId === patch.sessionId;
+  const applyItems = <T>(before: T[], from: number, changed: T[], count: number) => {
+    if (sameSession && from === before.length && changed.length === 0 && count === before.length)
+      return before;
+    return (sameSession ? before.slice(0, from) : []).concat(changed).slice(0, count);
+  };
+  return {
+    ...rest,
+    messages: applyItems(previous.messages, messagesFrom, messages, messageCount),
+    tools: applyItems(previous.tools, toolsFrom, tools, toolCount),
+  };
+}
 export interface Bootstrap {
   state: AppState;
   runtime: Runtime;
@@ -287,6 +323,7 @@ export interface ApiMap {
   setSessionThinking: { args: [string, string]; result: void };
   messageAction: { args: [string, MessageAction, 'user' | 'assistant', number]; result: void };
   abortRetry: { args: []; result: void };
+  setApprovalMode: { args: [string, ApprovalMode]; result: void };
   revertChanges: { args: [string, string[] | null]; result: string[] };
   setEntryLabel: { args: [string, string, string]; result: void };
   saveDraft: { args: [string, string, string[], ImageAttachment[]?]; result: void };

@@ -59,7 +59,7 @@
   <tr>
     <td width="50%" valign="top">
       <h3>⏪ 代码快照与文件撤销</h3>
-      <p>在 Git 项目中，任务开始前为受支持文件建立基线。支持<strong>撤销本轮文件修改</strong>或<strong>单独回滚指定文件</strong>；撤销本轮新建文件时移入回收站。未纳入基线的文件会明确提示，命令产生的外部副作用不在文件撤销范围内。</p>
+      <p>在 Git 项目中，每次发送前用 Git 对象为工作区建立快照（存放在应用数据目录，不改动项目的 <code>.git</code>），支持二进制内容、原始换行符和 POSIX 文件权限恢复。支持<strong>撤销本轮文件修改</strong>或<strong>单独回滚指定文件</strong>；撤销本轮新建文件时移入回收站。快照有文件范围、单文件 50 MiB 和保留容量限制；命令产生的外部副作用不在文件撤销范围内。</p>
     </td>
     <td width="50%" valign="top">
       <h3>🔌 全栈生态控制中心</h3>
@@ -74,6 +74,16 @@
     <td width="50%" valign="top">
       <h3>🖥️ 终端与桌面交接</h3>
       <p>支持在运行途中补充要求（Steer）或追加后续队列（Follow-up）。需要终端专用扩展界面时，点击<strong>「在 Pi 终端继续」</strong>沿用同一会话；关闭终端后可回到桌面重新连接。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🛡️ 工具审批模式</h3>
+      <p>每个会话可选<strong>全自动</strong>、<strong>确认修改</strong>或<strong>只读</strong>。确认模式下，写文件、执行命令和调用外部工具前会出现确认卡片，可允许一次、本会话总是允许，或填写原因拒绝。只读模式仅放行内置读取与搜索工具，也会拦截手动 <code>!</code> / <code>!!</code> 命令；它控制工具调用，不是操作系统沙箱，不能限制扩展自身运行的代码。</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🚀 减少长会话的重复渲染</h3>
+      <p>主进程按变化位置推送消息和工具，保留未变化部分；消息组件和 Markdown 解析使用缓存，减少流式输出时的重复工作。窗口刷新后会重新同步完整运行状态。</p>
     </td>
   </tr>
 </table>
@@ -159,13 +169,15 @@ pi-desktop/
 │   ├── main.ts         # 窗口生命周期、菜单与 IPC 路由
 │   ├── rpc.ts          # Pi Agent stdio RPC 通信（JSONL）
 │   ├── workspace.ts    # 工作区文件监控、Git Diff 与快照回滚
+│   ├── snapshot.ts     # 基于 Git 对象的私有运行快照
+│   ├── pi-bridge.ts    # 注入 Pi 的桌面适配扩展（含工具审批）
 │   ├── history.ts      # JSONL 会话树解析与全文检索
 │   └── ...
 ├── src/                # React 19 渲染进程前端
 │   ├── App.tsx         # 主工作台、对话流与消息分支交互
 │   ├── PiFeatures.tsx  # MCP / Skills / 供应商 / 会话树管理中心
 │   └── SettingsForm.tsx# 环境诊断与偏好设置
-├── shared/             # 主进程与渲染进程共享类型契约
+├── shared/             # 主进程与渲染进程共享类型契约、审批策略
 └── scripts/            # 构建、打包与端到端自动化验收脚本
 ```
 

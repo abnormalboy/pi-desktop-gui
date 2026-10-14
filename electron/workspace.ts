@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { createTwoFilesPatch } from 'diff';
 import ignore from 'ignore';
 import type { Changes, Change, FileDiff, FileItem, FilePreview, Project } from '../shared/types';
+import { createSnapshotRepo, hashBlobs, readBlob, storeBlobs } from './snapshot';
 const exec = promisify(execFile);
 const MiB = 1024 * 1024;
 const excluded = new Set([
@@ -188,26 +189,77 @@ async function snapshotPath(root: string, relative: string, allowMissing = false
   }
   return absolute;
 }
-async function snapshotBytes(project: Project, relative: string) {
-  const file = await snapshotPath(project.path, relative);
-  const handle = await fs.open(file, 'r');
+const SNAPSHOT_FILE_LIMIT = 50 * MiB;
+async function snapshotStorageBytes(directory: string): Promise<number> {
+  let entries;
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MiB) throw new Error('文件不是普通文件或超过 1 MiB');
-    const bytes = await handle.readFile();
-    if (bytes.length > MiB || bytes.subarray(0, 8192).includes(0))
-      throw new Error('二进制文件或文件超过 1 MiB');
-    return bytes;
-  } finally {
-    await handle.close();
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
   }
+  const sizes = await Promise.all(
+    entries.map(async (entry) => {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) return snapshotStorageBytes(file);
+      return entry.isFile() ? (await fs.stat(file)).size : 0;
+    }),
+  );
+  return sizes.reduce((sum, size) => sum + size, 0);
+}
+/**
+ * Classify files for snapshotting with one lstat per path component. Symbolic links, non-regular
+ * files and very large files are reported as omitted; names Git cannot take on stdin are too.
+ */
+async function snapshotCandidates(root: string, names: string[]) {
+  const canonical = await fs.realpath(root);
+  const linkCache = new Map<string, Promise<boolean>>();
+  const isLink = (absolute: string) => {
+    let v = linkCache.get(absolute);
+    if (!v) {
+      v = fs.lstat(absolute).then(
+        (s) => s.isSymbolicLink(),
+        () => false,
+      );
+      linkCache.set(absolute, v);
+    }
+    return v;
+  };
+  const files: { name: string; mode: number }[] = [],
+    omitted: string[] = [],
+    missing: string[] = [];
+  const check = async (name: string) => {
+    if (/[\r\n]/.test(name) || sensitive(name) || name.split('/').includes('.git')) return omitted.push(name);
+    const absolute = path.resolve(canonical, name);
+    if (!contained(canonical, absolute) || absolute === canonical) return omitted.push(name);
+    const parts = path.relative(canonical, absolute).split(path.sep);
+    let current = canonical;
+    for (const part of parts.slice(0, -1)) {
+      current = path.join(current, part);
+      if (await isLink(current)) return omitted.push(name);
+    }
+    try {
+      const stat = await fs.lstat(absolute);
+      if (!stat.isFile() || stat.size > SNAPSHOT_FILE_LIMIT) return omitted.push(name);
+      files.push({ name, mode: stat.mode & 0o777 });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') missing.push(name);
+      else omitted.push(name);
+    }
+  };
+  for (let i = 0; i < names.length; i += 128) await Promise.all(names.slice(i, i + 128).map(check));
+  return { files, omitted, missing };
 }
 interface Baseline {
-  version: 2;
+  version: 3;
   projectId: string;
   fingerprint: string;
   time: number;
+  /** Private bare repository (under baselines/) that holds the blobs. */
+  repo: string;
+  /** relative path -> blob id of the bytes on disk */
   files: Record<string, string>;
+  modes: Record<string, number>;
   dirty: string[];
   omitted: string[];
 }
@@ -222,35 +274,32 @@ export class Workspace {
       return;
     }
     const changes = await this.changes(project);
-    const names = await allFiles(project);
+    const { files, omitted } = await snapshotCandidates(project.path, await allFiles(project));
+    const time = Date.now();
+    const dir = path.join(this.dataDir, 'baselines');
+    const repo = `${project.id}-${time}.git`;
+    await createSnapshotRepo(path.join(dir, repo), project.path);
+    const ids = await storeBlobs(
+      path.join(dir, repo),
+      project.path,
+      files.map((f) => f.name),
+    );
     const baseline: Baseline = {
-      version: 2,
+      version: 3,
       projectId: project.id,
       fingerprint: meta.fingerprint,
-      time: Date.now(),
-      files: {},
+      time,
+      repo,
+      files: Object.fromEntries(files.map((f, i) => [f.name, ids[i]])),
+      modes: Object.fromEntries(files.map((f) => [f.name, f.mode])),
       dirty: changes.files.map((f) => f.path),
-      omitted: [],
+      omitted,
     };
-    let size = 0;
-    for (const name of names) {
-      try {
-        const bytes = await snapshotBytes(project, name);
-        if (size + bytes.length > 20 * MiB) {
-          baseline.omitted.push(name);
-          continue;
-        }
-        size += bytes.length;
-        baseline.files[name] = bytes.toString('base64');
-      } catch {
-        baseline.omitted.push(name);
-      }
-    }
     this.baselines.set(project.id, baseline);
-    const dir = path.join(this.dataDir, 'baselines');
-    await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, `${project.id}.json`), JSON.stringify(baseline), { mode: 0o600 });
     await this.cleanup();
+    if (!this.baselines.has(project.id))
+      throw new Error('本轮快照超过 200 MiB 的保留上限，请缩小项目范围或减少需保存的文件后重试');
   }
   async cleanup() {
     const dir = path.join(this.dataDir, 'baselines');
@@ -265,10 +314,39 @@ export class Workspace {
     }
     files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
     let total = 0;
+    const live = new Set<string>();
     for (const entry of files) {
-      total += entry.stat.size;
-      if (Date.now() - entry.stat.mtimeMs > 7 * 86400000 || total > 200 * MiB) await fs.unlink(entry.file);
+      let repo: string | undefined;
+      try {
+        const name = JSON.parse(await fs.readFile(entry.file, 'utf8')).repo;
+        if (typeof name === 'string' && /^[\w-]+-\d+\.git$/.test(name)) repo = name;
+      } catch {}
+      total += entry.stat.size + (repo ? await snapshotStorageBytes(path.join(dir, repo)) : 0);
+      if (Date.now() - entry.stat.mtimeMs > 7 * 86400000 || total > 200 * MiB) {
+        await fs.unlink(entry.file);
+        this.baselines.delete(path.basename(entry.file, '.json'));
+      } else if (repo) {
+        live.add(repo);
+      }
     }
+    // Snapshot repositories that no current baseline points to.
+    for (const name of entries)
+      if (/^[\w-]+-\d+\.git$/.test(name) && !live.has(name))
+        await fs.rm(path.join(dir, name), { recursive: true, force: true });
+  }
+  private repoPath(b: Baseline) {
+    return path.join(this.dataDir, 'baselines', b.repo);
+  }
+  /** Blob id of each named file as it is on disk now; undefined when missing. Unsafe paths throw. */
+  private async current(project: Project, names: string[]) {
+    const { files, omitted, missing } = await snapshotCandidates(project.path, names);
+    const ids = await hashBlobs(
+      project.path,
+      files.map((f) => f.name),
+    );
+    const now = new Map<string, string | undefined>(files.map((f, i) => [f.name, ids[i]]));
+    for (const m of missing) now.set(m, undefined);
+    return { now, omitted, modes: new Map(files.map((f) => [f.name, f.mode])) };
   }
   private async baseline(projectId: string) {
     if (this.baselines.has(projectId)) return this.baselines.get(projectId);
@@ -276,8 +354,8 @@ export class Workspace {
       const b: Baseline = JSON.parse(
         await fs.readFile(path.join(this.dataDir, 'baselines', `${projectId}.json`), 'utf8'),
       );
-      // Text-only snapshots cannot guarantee a lossless restore.
-      if (b.version === 2 && Date.now() - b.time <= 7 * 86400000 && b.projectId === projectId) {
+      // Older text and inline snapshots are not restorable by this version.
+      if (b.version === 3 && Date.now() - b.time <= 7 * 86400000 && b.projectId === projectId) {
         this.baselines.set(projectId, b);
         return b;
       }
@@ -343,25 +421,22 @@ export class Workspace {
         });
       }
       if (mode === 'run' && valid) {
-        const current = await allFiles(project);
-        const names = new Set([...current, ...Object.keys(baseline!.files)]);
+        const skip = new Set(baseline!.omitted);
+        const names = [...new Set([...(await allFiles(project)), ...Object.keys(baseline!.files)])].filter(
+          (n) => !skip.has(n),
+        );
+        const { now, omitted, modes } = await this.current(project, names);
+        result.omitted.push(...omitted.filter((n) => !result.omitted.includes(n)));
         const files: Change[] = [];
         for (const name of names) {
-          if (baseline!.omitted.includes(name)) continue;
-          let after = '',
-            present = true;
-          try {
-            after = (await snapshotBytes(project, name)).toString('base64');
-          } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === 'ENOENT') present = false;
-            else {
-              result.omitted.push(name);
-              continue;
-            }
-          }
-          const existed = name in baseline!.files,
-            before = baseline!.files[name] ?? '';
-          if (existed === present && before === after) continue;
+          if (!now.has(name)) continue;
+          const after = now.get(name),
+            before = baseline!.files[name];
+          const existed = before !== undefined,
+            present = after !== undefined;
+          const modeChanged =
+            process.platform !== 'win32' && existed && present && baseline!.modes[name] !== modes.get(name);
+          if (before === after && !modeChanged) continue;
           files.push({
             path: name,
             status: !present ? '删除' : !existed ? '新增' : '修改',
@@ -386,18 +461,28 @@ export class Workspace {
     const baseline = await this.baseline(project.id);
     if (!baseline || baseline.fingerprint !== meta.fingerprint)
       throw new Error('运行基线不可用或 Git 分支已经变化，无法撤销');
-    const changed = (await this.changes(project, 'run')).files.map((f) => f.path);
+    const changes = await this.changes(project, 'run');
+    if (changes.error) throw new Error(`无法确认本轮文件变化，未执行撤销：${changes.error}`);
+    const changed = changes.files.map((f) => f.path);
     const targets = only ? changed.filter((p) => only.includes(p)) : changed;
     if (only && targets.length !== new Set(only).size)
       throw new Error('部分文件已不在本轮变更中，请刷新后再试');
+    // Read every original first so a missing blob cannot leave a half-reverted run.
+    const originals = new Map<string, Buffer>();
+    for (const name of targets)
+      if (name in baseline.files)
+        originals.set(name, await readBlob(this.repoPath(baseline), project.path, baseline.files[name]));
     const reverted: string[] = [];
     for (const name of targets) {
       if (baseline.omitted.includes(name) || sensitive(name)) continue;
       const absolute = await snapshotPath(project.path, name, name in baseline.files);
-      if (name in baseline.files) {
+      const original = originals.get(name);
+      if (original) {
         await fs.mkdir(path.dirname(absolute), { recursive: true });
         await snapshotPath(project.path, name, true);
-        await fs.writeFile(absolute, Buffer.from(baseline.files[name], 'base64'));
+        await fs.writeFile(absolute, original);
+        if (process.platform !== 'win32' && baseline.modes[name] !== undefined)
+          await fs.chmod(absolute, baseline.modes[name]);
       } else {
         await remove(absolute);
       }
@@ -428,9 +513,15 @@ export class Workspace {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
-    if (mode === 'run')
-      result.before = Buffer.from(baseline!.files[relative] ?? '', 'base64').toString('utf8');
-    else if (meta.head) {
+    if (mode === 'run') {
+      const id = baseline!.files[relative];
+      if (id) {
+        const original = await readBlob(this.repoPath(baseline!), project.path, id);
+        if (original.length > MiB || original.subarray(0, 8192).includes(0))
+          return { ...result, unavailable: '二进制文件或原内容超过 1 MiB，可撤销但无法预览差异' };
+        result.before = original.toString('utf8');
+      }
+    } else if (meta.head) {
       try {
         result.before = await git(
           project.path,

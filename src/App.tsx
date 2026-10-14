@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
   ArrowUp,
   Square,
@@ -49,7 +49,11 @@ import {
   TriangleAlert,
   Gauge,
   Undo2,
+  ShieldCheck,
+  Eye,
+  Zap,
 } from 'lucide-react';
+import { APPROVAL_ALLOW, APPROVAL_ALWAYS, APPROVAL_DENY } from '../shared/approval';
 import { PiFeatures, builtinCommands } from './PiFeatures';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -71,8 +75,11 @@ import {
   type ToolActivity,
   type Settings,
   type ExtensionDialog,
+  type ContentBlock,
+  applyRuntimePatch,
   type ImageAttachment,
   type MessageAction,
+  type ApprovalMode,
   type PiCommand,
   type PiSessionInfo,
   type SessionMatch,
@@ -112,6 +119,7 @@ const commandSourceNames: Record<string, string> = {
   skill: 'Skills',
   extension: '扩展命令',
 };
+const noTools: ToolActivity[] = [];
 const relativeTime = (value: number) => {
   const minutes = Math.round((Date.now() - value) / 60000);
   if (minutes < 1) return '刚刚';
@@ -269,28 +277,24 @@ function CodeBlock({ children }: { children: ReactNode }) {
     </div>
   );
 }
-function RichText({ text }: { text: string }) {
+const markdownComponents = {
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+    <button className="inline-link" onClick={() => href && void api.invoke('openLink', href).catch(() => {})}>
+      {children}
+    </button>
+  ),
+  pre: ({ children }: { children?: ReactNode }) => <CodeBlock>{children}</CodeBlock>,
+  img: ({ src, alt }: { src?: string; alt?: string }) => <MarkdownImage src={src} alt={alt} />,
+};
+const remarkPlugins = [remarkGfm];
+// Parsing Markdown dominates render time in long sessions; only re-parse when the text changes.
+const RichText = memo(function RichText({ text }: { text: string }) {
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      skipHtml
-      components={{
-        a: ({ href, children }) => (
-          <button
-            className="inline-link"
-            onClick={() => href && void api.invoke('openLink', href).catch(() => {})}
-          >
-            {children}
-          </button>
-        ),
-        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-        img: ({ src, alt }) => <MarkdownImage src={src} alt={alt} />,
-      }}
-    >
+    <Markdown remarkPlugins={remarkPlugins} skipHtml components={markdownComponents}>
       {text}
     </Markdown>
   );
-}
+});
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const [loaded, setLoaded] = useState(false);
   if (src && /^data:image\/(png|jpeg|gif|webp);base64,/.test(src))
@@ -977,6 +981,319 @@ function QuickSwitch({
     </Modal>
   );
 }
+const approvalModes: [ApprovalMode, string, string][] = [
+  ['auto', '全自动', 'Pi 直接修改文件、执行命令'],
+  ['confirm', '确认修改', '写文件、执行命令和调用外部工具前先询问'],
+  ['readonly', '只读', '只允许读取和搜索，拒绝所有修改和命令'],
+];
+function ApprovalSwitch({
+  mode,
+  disabled,
+  change,
+}: {
+  mode: ApprovalMode;
+  disabled: boolean;
+  change: (mode: ApprovalMode) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+  const Icon = mode === 'readonly' ? Eye : mode === 'confirm' ? ShieldCheck : Zap;
+  return (
+    <div className={'approval-switch ' + mode} ref={ref}>
+      <button
+        className="approval-pill"
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="审批模式"
+        title={approvalModes.find((m) => m[0] === mode)?.[2]}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon size={14} />
+        <span>{approvalModes.find((m) => m[0] === mode)?.[1]}</span>
+      </button>
+      {open && (
+        <div className="approval-menu" role="menu">
+          {approvalModes.map(([id, label, hint]) => {
+            const ItemIcon = id === 'readonly' ? Eye : id === 'confirm' ? ShieldCheck : Zap;
+            return (
+              <button
+                key={id}
+                role="menuitemradio"
+                aria-checked={mode === id}
+                onClick={() => {
+                  setOpen(false);
+                  if (id !== mode) change(id);
+                }}
+              >
+                <ItemIcon size={15} />
+                <span>
+                  {label}
+                  <small>{hint}</small>
+                </span>
+                {mode === id && <Check size={14} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+function ApprovalCard({
+  dialog,
+  first,
+  respond,
+}: {
+  dialog: ExtensionDialog;
+  first: boolean;
+  respond: (value: string) => void;
+}) {
+  const a = dialog.approval!;
+  const [reason, setReason] = useState<string | null>(null);
+  const allow = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (first && document.activeElement === document.body) allow.current?.focus({ preventScroll: false });
+  }, [first]);
+  const lines = a.detail?.split('\n') ?? [];
+  return (
+    <section className={'approval-card ' + a.kind} aria-label={`等待批准：${a.toolName}`}>
+      <header>
+        {a.kind === 'shell' ? <Terminal size={15} /> : <FileText size={15} />}
+        <strong>
+          {a.kind === 'shell'
+            ? 'Pi 想执行命令'
+            : a.kind === 'write'
+              ? `Pi 想${a.toolName === 'edit' ? '修改' : '写入'}文件`
+              : `Pi 想调用 ${a.toolName}`}
+        </strong>
+        {a.path && <code>{a.path}</code>}
+      </header>
+      {a.kind === 'shell' ? (
+        <pre className="approval-command">{a.summary}</pre>
+      ) : a.detail ? (
+        <pre className="diff-lines approval-diff">
+          {lines.map((l, i) => (
+            <div
+              key={i}
+              className={
+                l.startsWith('+') ? 'added' : l.startsWith('-') ? 'removed' : l.startsWith('@@') ? 'hunk' : ''
+              }
+            >
+              {l || ' '}
+            </div>
+          ))}
+        </pre>
+      ) : (
+        <pre className="approval-command">{a.summary}</pre>
+      )}
+      {reason === null ? (
+        <div className="approval-actions">
+          <button ref={allow} className="primary" onClick={() => respond(APPROVAL_ALLOW)}>
+            <Check size={14} />
+            允许
+          </button>
+          <button
+            onClick={() => respond(APPROVAL_ALWAYS)}
+            title={a.kind === 'shell' ? '仅对完全相同的命令生效' : `本会话内不再询问 ${a.toolName}`}
+          >
+            {a.kind === 'shell' ? '本会话总是允许此命令' : `本会话总是允许 ${a.toolName}`}
+          </button>
+          <button className="deny" onClick={() => setReason('')}>
+            拒绝…
+          </button>
+        </div>
+      ) : (
+        <form
+          className="approval-actions"
+          onSubmit={(e) => {
+            e.preventDefault();
+            respond(reason.trim() ? `${APPROVAL_DENY}：${reason.trim()}` : APPROVAL_DENY);
+          }}
+        >
+          <input
+            className="input"
+            autoFocus
+            aria-label="拒绝原因"
+            placeholder="告诉 Pi 为什么拒绝、应该怎么做（可选）"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setReason(null))}
+          />
+          <button type="submit" className="deny">
+            拒绝
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+interface MessageContext {
+  running: boolean;
+  locked: boolean;
+  expanded: string[];
+  liveToolIds: Set<string>;
+  toolFor: (m: Message) => ToolActivity;
+  toggleTool: (id: string, open: boolean) => void;
+  openFile: (path: string) => void;
+  copy: (text: string) => void;
+  act: (m: Message, kind: MessageAction) => void;
+}
+// One row per message. Rows whose message object is unchanged skip rendering entirely, so a
+// streaming reply re-renders only itself instead of the whole conversation.
+const ChatMessage = memo(
+  function ChatMessage({ m, last, ctx }: { m: Message; last: boolean; ctx: MessageContext }) {
+    if (m.role === 'toolResult') {
+      const tool = ctx.toolFor(m);
+      return (
+        <div>
+          <ToolCard
+            tool={tool}
+            expanded={ctx.expanded.includes(tool.id)}
+            onToggle={(v) => ctx.toggleTool(tool.id, v)}
+            openFile={(p) => ctx.openFile(p)}
+          />
+          <MessageImages message={m} />
+        </div>
+      );
+    }
+    if (m.role === 'bashExecution')
+      return (
+        <article className="message bash-message">
+          <strong>
+            <Terminal size={14} /> {String(m.command ?? '')}
+          </strong>
+          <CodeBlock>{String(m.output ?? '')}</CodeBlock>
+          <small>
+            {m.excludeFromContext ? '输出不进入模型上下文' : '输出已加入模型上下文'} · 退出码{' '}
+            {String(m.exitCode ?? '')}
+          </small>
+        </article>
+      );
+    if (m.role === 'custom' || m.role === 'branchSummary' || m.role === 'compactionSummary')
+      return (
+        <article className="message">
+          <RichText text={messageText(m) || String(m.summary ?? '')} />
+        </article>
+      );
+    if (m.role !== 'user' && m.role !== 'assistant') return null;
+    const content = messageText(m);
+    if (
+      m.role === 'assistant' &&
+      !content &&
+      !m.errorMessage &&
+      typeof m.content !== 'string' &&
+      !m.content.some(
+        (b) => (b.type === 'thinking' && b.thinking) || (ctx.running && typeof b.partialJson === 'string'),
+      )
+    )
+      return null;
+    return (
+      <article className={'message ' + m.role}>
+        <div className="message-heading">
+          {m.role === 'assistant' && (
+            <span className="avatar assistant" aria-hidden="true">
+              π
+            </span>
+          )}
+          <strong>{m.role === 'user' ? '你' : 'Pi'}</strong>
+          {m.timestamp && <time>{time(m.timestamp)}</time>}
+          {m.role === 'assistant' && <ReplyMeta message={m} />}
+          <span className="message-actions">
+            <IconButton title="复制消息" onClick={() => ctx.copy(content)}>
+              <Copy size={13} />
+            </IconButton>
+            {m.role === 'user' && m.timestamp && (
+              <>
+                <IconButton title="编辑后重新发送" disabled={ctx.locked} onClick={() => ctx.act(m, 'edit')}>
+                  <Pencil size={13} />
+                </IconButton>
+                <IconButton
+                  title="从这里分支到新会话"
+                  disabled={ctx.locked}
+                  onClick={() => ctx.act(m, 'fork')}
+                >
+                  <GitBranch size={13} />
+                </IconButton>
+              </>
+            )}
+            {m.role === 'assistant' && m.timestamp && last && (
+              <IconButton
+                title="重新生成这条回复"
+                disabled={ctx.locked}
+                onClick={() => ctx.act(m, 'regenerate')}
+              >
+                <RefreshCw size={13} />
+              </IconButton>
+            )}
+          </span>
+        </div>
+        <div className="message-content">
+          {typeof m.content !== 'string' &&
+            m.content
+              .filter((b) => b.type === 'thinking' && b.thinking)
+              .map((b, index) => (
+                <details className="thinking" key={index}>
+                  <summary>思考过程</summary>
+                  <pre>{b.thinking}</pre>
+                </details>
+              ))}
+          {content ? (
+            m.role === 'user' ? (
+              <UserMessage text={content} />
+            ) : (
+              <RichText text={content} />
+            )
+          ) : m.role === 'assistant' && ctx.running ? (
+            <span className="stream-cursor" />
+          ) : null}
+          {m.errorMessage && <p className="inline-error">{m.errorMessage}</p>}
+          <MessageImages message={m} />
+          {ctx.running &&
+            typeof m.content !== 'string' &&
+            m.content
+              .filter(
+                (b) =>
+                  b.type === 'toolCall' &&
+                  typeof b.partialJson === 'string' &&
+                  !ctx.liveToolIds.has(String(b.id)),
+              )
+              .map((b) => (
+                <div className="tool-drafting" key={String(b.id)}>
+                  <LoaderCircle size={13} className="spin" />
+                  <strong>正在准备 {String(b.name ?? '工具')}</strong>
+                  <code>{String(b.partialJson).slice(-160) || '…'}</code>
+                </div>
+              ))}
+        </div>
+      </article>
+    );
+  },
+  (a, b) =>
+    a.m === b.m &&
+    a.last === b.last &&
+    a.ctx.running === b.ctx.running &&
+    a.ctx.locked === b.ctx.locked &&
+    (a.m.role !== 'toolResult' ||
+      (a.ctx.expanded === b.ctx.expanded && a.ctx.toolFor(a.m) === b.ctx.toolFor(b.m))) &&
+    (!b.ctx.running || a.ctx.liveToolIds === b.ctx.liveToolIds),
+);
 function ExtensionPrompt({
   request,
   remaining,
@@ -1257,6 +1574,8 @@ export default function App() {
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
   const messages = ownRuntime ? runtime.messages : history;
+  const approvals = runtime.dialogs.filter((d) => d.approval);
+  const prompts = runtime.dialogs.filter((d) => !d.approval);
   const lastAssistant = messages.findLast((m) => m.role === 'assistant');
   const actionsLocked = pending || running || !sessionEnabled;
   const visibleMessages = messages.slice(-messageLimit);
@@ -1330,6 +1649,8 @@ export default function App() {
     const unsubscribe = api.onEvent((event) => {
       if (!alive) return;
       if (event.type === 'state') setState(event.state);
+      else if (event.type === 'runtimePatch')
+        setRuntime((previous) => applyRuntimePatch(previous, event.patch));
       else setRuntime(event.runtime);
     });
     api
@@ -1877,23 +2198,63 @@ export default function App() {
       return next;
     });
   };
-  const toolFor = (message: Message): ToolActivity => {
-    const observed = ownRuntime && runtime.tools.find((t) => t.id === message.toolCallId);
-    if (observed) return observed;
-    const call = messages
-      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-      .find((b) => b.type === 'toolCall' && b.id === message.toolCallId);
-    return {
-      id: message.toolCallId ?? '',
-      name: message.toolName ?? call?.name ?? 'tool',
-      args: call?.arguments ?? {},
-      status: message.isError ? 'error' : 'done',
-      output: messageText(message).split('\n').slice(-200).join('\n'),
-      startedAt: message.timestamp ?? 0,
-      durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
-      patch: typeof (message.details as any)?.patch === 'string' ? (message.details as any).patch : undefined,
+  // Handlers read the latest closures through a ref so their identity, and the memoized rows
+  // that receive them, stay stable across renders.
+  const latest = useRef({ toggleTool, inspectFile, copy, messageAction });
+  latest.current = { toggleTool, inspectFile, copy, messageAction };
+  const stableHandlers = useMemo(
+    () => ({
+      toggleTool: (id: string, open: boolean) => latest.current.toggleTool(id, open),
+      openFile: (p: string) => void latest.current.inspectFile(p, 'files'),
+      copy: (text: string) => void latest.current.copy(text, '消息已复制'),
+      act: (m: Message, kind: MessageAction) => void latest.current.messageAction(m, kind),
+    }),
+    [],
+  );
+  const liveTools = ownRuntime ? runtime.tools : noTools;
+  const liveToolIdKey = JSON.stringify(liveTools.map((t) => t.id));
+  const liveToolIds = useMemo(() => new Set<string>(JSON.parse(liveToolIdKey)), [liveToolIdKey]);
+  // Tool cards look up live activity first; keep the lookup stable while runtime.tools is unchanged.
+  const toolLookup = useMemo(() => {
+    const byId = new Map(liveTools.map((t) => [t.id, t]));
+    const calls = new Map<string, ContentBlock>();
+    for (const m of messages)
+      if (Array.isArray(m.content))
+        for (const b of m.content) if (b.type === 'toolCall' && b.id) calls.set(String(b.id), b);
+    const cache = new WeakMap<Message, ToolActivity>();
+    return (message: Message): ToolActivity => {
+      const observed = byId.get(message.toolCallId ?? '');
+      if (observed) return observed;
+      let t = cache.get(message);
+      if (!t) {
+        const call = calls.get(message.toolCallId ?? '');
+        t = {
+          id: message.toolCallId ?? '',
+          name: message.toolName ?? call?.name ?? 'tool',
+          args: call?.arguments ?? {},
+          status: message.isError ? 'error' : 'done',
+          output: messageText(message).split('\n').slice(-200).join('\n'),
+          startedAt: message.timestamp ?? 0,
+          durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
+          patch:
+            typeof (message.details as any)?.patch === 'string' ? (message.details as any).patch : undefined,
+        };
+        cache.set(message, t);
+      }
+      return t;
     };
-  };
+  }, [liveTools, messages]);
+  const messageContext: MessageContext = useMemo(
+    () => ({
+      running: ownRunning,
+      locked: actionsLocked,
+      expanded,
+      liveToolIds,
+      toolFor: toolLookup,
+      ...stableHandlers,
+    }),
+    [ownRunning, actionsLocked, expanded, liveToolIds, toolLookup, stableHandlers],
+  );
   const renderSession = (s: Session) => (
     <div
       className={
@@ -2269,140 +2630,14 @@ export default function App() {
                   加载更早的 {Math.min(80, messages.length - messageLimit)} 条消息
                 </button>
               )}
-              {visibleMessages.map((m, i) => {
-                const key = `${selected?.id}-${i + messages.length - visibleMessages.length}`;
-                if (m.role === 'toolResult') {
-                  const tool = toolFor(m);
-                  return (
-                    <div key={key}>
-                      <ToolCard
-                        tool={tool}
-                        expanded={expanded.includes(tool.id)}
-                        onToggle={(v) => toggleTool(tool.id, v)}
-                        openFile={(p) => void inspectFile(p, 'files')}
-                      />
-                      <MessageImages message={m} />
-                    </div>
-                  );
-                }
-                if (m.role === 'bashExecution')
-                  return (
-                    <article className="message bash-message" key={key}>
-                      <strong>
-                        <Terminal size={14} /> {String(m.command ?? '')}
-                      </strong>
-                      <CodeBlock>{String(m.output ?? '')}</CodeBlock>
-                      <small>
-                        {m.excludeFromContext ? '输出不进入模型上下文' : '输出已加入模型上下文'} · 退出码{' '}
-                        {String(m.exitCode ?? '')}
-                      </small>
-                    </article>
-                  );
-                if (m.role === 'custom' || m.role === 'branchSummary' || m.role === 'compactionSummary')
-                  return (
-                    <article className="message" key={key}>
-                      <RichText text={messageText(m) || String(m.summary ?? '')} />
-                    </article>
-                  );
-                if (m.role !== 'user' && m.role !== 'assistant') return null;
-                const content = messageText(m);
-                if (
-                  m.role === 'assistant' &&
-                  !content &&
-                  !m.errorMessage &&
-                  typeof m.content !== 'string' &&
-                  !m.content.some(
-                    (b) =>
-                      (b.type === 'thinking' && b.thinking) ||
-                      (ownRunning && typeof b.partialJson === 'string'),
-                  )
-                )
-                  return null;
-                return (
-                  <article key={key} className={'message ' + m.role}>
-                    <div className="message-heading">
-                      {m.role === 'assistant' && (
-                        <span className="avatar assistant" aria-hidden="true">
-                          π
-                        </span>
-                      )}
-                      <strong>{m.role === 'user' ? '你' : 'Pi'}</strong>
-                      {m.timestamp && <time>{time(m.timestamp)}</time>}
-                      {m.role === 'assistant' && <ReplyMeta message={m} />}
-                      <span className="message-actions">
-                        <IconButton title="复制消息" onClick={() => void copy(content, '消息已复制')}>
-                          <Copy size={13} />
-                        </IconButton>
-                        {m.role === 'user' && m.timestamp && (
-                          <>
-                            <IconButton
-                              title="编辑后重新发送"
-                              disabled={actionsLocked}
-                              onClick={() => void messageAction(m, 'edit')}
-                            >
-                              <Pencil size={13} />
-                            </IconButton>
-                            <IconButton
-                              title="从这里分支到新会话"
-                              disabled={actionsLocked}
-                              onClick={() => void messageAction(m, 'fork')}
-                            >
-                              <GitBranch size={13} />
-                            </IconButton>
-                          </>
-                        )}
-                        {m.role === 'assistant' && m.timestamp && m === lastAssistant && (
-                          <IconButton
-                            title="重新生成这条回复"
-                            disabled={actionsLocked}
-                            onClick={() => void messageAction(m, 'regenerate')}
-                          >
-                            <RefreshCw size={13} />
-                          </IconButton>
-                        )}
-                      </span>
-                    </div>
-                    <div className="message-content">
-                      {typeof m.content !== 'string' &&
-                        m.content
-                          .filter((b) => b.type === 'thinking' && b.thinking)
-                          .map((b, index) => (
-                            <details className="thinking" key={index}>
-                              <summary>思考过程</summary>
-                              <pre>{b.thinking}</pre>
-                            </details>
-                          ))}
-                      {content ? (
-                        m.role === 'user' ? (
-                          <UserMessage text={content} />
-                        ) : (
-                          <RichText text={content} />
-                        )
-                      ) : m.role === 'assistant' && ownRunning ? (
-                        <span className="stream-cursor" />
-                      ) : null}
-                      {m.errorMessage && <p className="inline-error">{m.errorMessage}</p>}
-                      <MessageImages message={m} />
-                      {ownRunning &&
-                        typeof m.content !== 'string' &&
-                        m.content
-                          .filter(
-                            (b) =>
-                              b.type === 'toolCall' &&
-                              typeof b.partialJson === 'string' &&
-                              !runtime.tools.some((t) => t.id === b.id),
-                          )
-                          .map((b) => (
-                            <div className="tool-drafting" key={String(b.id)}>
-                              <LoaderCircle size={13} className="spin" />
-                              <strong>正在准备 {String(b.name ?? '工具')}</strong>
-                              <code>{String(b.partialJson).slice(-160) || '…'}</code>
-                            </div>
-                          ))}
-                    </div>
-                  </article>
-                );
-              })}
+              {visibleMessages.map((m, i) => (
+                <ChatMessage
+                  key={`${selected?.id}-${i + messages.length - visibleMessages.length}`}
+                  m={m}
+                  last={m === lastAssistant}
+                  ctx={messageContext}
+                />
+              ))}
               {ownRuntime &&
                 runtime.tools
                   .filter((t) => !messages.some((m) => m.role === 'toolResult' && m.toolCallId === t.id))
@@ -2415,6 +2650,15 @@ export default function App() {
                       openFile={(p) => void inspectFile(p, 'files')}
                     />
                   ))}
+              {ownRuntime &&
+                approvals.map((d, i) => (
+                  <ApprovalCard
+                    key={d.id}
+                    dialog={d}
+                    first={i === 0}
+                    respond={(value) => void attempt(() => api.invoke('respond', d.id, { value }))}
+                  />
+                ))}
               {ownRuntime && runtime.notices.length > 0 && (
                 <details className="runtime-notices">
                   <summary>运行记录 · {runtime.notices.length}</summary>
@@ -2729,6 +2973,25 @@ export default function App() {
                         <Paperclip size={17} />
                       </IconButton>
                     )}
+                    <ApprovalSwitch
+                      mode={(ownRuntime && runtime.approvalMode) || selected?.approvalMode || 'auto'}
+                      disabled={!selected || !sessionEnabled}
+                      change={(mode) =>
+                        selected &&
+                        void attempt(async () => {
+                          await api.invoke('setApprovalMode', selected.id, mode);
+                          setNotice(
+                            running
+                              ? '审批模式会在本轮结束后生效'
+                              : mode === 'auto'
+                                ? 'Pi 将直接修改文件和执行命令'
+                                : mode === 'confirm'
+                                  ? '修改文件和执行命令前会先询问你'
+                                  : '只读：Pi 只能读取和分析，不能修改或执行',
+                          );
+                        })
+                      }
+                    />
                     <ModelPicker
                       runtime={ownRuntime ? runtime : { ...runtime, connected: false }}
                       fallback={state.settings.modelId}
@@ -3624,12 +3887,12 @@ export default function App() {
           <button onClick={() => void attempt(() => api.invoke('cancelLogin'))}>取消登录</button>
         </div>
       )}
-      {runtime.dialogs[0] && (
+      {prompts[0] && (
         <ExtensionPrompt
-          key={runtime.dialogs[0].id}
-          request={runtime.dialogs[0]}
-          remaining={runtime.dialogs.length - 1}
-          respond={(v) => void attempt(() => api.invoke('respond', runtime.dialogs[0].id, v))}
+          key={prompts[0].id}
+          request={prompts[0]}
+          remaining={prompts.length - 1}
+          respond={(v) => void attempt(() => api.invoke('respond', prompts[0].id, v))}
         />
       )}
     </div>

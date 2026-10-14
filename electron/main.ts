@@ -238,12 +238,16 @@ async function saveText(title: string, contents: string, defaultName: string) {
   return picked.filePath;
 }
 const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
-  bootstrap: async () => ({
-    state: store.state,
-    runtime: service.runtime,
-    environment: await detectEnvironment(store.state.settings, developmentRoot),
-    dataDir: store.dir,
-  }),
+  bootstrap: async () => {
+    const environment = await detectEnvironment(store.state.settings, developmentRoot);
+    service.resync();
+    return {
+      state: store.state,
+      runtime: service.runtime,
+      environment,
+      dataDir: store.dir,
+    };
+  },
   addProject: async () => {
     const chosen = await dialog.showOpenDialog(window!, {
       title: '添加本地项目',
@@ -431,6 +435,11 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.messageAction(id, action, role, timestamp);
   },
   abortRetry: () => service.abortRetry(),
+  setApprovalMode: async (id, mode) => {
+    text(id, 100);
+    if (mode !== 'auto' && mode !== 'confirm' && mode !== 'readonly') throw new Error('审批模式无效');
+    await service.setApprovalMode(id, mode);
+  },
   setEntryLabel: async (id, entryId, label) => {
     text(id, 100);
     text(entryId, 100);
@@ -971,9 +980,9 @@ else {
       workspace = new Workspace(store.dir);
       await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
-      service.on('runtime', (runtime) => {
-        send({ type: 'runtime', runtime });
-        notifyAttention(runtime);
+      service.on('runtimePatch', (patch) => {
+        send({ type: 'runtimePatch', patch });
+        notifyAttention(service.runtime);
       });
       service.on('state', (state) => send({ type: 'state', state }));
       ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {

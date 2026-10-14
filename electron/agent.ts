@@ -21,7 +21,10 @@ import {
   type TreeEntry,
   type MessageAction,
   type RuntimeNotification,
+  type ApprovalMode,
+  type ApprovalRequest,
 } from '../shared/types';
+import { APPROVAL_DENY, APPROVAL_PREFIX } from '../shared/approval';
 import { validateImages } from './images';
 
 // Pi model records may contain provider headers. Keep only display metadata in IPC.
@@ -92,13 +95,65 @@ export class AgentService extends EventEmitter {
     if (immediate) {
       if (this.publishing) clearTimeout(this.publishing);
       this.publishing = undefined;
-      this.emit('runtime', structuredClone(this.runtime));
+      this.flush();
       return;
     }
     this.publishing ??= setTimeout(() => {
       this.publishing = undefined;
-      this.emit('runtime', structuredClone(this.runtime));
+      this.flush();
     }, 40);
+  }
+  /** What the UI last received, as JSON strings per item, to send only what changed since. */
+  private sent = {
+    sessionId: undefined as string | undefined,
+    messages: [] as string[],
+    tools: [] as string[],
+  };
+  private serialized = new WeakMap<object, string>();
+  private flush() {
+    if (this.listenerCount('runtime')) this.emit('runtime', structuredClone(this.runtime));
+    if (!this.listenerCount('runtimePatch')) return;
+    const r = this.runtime;
+    const reset = this.sent.sessionId !== r.sessionId;
+    // Messages are only mutated in place at the end (streaming) and tools only while running;
+    // everything else is replaced wholesale, so settled objects reuse their cached serialization.
+    const changedFrom = (
+      items: object[],
+      previous: string[],
+      next: string[],
+      seen: WeakMap<object, string>,
+    ) => {
+      let from = reset ? 0 : Math.min(previous.length, items.length);
+      for (let i = 0; i < items.length; i++) {
+        const mutable = i >= items.length - 8 || (items[i] as { status?: string }).status === 'running';
+        const frozen = !mutable && seen.get(items[i]);
+        next[i] = frozen || JSON.stringify(items[i]);
+        if (mutable) seen.delete(items[i]);
+        else if (!frozen) seen.set(items[i], next[i]);
+        if (i < from && next[i] !== previous[i]) from = i;
+      }
+      return from;
+    };
+    const messages: string[] = [],
+      tools: string[] = [];
+    const messagesFrom = changedFrom(r.messages, this.sent.messages, messages, this.serialized);
+    const toolsFrom = changedFrom(r.tools, this.sent.tools, tools, this.serialized);
+    this.sent = { sessionId: r.sessionId, messages, tools };
+    const { messages: _m, tools: _t, ...rest } = r;
+    this.emit('runtimePatch', {
+      ...structuredClone(rest),
+      messagesFrom,
+      messages: messages.slice(messagesFrom).map((s) => JSON.parse(s)),
+      messageCount: messages.length,
+      toolsFrom,
+      tools: tools.slice(toolsFrom).map((s) => JSON.parse(s)),
+      toolCount: tools.length,
+    });
+  }
+  /** Next patch carries the whole runtime, e.g. after the window reloads. */
+  resync() {
+    this.sent = { sessionId: undefined, messages: [], tools: [] };
+    this.serialized = new WeakMap();
   }
   private save() {
     this.store
@@ -283,6 +338,7 @@ export class AgentService extends EventEmitter {
             t.output += '\n执行已结束但未收到工具结果';
           }
         void this.refresh().catch((e) => this.diagnostic(errorText(e)));
+        void this.exclusive(() => this.syncApprovalMode()).catch((e) => this.diagnostic(errorText(e)));
         break;
       }
       case 'session_info_changed':
@@ -310,7 +366,17 @@ export class AgentService extends EventEmitter {
     const r = this.runtime;
     if (['select', 'confirm', 'input', 'editor'].includes(record.method)) {
       const expiresAt = record.timeout ? Date.now() + record.timeout : undefined;
-      r.dialogs.push({ ...record, expiresAt });
+      let approval: ApprovalRequest | undefined;
+      if (record.method === 'select' && String(record.title ?? '').startsWith(APPROVAL_PREFIX)) {
+        try {
+          approval = JSON.parse(String(record.title).slice(APPROVAL_PREFIX.length));
+        } catch {}
+      }
+      r.dialogs.push(
+        approval
+          ? { ...record, title: `允许 ${approval.toolName}？`, approval, expiresAt }
+          : { ...record, expiresAt },
+      );
       if (!this.stopRequested) this.status('waiting');
       if (record.timeout)
         this.dialogTimers.set(
@@ -343,8 +409,15 @@ export class AgentService extends EventEmitter {
   async respond(id: string, values: { value?: string; confirmed?: boolean; cancelled?: boolean }) {
     const d = this.runtime.dialogs.find((d) => d.id === id);
     if (!d || (d.expiresAt && Date.now() >= d.expiresAt)) throw new Error('这个问题已失效');
-    if (d.method === 'select' && !values.cancelled && !d.options?.includes(values.value ?? ''))
+    const denyWithReason = d.approval && values.value?.startsWith(APPROVAL_DENY + '：');
+    if (
+      d.method === 'select' &&
+      !values.cancelled &&
+      !denyWithReason &&
+      !d.options?.includes(values.value ?? '')
+    )
       throw new Error('请选择有效选项');
+    if (denyWithReason) values = { value: values.value!.slice(0, APPROVAL_DENY.length + 1 + 2000) };
     await this.rpc?.write({ type: 'extension_ui_response', id, ...values });
     const timer = this.dialogTimers.get(id);
     if (timer) clearTimeout(timer);
@@ -396,7 +469,10 @@ export class AgentService extends EventEmitter {
     if (project && !project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
     if (busy(this.runtime.status) && this.runtime.sessionId !== sessionId)
       throw new Error('另一个会话正在运行，请先停止或等待完成');
-    if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) return;
+    if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) {
+      await this.syncApprovalMode();
+      return;
+    }
     if (this.rpc && !this.rpc.closed) {
       const result = session.file
         ? await this.rpc.request('switch_session', { sessionPath: session.file }, 120000)
@@ -467,6 +543,7 @@ export class AgentService extends EventEmitter {
       const shellEnv: NodeJS.ProcessEnv = {
         PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
         PI_TELEMETRY: '0',
+        PI_DESKTOP_APPROVAL: session.approvalMode ?? 'auto',
       };
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
       // including installations on another drive, over Windows' legacy WSL bash launcher.
@@ -580,7 +657,14 @@ export class AgentService extends EventEmitter {
         this.runtime.tools = [];
         this.runtime.startedAt = Date.now();
         this.status('starting');
-        if (project) await this.workspace.capture(project);
+        if (project)
+          try {
+            await this.workspace.capture(project);
+          } catch (error) {
+            this.runtime.error = `无法建立本轮快照，任务未开始：${errorText(error)}`;
+            this.status(this.stopRequested ? 'stopped' : 'error');
+            throw new Error(this.runtime.error, { cause: error });
+          }
       }
       if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
       try {
@@ -607,6 +691,7 @@ export class AgentService extends EventEmitter {
           tool.durationMs = Date.now() - tool.startedAt;
           this.status(output.cancelled ? 'stopped' : output.exitCode === 0 ? 'completed' : 'error');
           await this.refresh();
+          await this.syncApprovalMode();
         } else
           result = await this.rpc!.request(
             'prompt',
@@ -691,6 +776,27 @@ export class AgentService extends EventEmitter {
       this.save();
       this.publish(true);
     });
+  }
+  async setApprovalMode(id: string, mode: ApprovalMode) {
+    if (!['auto', 'confirm', 'readonly'].includes(mode)) throw new Error('审批模式无效');
+    this.store.session(id).approvalMode = mode;
+    this.save();
+    if (this.runtime.sessionId === id && !busy(this.runtime.status))
+      await this.exclusive(() => this.syncApprovalMode());
+    this.publish(true);
+  }
+  private async syncApprovalMode() {
+    const rpc = this.rpc;
+    const id = this.runtime.sessionId;
+    if (!rpc || rpc.closed || !id || !this.runtime.connected || busy(this.runtime.status)) return;
+    // Read the current session's saved choice, including changes made before a stop or reconnect.
+    const mode = this.store.session(id).approvalMode ?? 'auto';
+    if (this.runtime.approvalMode === mode) return;
+    const result = await rpc.bridge('approval_mode', { mode });
+    if (this.rpc === rpc && this.runtime.sessionId === id) {
+      this.runtime.approvalMode = result.approvalMode;
+      this.publish(true);
+    }
   }
   async abortRetry() {
     if (!this.rpc || this.rpc.closed || !this.runtime.retry) return;
@@ -789,7 +895,9 @@ export class AgentService extends EventEmitter {
     this.runtime.models = ((await this.rpc.request('get_available_models')).models ?? [])
       .map(displayModel)
       .filter(Boolean);
-    this.runtime.autoRetry = (await this.rpc.bridge('options')).autoRetry;
+    const options = await this.rpc.bridge('options');
+    this.runtime.autoRetry = options.autoRetry;
+    this.runtime.approvalMode = options.approvalMode ?? 'auto';
     await this.refresh();
   }
   private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
@@ -918,6 +1026,7 @@ export class AgentService extends EventEmitter {
       this.clearDialogs();
       this.status('stopped');
       await this.refresh();
+      await this.exclusive(() => this.syncApprovalMode());
     } catch (e) {
       this.runtime.error = `停止未完成：${errorText(e)}`;
       this.publish(true);
