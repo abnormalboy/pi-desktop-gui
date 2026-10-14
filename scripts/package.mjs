@@ -7,4 +7,4 @@ const dir = process.argv.includes('--dir');
 const platform = { win32: Platform.WINDOWS, darwin: Platform.MAC, linux: Platform.LINUX }[process.platform];
 if (!platform) throw new Error(`不支持在 ${process.platform} 上打包`);
 const target = dir ? 'dir' : process.platform === 'win32' ? 'portable' : undefined;
-await build({ targets: target ? platform.createTarget(target) : platform.createTarget() });
+await build({ targets: target ? platform.createTarget(target) : platform.createTarget(), publish: 'never' });

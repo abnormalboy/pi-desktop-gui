@@ -78,6 +78,7 @@ import {
   type SessionMatch,
 } from '../shared/types';
 declare global {
+  const __APP_VERSION__: string;
   interface Window {
     desktop: DesktopApi;
   }
@@ -2106,7 +2107,7 @@ export default function App() {
             <span className={'connection-dot ' + (environment?.supported ? 'ready' : '')} />
           </button>
           <div className="sidebar-version">
-            Pi Desktop <span>v0.2.0</span>
+            Pi Desktop <span>v{__APP_VERSION__}</span>
           </div>
         </div>
       </aside>

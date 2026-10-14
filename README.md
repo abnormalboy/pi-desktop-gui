@@ -94,7 +94,7 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
 
 ### 2. 下载桌面客户端
 
-前往 [GitHub Releases](https://github.com/yeyuProject/pi-desktop-gui/releases) 下载对应系统的安装包：
+前往 [最新版本下载](https://github.com/yeyuProject/pi-desktop-gui/releases/latest) 下载对应系统的安装包。每个版本同时提供 `SHA256SUMS.txt`，用于核对下载文件：
 
 | 平台 | 支持架构 | 分发格式 |
 | :--- | :--- | :--- |
@@ -194,6 +194,12 @@ npm run test:integration # 运行 Pi RPC 与工具链集成测试
 npm run test:ui          # 运行 Playwright + Electron 端到端桌面交互测试
 npm run package          # 打包当前操作系统的发行安装包 (输出至 release/)
 ```
+
+### GitHub 自动构建与发布
+
+普通提交和 Pull Request 会在 Windows、macOS、Linux 上构建并执行测试。在 Actions 中手动运行 **Build, test and release**，测试通过后可以从该次运行的 Artifacts 下载安装包。
+
+正式发布时，更新 `package.json` 的版本号与锁文件，补充 `docs/releases/v<版本>.md` 发布说明，再推送对应的 `v<版本>` 标签。三平台测试和打包全部成功后，工作流会创建 GitHub Release，上传安装包和 SHA-256 校验文件。标签版本必须与包版本一致；应用界面中的版本号从包版本自动生成。
 
 ---
 
