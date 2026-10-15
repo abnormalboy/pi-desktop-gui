@@ -141,6 +141,11 @@ try {
   });
   await page.getByRole('button', { name: b.title, exact: true }).click();
   await page.locator('.thread').getByText('SESSION_B_ONLY', { exact: true }).waitFor();
+  // History can already be visible while a fresh Pi process is still starting.
+  await page.waitForFunction(async (id) => {
+    const { runtime } = await window.desktop.invoke('bootstrap');
+    return runtime.sessionId === id && runtime.connected && runtime.status === 'idle';
+  }, b.id);
   const restarted = (await diagnostic()).sessionSwitch;
   assert.equal(restarted.mode, 'restart');
   assert.notEqual(restarted.pid, originalPid);
@@ -155,6 +160,11 @@ try {
   }
   throw error;
 } finally {
+  await app
+    ?.evaluate(({ dialog }) => {
+      dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+    })
+    .catch(() => {});
   await app?.close().catch(() => {});
   await provider.close();
 }

@@ -21,8 +21,8 @@ async function sandbox() {
   return fs.mkdtemp(path.join(root, "terminal 中文 ' space-"));
 }
 
-async function until(condition: () => Promise<boolean>) {
-  const deadline = Date.now() + 5000;
+async function until(condition: () => Promise<boolean>, timeout = 5000) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (await condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -111,7 +111,8 @@ test('terminal runner records its PID and recovers after being killed without cl
         )
       : spawn('bash', ['-c', script], { detached: true, stdio: 'ignore' });
   try {
-    await until(async () => Boolean(await fs.stat(proof).catch(() => false)));
+    // Cold PowerShell startup on shared Windows runners can exceed five seconds.
+    await until(async () => Boolean(await fs.stat(proof).catch(() => false)), 15000);
     assert.deepEqual(JSON.parse(await fs.readFile(proof, 'utf8')), { cwd: dir, value: "中文 ' value" });
     assert.deepEqual(JSON.parse(await fs.readFile(lock, 'utf8')), { pid: child.pid });
     assert.equal(await terminalOpen(lock), true);
