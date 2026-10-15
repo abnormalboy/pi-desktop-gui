@@ -268,7 +268,7 @@ export function Conversation(
           </button>
         </div>
       )}
-      {running && !ownRuntime && (
+      {running && runtime.status !== 'starting' && !ownRuntime && (
         <div className="banner">
           <LoaderCircle size={15} className="spin" />
           另一个会话正在执行
