@@ -1160,6 +1160,12 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
 
 async function createWindow() {
   const saved = await loadWindowState();
+  const windowIconPath =
+    process.platform === 'win32'
+      ? app.isPackaged
+        ? path.join(process.resourcesPath, 'icon.ico')
+        : path.join(app.getAppPath(), 'build', 'icon.ico')
+      : path.join(app.getAppPath(), 'build', 'icon.png');
   window = new BrowserWindow({
     width: saved.bounds?.width ?? 1440,
     height: saved.bounds?.height ?? 900,
@@ -1167,7 +1173,7 @@ async function createWindow() {
     minWidth: 1024,
     minHeight: 700,
     title: 'Pi Desktop',
-    icon: path.join(app.getAppPath(), 'build', 'icon.png'),
+    icon: windowIconPath,
     backgroundColor: '#f8f9f7',
     show: false,
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {}),
@@ -1180,10 +1186,10 @@ async function createWindow() {
   });
   if (process.platform === 'win32') {
     const executable = (app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE) || app.getPath('exe');
-    // The taskbar group has its own icon, separate from the window's PNG icon.
+    // Windows needs a real file for its taskbar icon; a portable launcher outlives its extracted resources.
     window.setAppDetails({
       appId: appUserModelId,
-      appIconPath: app.isPackaged ? executable : path.join(app.getAppPath(), 'build', 'icon.ico'),
+      appIconPath: app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE ? executable : windowIconPath,
       appIconIndex: 0,
       relaunchCommand: app.isPackaged ? `"${executable}"` : `"${executable}" "${app.getAppPath()}"`,
       relaunchDisplayName: 'Pi Desktop',

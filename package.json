@@ -43,6 +43,12 @@
         "portable"
       ],
       "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "build/icon.ico",
+          "to": "icon.ico"
+        }
+      ],
       "signExecutable": false
     },
     "portable": {

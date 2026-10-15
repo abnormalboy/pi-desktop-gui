@@ -214,7 +214,11 @@ try {
         directories: { output: out },
         files: [...config.build.files],
         compression: 'store',
-        win: { icon: path.resolve('build/icon.ico'), signExecutable: false },
+        win: {
+          icon: path.resolve('build/icon.ico'),
+          extraResources: config.build.win.extraResources,
+          signExecutable: false,
+        },
         nsis: {
           ...config.build.nsis,
           guid,
