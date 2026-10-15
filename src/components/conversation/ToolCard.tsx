@@ -1,13 +1,4 @@
-import {
-  ChevronDown,
-  FileText,
-  Check,
-  AlertCircle,
-  LoaderCircle,
-  Copy,
-  Terminal,
-  Command,
-} from 'lucide-react';
+import { ChevronDown, FileText, Check, AlertCircle, LoaderCircle, Copy, Terminal } from 'lucide-react';
 import { type ToolActivity } from '../../../shared/types';
 const api = window.desktop;
 

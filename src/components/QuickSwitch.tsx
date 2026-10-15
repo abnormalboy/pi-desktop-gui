@@ -1,15 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import {
-  ArrowUp,
-  ChevronRight,
-  Search,
-  LoaderCircle,
-  MessageSquare,
-  ArrowDown,
-  Pin,
-  History,
-  TextSearch,
-} from 'lucide-react';
+import { ChevronRight, Search, LoaderCircle, MessageSquare, Pin, History, TextSearch } from 'lucide-react';
 import { type AppState, type Session, type PiSessionInfo, type SessionMatch } from '../../shared/types';
 import { shortcut } from '../lib/platform';
 import { relativeTime } from '../lib/format';

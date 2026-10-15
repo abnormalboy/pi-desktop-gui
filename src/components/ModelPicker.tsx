@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, ChevronDown, Search, Check, LoaderCircle, ArrowDown } from 'lucide-react';
+import { ChevronDown, Search, Check, LoaderCircle } from 'lucide-react';
 import { type Runtime } from '../../shared/types';
 import { contextLabel } from '../lib/format';
 import { useFocusScope } from '../hooks/useFocusScope';
