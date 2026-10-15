@@ -56,6 +56,7 @@ io.on('line', (line) => {
       respond(r, {
         model,
         thinkingLevel: 'off',
+        sessionName: config().sessionName,
         isStreaming: active,
         isCompacting: false,
         pendingMessageCount: steering.length + followUp.length,
@@ -71,6 +72,7 @@ io.on('line', (line) => {
       respond(r, { levels: ['off'] });
       break;
     case 'get_session_stats':
+      if (config().exitOnStats) process.exit(9);
       respond(r, { tokens: { total: 42 } });
       break;
     case 'set_model':
@@ -78,6 +80,12 @@ io.on('line', (line) => {
       break;
     case 'new_session':
     case 'switch_session':
+      if (!config().cancelSwitch)
+        out({
+          type: 'extension_ui_request',
+          method: 'notify',
+          message: '__PI_DESKTOP__' + JSON.stringify({ type: 'desktop_session_start' }),
+        });
       respond(r, { cancelled: config().cancelSwitch === true });
       break;
     case 'steer':
@@ -108,7 +116,7 @@ io.on('line', (line) => {
           type: 'desktop_result',
           id: request.id,
           data: {
-            protocolVersion: 1,
+            protocolVersion: 2,
             autoRetry: true,
             approvalMode: process.env.PI_DESKTOP_APPROVAL || 'auto',
           },

@@ -1,6 +1,7 @@
 import type { ApprovalMode, ApprovalRequest } from './approval';
 import type { PiCompatibility } from './pi-version';
 import type { UpdateState } from './app-update';
+import type { ModelErrorKind } from './errors';
 export type { ApprovalMode, ApprovalRequest } from './approval';
 export type RunStatus =
   | 'idle'
@@ -195,6 +196,8 @@ export interface Runtime {
   model?: Model;
   thinking?: string;
   error?: string;
+  errorKind?: ModelErrorKind;
+  errorCount?: number;
   startedAt?: number;
   connected: boolean;
   stats?: {

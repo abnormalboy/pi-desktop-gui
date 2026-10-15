@@ -40,6 +40,12 @@ test('runtime patches reproduce the full runtime through streaming, edits and se
   r.tools[0].status = 'done';
   s.publish(true);
   assert.deepEqual(view().tools, JSON.parse(JSON.stringify(r.tools)));
+  r.error = 'Rate limit reached';
+  r.errorKind = 'busy';
+  r.errorCount = 3;
+  s.publish(true);
+  assert.equal(view().errorKind, 'busy');
+  assert.equal(view().errorCount, 3);
 
   r.messages[3] = { role: 'assistant', content: 'replaced', timestamp: 3 };
   r.messages.splice(10);

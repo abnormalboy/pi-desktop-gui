@@ -30,8 +30,10 @@ export default function desktopBridge(pi: ExtensionAPI) {
   let approvalMode: ApprovalMode =
     (['auto', 'confirm', 'readonly'] as const).find((m) => m === process.env.PI_DESKTOP_APPROVAL) ?? 'auto';
   const alwaysAllowed = new Set<string>();
-  pi.on('session_start', () => {
+  pi.on('session_start', (_event, ctx) => {
     alwaysAllowed.clear();
+    // Loaded explicitly before project/global extensions; marks the owner of subsequent UI events.
+    ctx.ui.notify('__PI_DESKTOP__' + JSON.stringify({ type: 'desktop_session_start' }));
   });
   async function approve(toolName: string, input: unknown, ctx: ExtensionContext) {
     const verdict = decide(approvalMode, toolName);

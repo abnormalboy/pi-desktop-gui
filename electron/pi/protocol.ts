@@ -6,6 +6,7 @@ export interface PiState {
   model?: Model;
   thinkingLevel?: string;
   sessionFile?: string;
+  sessionName?: string;
   isStreaming: boolean;
   isCompacting: boolean;
   pendingMessageCount: number;
@@ -42,7 +43,8 @@ export function validateRpcResult(command: string, value: unknown) {
       !numbers(value.pendingMessageCount) ||
       value.pendingMessageCount < 0 ||
       (value.model !== undefined && !model(value.model)) ||
-      (value.sessionFile !== undefined && typeof value.sessionFile !== 'string')
+      (value.sessionFile !== undefined && typeof value.sessionFile !== 'string') ||
+      (value.sessionName !== undefined && typeof value.sessionName !== 'string')
     )
       incompatible(command, '会话状态缺少必要字段');
   } else if (command === 'get_messages') {

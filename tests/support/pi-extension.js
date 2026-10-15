@@ -5,8 +5,20 @@ export default function (pi) {
     description: 'Return the isolated test process identifier',
     handler: async (_args, ctx) => ctx.ui.notify('GUI_PID:' + process.pid, 'info'),
   });
-  pi.on('session_before_switch', async () => {
+  pi.on('session_before_switch', async (_event, ctx) => {
+    if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'switch-events')))
+      ctx.ui.setEditorText('OUTGOING_DRAFT');
+    if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'slow-switch'))) {
+      ctx.ui.notify('SWITCH_WAITING');
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'confirm-switch')))
+      if (!(await ctx.ui.confirm('切换确认', '允许切换到目标会话？'))) return { cancel: true };
     if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'cancel-switch'))) return { cancel: true };
+  });
+  pi.on('session_start', (_event, ctx) => {
+    if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'switch-events')))
+      ctx.ui.setWidget('target-widget', ['TARGET_WIDGET']);
   });
   for (const method of ['select', 'confirm', 'input', 'editor', 'timeout']) {
     pi.registerCommand('gui-' + method, {

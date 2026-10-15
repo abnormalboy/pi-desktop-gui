@@ -50,8 +50,10 @@ test('approval displays the entire command and grants only its exact text', () =
 test('always-allow grants end when Pi starts a different session', async () => {
   const handlers = bridge('confirm');
   let asked = 0;
+  const notifications: string[] = [];
   const ctx = {
     ui: {
+      notify: (message: string) => notifications.push(message),
       select: async () => {
         asked++;
         return APPROVAL_ALWAYS;
@@ -63,6 +65,7 @@ test('always-allow grants end when Pi starts a different session', async () => {
   await handlers.get('tool_call')!(event, ctx);
   assert.equal(asked, 1);
   await handlers.get('session_start')?.({}, ctx);
+  assert.deepEqual(notifications, ['__PI_DESKTOP__{"type":"desktop_session_start"}']);
   await handlers.get('tool_call')!(event, ctx);
   assert.equal(asked, 2);
 });

@@ -18,6 +18,9 @@ import { Badge } from './Badge';
 import { ModelPicker } from './ModelPicker';
 import { ContextMeter } from './conversation/Usage';
 import { ApprovalSwitch } from './Approval';
+import { useState } from 'react';
+import { ModelErrorCard } from './ModelErrorCard';
+import type { ModelErrorAction } from '../../shared/errors';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
 import type { AppState } from '../../shared/types';
@@ -129,10 +132,22 @@ export function Composer(
     setThinking,
     inspectFile,
   } = props;
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const handleModelError = async (action: ModelErrorAction) => {
+    if (action === 'providers') setFeatureTab('providers');
+    else if (action === 'proxy') setFeatureTab('prefs');
+    else if (action === 'model') setModelPickerOpen(true);
+    else if (selected && action === 'compact') await api.invoke('compact', selected.id, '');
+    else if (selected && action === 'regenerate') {
+      const message = runtime.messages.findLast((item) => item.role === 'assistant');
+      if (!message?.timestamp) throw new Error('找不到对应的回复，请重新发送提问。');
+      await api.invoke('messageAction', selected.id, 'regenerate', 'assistant', message.timestamp);
+    }
+  };
 
   return (
     <div className="composer-wrap">
-      {error && (
+      {error && !(ownRuntime && runtime.errorKind && error === runtime.error) && (
         <div className="error-banner" role="alert">
           <AlertCircle size={16} />
           <span>{error}</span>
@@ -154,11 +169,29 @@ export function Composer(
           <button onClick={() => void attempt(() => api.invoke('abortRetry'))}>取消重试</button>
         </div>
       )}
-      {ownRuntime && runtime.error && runtime.error !== error && (
-        <div className="error-banner">
-          <AlertCircle size={16} />
-          <span>{runtime.error}</span>
-        </div>
+      {ownRuntime && runtime.error && runtime.errorKind ? (
+        <ModelErrorCard
+          error={runtime.error}
+          kind={runtime.errorKind}
+          count={runtime.errorCount}
+          disabled={running || pending || !storage.writable}
+          autoCompaction={runtime.autoCompaction}
+          act={(action) => attempt(() => handleModelError(action))}
+          enableCompaction={() => attempt(() => api.invoke('piOption', selected!.id, 'autoCompaction', true))}
+          copy={async (text) => {
+            await api.invoke('copy', text);
+            setNotice('错误详情已复制');
+          }}
+        />
+      ) : (
+        ownRuntime &&
+        runtime.error &&
+        runtime.error !== error && (
+          <div className="error-banner">
+            <AlertCircle size={16} />
+            <span>{runtime.error}</span>
+          </div>
+        )
       )}
       {ownRuntime && (runtime.steering.length > 0 || runtime.followUp.length > 0) && (
         <div className="queue">
@@ -435,6 +468,8 @@ export function Composer(
               }
             />
             <ModelPicker
+              open={modelPickerOpen}
+              setOpen={setModelPickerOpen}
               runtime={ownRuntime ? runtime : { ...runtime, connected: false }}
               fallback={state.settings.modelId}
               locked={running || pending}

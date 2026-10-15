@@ -1,0 +1,35 @@
+.model-error-card {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--red);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  margin-bottom: 12px;
+  font-size: calc(12px * var(--font-scale));
+}
+.model-error-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--red);
+}
+.model-error-card > p {
+  margin: 8px 0 12px;
+  line-height: 1.6;
+}
+.model-error-card .button-row {
+  flex-wrap: wrap;
+}
+.model-error-card details {
+  margin-top: 12px;
+  color: var(--muted);
+}
+.model-error-card pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 8px;
+}

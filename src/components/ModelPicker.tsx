@@ -13,6 +13,8 @@ export function ModelPicker({
   pick,
   setThinking,
   manage,
+  open,
+  setOpen,
 }: {
   runtime: Runtime;
   fallback: string;
@@ -22,14 +24,28 @@ export function ModelPicker({
   pick: (key: string) => void;
   setThinking: (level: string) => void;
   manage: (target: 'providers' | 'settings') => void;
+  open: boolean;
+  setOpen: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false),
-    [query, setQuery] = useState(''),
+  const [query, setQuery] = useState(''),
     [index, setIndex] = useState(0);
   const panel = useRef<HTMLDivElement>(null),
     list = useRef<HTMLDivElement>(null);
   const close = () => setOpen(false);
   useFocusScope(panel, open, close);
+  useEffect(() => {
+    if (open) {
+      setQuery('');
+      setIndex(
+        Math.max(
+          0,
+          runtime.models.findIndex(
+            (model) => model.provider === runtime.model?.provider && model.id === runtime.model?.id,
+          ),
+        ),
+      );
+    }
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const outside = (e: MouseEvent) => {
@@ -62,7 +78,7 @@ export function ModelPicker({
               runtime.models.findIndex((m) => `${m.provider}::${m.id}` === current),
             ),
           );
-          setOpen((v) => !v);
+          setOpen(!open);
           if (!open && canConnect && !runtime.connected) connect();
         }}
         title="选择模型"

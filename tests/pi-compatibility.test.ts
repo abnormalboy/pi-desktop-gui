@@ -72,7 +72,7 @@ test('documented RPC fields are checked at the adapter, without guessing renamed
   ] as const)
     assert.throws(() => validateRpcResult(command, value), /不兼容/);
   assert.throws(
-    () => validateBridgeResult('options', { protocolVersion: 2, autoRetry: true, approvalMode: 'auto' }),
+    () => validateBridgeResult('options', { protocolVersion: 999, autoRetry: true, approvalMode: 'auto' }),
     /不兼容/,
   );
   assert.deepEqual(
@@ -129,4 +129,32 @@ test('model connection probes apply the same version policy as regular conversat
   });
   await assert.rejects(service.testConnection(session.id), /尚未适配/);
   await assert.rejects(fs.access(path.join(dir, 'commands.jsonl')));
+});
+
+test('a process exit during optional session statistics cannot become a successful connection', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-bind-exit-'));
+  const store = new Store(dir);
+  await store.load();
+  const session = store.createSession();
+  Object.assign(store.state.settings, {
+    agentDir: dir,
+    nodePath: process.execPath,
+    piPath: path.resolve('tests/support/fixture-pi.mjs'),
+    provider: 'fixture',
+    modelId: 'test',
+  });
+  await fs.writeFile(
+    path.join(dir, 'control.json'),
+    JSON.stringify({ sessionName: session.title, exitOnStats: true }),
+  );
+  const service = new AgentService(store, new Workspace(dir));
+  t.after(async () => {
+    await service.dispose();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  await assert.rejects(service.connect(session.id), /Pi 在加载会话时已退出/);
+  assert.equal(service.runtime.connected, false);
+  assert.equal(service.runtime.status, 'interrupted');
+  assert.equal(service.runtime.crash?.code, 9);
+  assert.equal(service.lastSwitch, undefined);
 });

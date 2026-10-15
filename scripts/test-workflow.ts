@@ -169,6 +169,92 @@ try {
     ['warning', 'error'],
   );
   console.log('PASS notification levels reach the UI');
+
+  await s.connect(f.sessionId);
+  const stablePid = (s as any).rpc.child.pid;
+  const switches: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    const id = i % 2 ? f.sessionId : alternate.id;
+    await s.connect(id);
+    assert.equal((s as any).rpc.child.pid, stablePid);
+    assert.equal(s.runtime.sessionId, id);
+    assert.equal(s.lastSwitch?.mode, 'reuse');
+    assert.equal(s.runtime.model?.id, f.store.session(id).model?.id);
+    assert.equal(s.runtime.thinking, f.store.session(id).thinking);
+    switches.push(s.lastSwitch!.elapsedMs);
+  }
+  console.log(
+    'PASS same-directory reuse, unchanged PID and target settings; milliseconds:',
+    JSON.stringify(switches),
+  );
+  await fs.mkdir('test-results', { recursive: true });
+  await fs.writeFile(
+    `test-results/session-switch-${process.platform}.json`,
+    JSON.stringify({ switches, pid: stablePid }),
+  );
+
+  f.store.session(f.sessionId).draft = 'A_DRAFT';
+  alternate.draft = 'B_DRAFT';
+  await fs.writeFile(path.join(f.agentDir, 'switch-events'), 'enabled');
+  await s.connect(alternate.id);
+  assert.equal(
+    f.store.session(f.sessionId).draft,
+    'OUTGOING_DRAFT',
+    'old extension edits stay with the outgoing session',
+  );
+  assert.equal(alternate.draft, 'B_DRAFT', 'target draft must not be overwritten by an old hook');
+  assert.deepEqual(
+    s.runtime.widgets['target-widget'],
+    ['TARGET_WIDGET'],
+    'target startup events are retained',
+  );
+  await fs.unlink(path.join(f.agentDir, 'switch-events'));
+
+  await fs.writeFile(path.join(f.agentDir, 'slow-switch'), 'enabled');
+  const switching = s.connect(f.sessionId);
+  await until(() => s.runtime.notices.includes('SWITCH_WAITING'));
+  await assert.rejects(s.disconnect(), /会话操作/);
+  await switching;
+  await fs.unlink(path.join(f.agentDir, 'slow-switch'));
+  console.log(
+    'PASS outgoing/target extension events remain separate, and configuration cannot disconnect an active switch',
+  );
+
+  const previousStatus = s.runtime.status;
+  await fs.writeFile(path.join(f.agentDir, 'confirm-switch'), 'enabled');
+  const confirmed = s.connect(alternate.id);
+  await until(() => s.runtime.dialogs.some((dialog) => dialog.title === '切换确认'));
+  await s.respond(s.runtime.dialogs[0].id, { confirmed: true });
+  await confirmed;
+  assert.equal(f.store.session(f.sessionId).lastStatus, previousStatus);
+  assert.equal(s.runtime.dialogs.length, 0);
+  assert.equal(s.lastSwitch?.mode, 'reuse');
+  await fs.unlink(path.join(f.agentDir, 'confirm-switch'));
+  await s.connect(f.sessionId);
+  console.log('PASS extension confirmation does not leave the previous session stuck in starting');
+
+  const failedRpc = (s as any).rpc;
+  const originalRequest = failedRpc.request.bind(failedRpc);
+  failedRpc.request = (type: string, ...args: any[]) =>
+    type === 'switch_session'
+      ? Promise.reject(new Error('TEST_SWITCH_FAILURE'))
+      : originalRequest(type, ...args);
+  await s.connect(alternate.id);
+  assert.notEqual((s as any).rpc.child.pid, stablePid);
+  assert.equal(s.lastSwitch?.mode, 'restart');
+  assert.match(s.lastSwitch!.reason!, /TEST_SWITCH_FAILURE/);
+  assert.equal(s.runtime.error, undefined);
+  console.log('PASS failed reuse restarts cleanly and records the reason without an error banner');
+
+  const crashedPid = (s as any).rpc.child.pid;
+  await (s as any).rpc.killTree();
+  await until(() => !s.runtime.connected);
+  await s.connect(f.sessionId);
+  assert.notEqual((s as any).rpc.child.pid, crashedPid);
+  assert.equal(s.lastSwitch?.mode, 'restart');
+  assert.equal(s.runtime.connected, true);
+  assert.deepEqual(userTexts(), ['WORKFLOW_FIRST', 'WORKFLOW_EDITED']);
+  console.log('PASS the first switch after a process exit restarts and restores target history');
 } finally {
   await s.dispose().catch(() => {});
   await provider.close();

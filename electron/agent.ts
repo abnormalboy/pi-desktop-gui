@@ -26,9 +26,11 @@ import {
 } from '../shared/types';
 import { APPROVAL_DENY, APPROVAL_PREFIX } from '../shared/approval';
 import { validateImages } from './images';
-import { piShellEnvironment } from './platform';
+import { piShellEnvironment, samePath } from './platform';
 import { sessionStats } from './pi/protocol';
 import { DESKTOP_BRIDGE_COMMAND } from '../shared/pi-bridge';
+import { classifyModelError, redact, redactMessageError, type ModelErrorKind } from '../shared/errors';
+export { redact } from '../shared/errors';
 
 // Pi model records may contain provider headers. Keep only display metadata in IPC.
 const displayModel = (model: any): Model | undefined =>
@@ -66,11 +68,6 @@ export async function argumentHint(file: string) {
   }
 }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-export const redact = (s: string) =>
-  s
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[已隐藏]')
-    .replace(/\b(sk-[a-zA-Z0-9_-]{12,}|gh[pousr]_[a-zA-Z0-9]{15,})\b/g, '[已隐藏]')
-    .replace(/((?:api[_-]?key|access_token|refresh_token|authorization)["'\s:=]+)[^\s,"'}]+/gi, '$1[已隐藏]');
 export class AgentService extends EventEmitter {
   runtime: Runtime = emptyRuntime();
   private rpc?: PiRpc;
@@ -90,6 +87,11 @@ export class AgentService extends EventEmitter {
   private crashTimes = new Map<string, number>();
   private crashCleanup = Promise.resolve();
   private unsafeExit = false;
+  private switchEvents?: any[];
+  private switchStarted = false;
+  lastSwitch?: { mode: 'reuse' | 'restart'; elapsedMs: number; reason?: string; pid?: number };
+  recentModelErrors: { kind: ModelErrorKind; at: number }[] = [];
+  private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
   get hasPendingWork() {
     return (
       this.pendingOperations > 0 ||
@@ -177,7 +179,7 @@ export class AgentService extends EventEmitter {
       .save()
       .then(() => this.emit('state', this.store.state))
       .catch((e) => {
-        this.runtime.error = `本地保存失败：${errorText(e)}`;
+        this.setError(`本地保存失败：${errorText(e)}`);
         this.publish();
       });
   }
@@ -208,7 +210,26 @@ export class AgentService extends EventEmitter {
     this.runtime.diagnostic = this.runtime.diagnostic.slice(-100);
     this.publish();
   }
+  private setError(error?: string) {
+    this.runtime.error = error === undefined ? undefined : redact(error);
+    this.runtime.errorKind = undefined;
+    this.runtime.errorCount = undefined;
+  }
+  private modelError(error: string, settled: boolean) {
+    const kind = classifyModelError(error).kind;
+    this.runtime.error = redact(error);
+    this.runtime.errorKind = kind;
+    const id = this.runtime.sessionId;
+    if (settled && id) {
+      const previous = this.errorCounts.get(id);
+      const count = previous?.kind === kind ? previous.count + 1 : 1;
+      this.errorCounts.set(id, { kind, count });
+      this.runtime.errorCount = count;
+      this.recentModelErrors = [...this.recentModelErrors, { kind, at: Date.now() }].slice(-5);
+    }
+  }
   private notify(text: string, level: RuntimeNotification['level'] = 'info') {
+    text = redact(text);
     const r = this.runtime;
     r.notices.push(text);
     r.notifications = [...(r.notifications ?? []), { id: ++this.notificationId, text, level }].slice(-5);
@@ -235,7 +256,7 @@ export class AgentService extends EventEmitter {
         if (!this.stopRequested) this.status('running');
         break;
       case 'message_start':
-        r.messages.push(record.message);
+        r.messages.push(redactMessageError(record.message));
         break;
       case 'message_update': {
         let m = r.messages.at(-1);
@@ -270,8 +291,9 @@ export class AgentService extends EventEmitter {
       }
       case 'message_end': {
         const last = r.messages.at(-1);
-        if (last && last.role === record.message?.role) r.messages[r.messages.length - 1] = record.message;
-        else r.messages.push(record.message);
+        if (last && last.role === record.message?.role)
+          r.messages[r.messages.length - 1] = redactMessageError(record.message);
+        else r.messages.push(redactMessageError(record.message));
         break;
       }
       case 'tool_execution_start':
@@ -330,19 +352,21 @@ export class AgentService extends EventEmitter {
           this.status(record.reason === 'manual' && !record.willRetry ? 'idle' : 'running');
         break;
       case 'auto_retry_start':
-        r.notices.push(`正在重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`);
+        r.notices.push(
+          redact(`正在重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`),
+        );
         r.retry = {
           attempt: record.attempt,
           maxAttempts: record.maxAttempts,
           delayMs: record.delayMs ?? 0,
           startedAt: Date.now(),
-          error: record.errorMessage,
+          error: record.errorMessage ? redact(record.errorMessage) : undefined,
         };
         if (!this.stopRequested) this.status('retrying');
         break;
       case 'auto_retry_end':
         r.retry = undefined;
-        if (!record.success) r.error = record.finalError;
+        if (!record.success && record.finalError) this.modelError(record.finalError, false);
         if (!this.stopRequested) this.status('running');
         break;
       case 'agent_settled': {
@@ -350,7 +374,11 @@ export class AgentService extends EventEmitter {
         if (this.stopRequested) break;
         const last = r.messages.findLast((m) => m.role === 'assistant');
         const failed = last?.stopReason === 'error';
-        r.error = failed ? last.errorMessage || '模型请求失败' : undefined;
+        if (failed && !record.aborted) this.modelError(last.errorMessage || '模型请求失败', true);
+        else {
+          this.setError();
+          if (!record.aborted && r.sessionId) this.errorCounts.delete(r.sessionId);
+        }
         this.status(record.aborted ? 'stopped' : failed ? 'error' : 'completed');
         for (const t of r.tools)
           if (t.status === 'running') {
@@ -449,9 +477,10 @@ export class AgentService extends EventEmitter {
   }
   private async refresh() {
     const rpc = this.rpc;
-    if (!rpc || rpc.closed) return;
+    const runtime = this.runtime;
+    if (!rpc || rpc.closed || this.switchEvents) return;
     const state = await rpc.request('get_state');
-    if (this.rpc !== rpc) return;
+    if (this.rpc !== rpc || this.runtime !== runtime || this.switchEvents) return;
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
     this.runtime.autoCompaction = state.autoCompactionEnabled;
@@ -463,10 +492,12 @@ export class AgentService extends EventEmitter {
     }
     if (!busy(this.runtime.status)) {
       const messages = await rpc.request('get_messages');
-      if (this.rpc === rpc) this.runtime.messages = messages.messages ?? [];
+      if (this.rpc === rpc && this.runtime === runtime && !this.switchEvents)
+        this.runtime.messages = messages.messages.map(redactMessageError);
       try {
         const stats = await rpc.request('get_session_stats');
-        if (this.rpc === rpc) this.runtime.stats = sessionStats(stats);
+        if (this.rpc === rpc && this.runtime === runtime && !this.switchEvents)
+          this.runtime.stats = sessionStats(stats);
       } catch {}
     }
     this.publish();
@@ -481,6 +512,8 @@ export class AgentService extends EventEmitter {
       );
   }
   private async ensureConnected(sessionId: string) {
+    const started = performance.now();
+    const epoch = this.stopEpoch;
     await this.crashCleanup;
     this.assertCommandsStopped();
     await this.store.flush();
@@ -496,22 +529,52 @@ export class AgentService extends EventEmitter {
       await this.syncApprovalMode();
       return;
     }
-    if (this.rpc && !this.rpc.closed) {
-      const result = session.file
-        ? await this.rpc.request('switch_session', { sessionPath: session.file }, 120000)
-        : await this.rpc.request('new_session', {}, 120000);
-      if (result?.cancelled) throw new Error('Pi 扩展取消了会话切换，原会话保持不变');
+    const cwd = await this.store.sessionDirectory(sessionId);
+    let reason = this.rpc?.closed ? 'Pi 进程已退出' : '当前没有 Pi 连接';
+    if (this.rpc && !this.rpc.closed && this.runtime.cwd && samePath(cwd, this.runtime.cwd)) {
+      const previousStatus = this.runtime.status;
+      const events: any[] = [];
+      this.switchEvents = events;
+      this.switchStarted = false;
+      this.connecting = true;
+      let cancelled = false;
+      try {
+        const result = session.file
+          ? await this.rpc.request('switch_session', { sessionPath: session.file }, 120000)
+          : await this.rpc.request('new_session', {}, 120000);
+        cancelled = result?.cancelled === true;
+        if (cancelled) throw new Error('Pi 扩展取消了会话切换，原会话保持不变');
+        if (!this.switchStarted) throw new Error('桌面适配扩展未确认新会话已开始');
+        if (epoch !== this.stopEpoch || this.shutdown) throw new Error('会话切换已取消');
+        this.switchEvents = undefined;
+        // A before-switch dialog temporarily changes the outgoing session's status.
+        this.store.session(this.runtime.sessionId!).lastStatus = previousStatus;
+        this.resetSession(sessionId, cwd);
+        for (const event of events) if (event.type !== 'session_info_changed') this.onEvent(event);
+        await this.rebindSession(sessionId, resuming);
+        this.recordSwitch('reuse', started);
+        return;
+      } catch (error) {
+        if (cancelled) {
+          this.clearDialogs();
+          this.status(previousStatus);
+          throw error;
+        }
+        reason = `复用切换失败：${redact(errorText(error))}`;
+      } finally {
+        this.switchEvents = undefined;
+        this.switchStarted = false;
+        this.connecting = false;
+      }
+    } else if (this.rpc && !this.rpc.closed) reason = '工作目录不同，重新加载项目环境';
+    if (this.rpc) {
       const old = this.rpc;
       this.rpc = undefined;
       await old.close();
     }
-    this.clearDialogs();
-    const previousCrash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
-    this.runtime = { ...emptyRuntime(), sessionId, crash: previousCrash };
-    this.queuedImages = [];
-    this.stopRequested = false;
+    if (epoch !== this.stopEpoch || this.shutdown) throw new Error('会话切换已取消');
+    this.resetSession(sessionId, cwd);
     this.connecting = true;
-    this.fullOutput = '';
     this.status('starting');
     try {
       const environment = await requireSupportedPi(this.store.state.settings, this.developmentRoot);
@@ -519,7 +582,7 @@ export class AgentService extends EventEmitter {
       if (this.stopRequested) throw new Error('启动已取消');
       const rpc = new PiRpc();
       this.rpc = rpc;
-      this.installRpcHandlers(rpc, sessionId);
+      this.installRpcHandlers(rpc);
       const args = [
         '--mode',
         'rpc',
@@ -542,11 +605,12 @@ export class AgentService extends EventEmitter {
       };
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
       // including installations on another drive, over Windows' legacy WSL bash launcher.
-      rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
-      this.runtime.cwd = await this.store.sessionDirectory(sessionId);
+      rpc.start(resolved.spec, cwd, args, shellEnv);
       await this.rebindSession(sessionId, resuming);
+      this.recordSwitch('restart', started, reason);
+      if (reason.startsWith('复用切换失败')) this.diagnostic(reason);
     } catch (e) {
-      this.runtime.error = errorText(e);
+      this.setError(errorText(e));
       this.runtime.connected = false;
       this.status(this.stopRequested ? 'stopped' : this.runtime.crash ? 'interrupted' : 'error');
       const rpc = this.rpc;
@@ -557,29 +621,56 @@ export class AgentService extends EventEmitter {
       this.connecting = false;
     }
   }
-  private installRpcHandlers(rpc: PiRpc, sessionId: string) {
+  private resetSession(sessionId: string, cwd: string) {
+    this.clearDialogs();
+    const crash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
+    this.runtime = { ...emptyRuntime(), sessionId, cwd, crash };
+    this.queuedImages = [];
+    this.stopRequested = false;
+    this.fullOutput = '';
+  }
+  private recordSwitch(mode: 'reuse' | 'restart', started: number, reason?: string) {
+    this.lastSwitch = {
+      mode,
+      elapsedMs: Math.round((performance.now() - started) * 10) / 10,
+      reason,
+      pid: this.rpc?.child?.pid,
+    };
+  }
+  private installRpcHandlers(rpc: PiRpc) {
     rpc.on('event', (e) => {
-      if (this.rpc === rpc) this.onEvent(e);
+      if (this.rpc !== rpc) return;
+      if (this.switchEvents && e.type === 'desktop_session_start') {
+        this.switchStarted = true;
+        return;
+      }
+      // Old hooks still own their editor changes. The bridge's session_start signal separates
+      // those from target startup events. Dialogs stay answerable while the request is pending.
+      const dialog =
+        e.type === 'extension_ui_request' && ['select', 'confirm', 'input', 'editor'].includes(e.method);
+      if (this.switchEvents && this.switchStarted && !dialog) this.switchEvents.push(e);
+      else this.onEvent(e);
     });
     rpc.on('diagnostic', (s) => {
       if (this.rpc === rpc) this.diagnostic(s);
     });
     rpc.on('protocolError', (e) => {
       if (this.rpc === rpc) {
-        this.runtime.error = errorText(e);
+        this.setError(errorText(e));
         this.status('error');
         void rpc.killTree().catch(() => {});
       }
     });
     rpc.on('fault', (e) => {
       if (this.rpc === rpc) {
-        this.runtime.error = errorText(e);
+        this.setError(errorText(e));
         this.runtime.connected = false;
         this.status('error');
       }
     });
     rpc.on('exit', (code: number | null, signal: string | null) => {
       if (this.rpc !== rpc || this.shutdown) return;
+      const sessionId = this.runtime.sessionId!;
       this.runtime.connected = false;
       this.clearDialogs();
       const last = this.runtime.tools.findLast((tool) => tool.status === 'running');
@@ -592,7 +683,7 @@ export class AgentService extends EventEmitter {
         this.crashCleanup = rpc.treeTerminationConfirmed().then((confirmed) => {
           this.unsafeExit = !confirmed;
           if (this.runtime.crash) this.runtime.crash.cleanup = confirmed ? 'confirmed' : 'unconfirmed';
-          if (!confirmed) this.runtime.error = '无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。';
+          if (!confirmed) this.setError('无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。');
           this.publish(true);
         });
       }
@@ -626,19 +717,28 @@ export class AgentService extends EventEmitter {
           tool.durationMs = at - tool.startedAt;
           tool.output += '\nPi 意外退出，工具是否完成需要检查当前文件。';
         }
-      this.runtime.error = 'Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。';
+      this.setError('Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。');
       this.status('interrupted');
     });
   }
   private async rebindSession(sessionId: string, resuming: boolean) {
     const rpc = this.rpc!;
+    const epoch = this.stopEpoch;
+    const assertActive = () => {
+      if (this.shutdown || this.stopRequested || epoch !== this.stopEpoch) throw new Error('会话连接已取消');
+      if (this.rpc !== rpc || rpc.closed) throw new Error('Pi 在加载会话时已退出，请重新连接');
+    };
     const session = this.store.session(sessionId);
-    const state = await rpc.request('get_state', {}, 120000);
-    if (this.stopRequested) throw new Error('启动已取消');
+    let state = await rpc.request('get_state', {}, 120000);
+    assertActive();
     if (state.sessionFile) session.file = state.sessionFile;
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
-    this.runtime.messages = (await rpc.request('get_messages')).messages ?? [];
+    const [messages] = await Promise.all([rpc.request('get_messages'), this.refreshCapabilities()]);
+    this.runtime.messages = messages.messages.map(redactMessageError);
+    this.runtime.autoCompaction = state.autoCompactionEnabled;
+    this.runtime.steeringMode = state.steeringMode;
+    this.runtime.followUpMode = state.followUpMode;
     const calls = new Map(
       this.runtime.messages
         .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
@@ -663,25 +763,23 @@ export class AgentService extends EventEmitter {
       .map((m) => `[${m.toolName ?? 'tool'}]\n${messageText(m)}`)
       .join('\n\n')
       .slice(-10 * 1024 * 1024);
-    this.runtime.models = ((await rpc.request('get_available_models')).models ?? [])
-      .map(displayModel)
-      .filter((model): model is Model => Boolean(model));
     const settings = this.store.state.settings;
     const wanted =
       session.model ?? (resuming ? undefined : { provider: settings.provider, id: settings.modelId });
     if (
       wanted?.provider &&
       wanted.id &&
+      (this.runtime.model?.provider !== wanted.provider || this.runtime.model?.id !== wanted.id) &&
       this.runtime.models.some((m) => m.provider === wanted.provider && m.id === wanted.id)
     ) {
       this.runtime.model = displayModel(
         await rpc.request('set_model', { provider: wanted.provider, modelId: wanted.id }),
       );
+      state = await rpc.request('get_state');
     }
     await this.loadThinkingLevels(rpc);
-    const currentState = await rpc.request('get_state');
-    this.runtime.model = displayModel(currentState.model);
-    this.runtime.thinking = currentState.thinkingLevel;
+    this.runtime.model = displayModel(state.model);
+    this.runtime.thinking = state.thinkingLevel;
     // New sessions use Pi's effective default (including project overrides).
     // Only an existing session's own choice should override it.
     const thinking = session.thinking;
@@ -689,15 +787,21 @@ export class AgentService extends EventEmitter {
       await rpc.request('set_thinking_level', { level: thinking });
       this.runtime.thinking = thinking;
     }
-    this.status('idle');
-    await this.refreshCapabilities();
+    try {
+      this.runtime.stats = sessionStats(await rpc.request('get_session_stats'));
+    } catch {}
+    assertActive();
+    this.runtime.status = 'idle';
     this.runtime.connected = true;
+    await this.syncApprovalMode();
+    if (state.sessionName !== session.title) await rpc.request('set_session_name', { name: session.title });
+    assertActive();
     this.runtime.crash = undefined;
     session.model = this.runtime.model
       ? { provider: this.runtime.model.provider, id: this.runtime.model.id }
       : undefined;
     session.thinking = this.runtime.thinking;
-    this.save();
+    this.status('idle');
   }
   send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
     const epoch = this.stopEpoch;
@@ -746,7 +850,7 @@ export class AgentService extends EventEmitter {
     if (shellCommand && isActive) throw new Error('请等待当前任务完成后再执行命令');
     if (!isActive) {
       this.stopRequested = false;
-      this.runtime.error = undefined;
+      this.setError();
       this.runtime.tools = [];
       this.runtime.startedAt = Date.now();
       this.status('starting');
@@ -754,7 +858,7 @@ export class AgentService extends EventEmitter {
         try {
           await this.workspace.capture(project);
         } catch (error) {
-          this.runtime.error = `无法建立本轮快照，任务未开始：${errorText(error)}`;
+          this.setError(`无法建立本轮快照，任务未开始：${errorText(error)}`);
           this.status(this.stopRequested ? 'stopped' : 'error');
           throw new Error(this.runtime.error, { cause: error });
         }
@@ -821,7 +925,7 @@ export class AgentService extends EventEmitter {
       session.updatedAt = Date.now();
       this.save();
     } catch (e) {
-      this.runtime.error = errorText(e);
+      this.setError(errorText(e));
       if (!isActive && !this.stopRequested) this.status(this.runtime.crash ? 'interrupted' : 'error');
       throw e;
     }
@@ -1000,14 +1104,13 @@ export class AgentService extends EventEmitter {
     const options = await this.rpc.bridge('options');
     this.runtime.autoRetry = options.autoRetry;
     this.runtime.approvalMode = options.approvalMode ?? 'auto';
-    await this.refresh();
   }
   private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
     return this.exclusive(async () => {
       await this.ensureConnected(id);
       if (busy(this.runtime.status)) throw new Error('请先等待当前任务结束');
       this.stopRequested = false;
-      this.runtime.error = undefined;
+      this.setError();
       this.status('starting');
       try {
         return await action(this.rpc!);
@@ -1130,7 +1233,7 @@ export class AgentService extends EventEmitter {
       await this.refresh();
       await this.exclusive(() => this.syncApprovalMode());
     } catch (e) {
-      this.runtime.error = `停止未完成：${errorText(e)}`;
+      this.setError(`停止未完成：${errorText(e)}`);
       this.publish(true);
       throw e;
     }
@@ -1146,6 +1249,8 @@ export class AgentService extends EventEmitter {
   async disconnect() {
     await this.crashCleanup;
     this.assertCommandsStopped();
+    if (this.connecting || this.pendingOperations > 0)
+      throw new Error('正在处理会话操作，请等待完成后再断开或修改运行环境。');
     if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务或连接测试结束');
     const rpc = this.rpc;
     this.rpc = undefined;
@@ -1233,7 +1338,7 @@ export class AgentService extends EventEmitter {
     if (this.runtime.sessionId === id && this.runtime.messages.length) return this.runtime.messages;
     if (!s.file) return [];
     try {
-      return (await readSessionFile(s.file)).messages;
+      return (await readSessionFile(s.file)).messages.map(redactMessageError);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw e;

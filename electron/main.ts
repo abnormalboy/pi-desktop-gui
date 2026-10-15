@@ -224,6 +224,8 @@ async function diagnostics() {
         platform: process.platform,
         environment,
         piCompatibility: environment.compatibility,
+        sessionSwitch: service.lastSwitch,
+        modelErrors: service.recentModelErrors,
         runtime: {
           status: service.runtime.status,
           connected: service.runtime.connected,
@@ -356,7 +358,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const s = store.session(id);
     if (
       store.storage.writable &&
-      service.runtime.connected &&
+      (service.runtime.connected || service.runtime.crash?.cleanup === 'confirmed') &&
       !busy(service.runtime.status) &&
       service.runtime.sessionId !== id
     ) {

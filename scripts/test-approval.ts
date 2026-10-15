@@ -78,6 +78,28 @@ try {
   await until(settled);
   console.log('PASS always-allow applies for the rest of the session');
 
+  const switched = f.store.createSession(f.projectId);
+  await s.setApprovalMode(switched.id, 'confirm');
+  const pid = s.lastSwitch?.pid;
+  for (const id of [switched.id, f.sessionId]) {
+    await s.connect(id);
+    assert.equal(s.lastSwitch?.mode, 'reuse');
+    assert.equal(s.lastSwitch?.pid, pid);
+    assert.equal(s.runtime.approvalMode, 'confirm');
+    await s.send(id, 'E2E_FILES', [], 'steer');
+    await nextDialog();
+    assert.equal(
+      s.runtime.dialogs[0]?.approval?.toolName,
+      'write',
+      'switching must clear the old always-allow grant',
+    );
+    await s.respond(s.runtime.dialogs[0].id, { value: APPROVAL_ALLOW });
+    await nextDialog();
+    await s.respond(s.runtime.dialogs[0].id, { value: APPROVAL_ALLOW });
+    await until(settled);
+  }
+  console.log('PASS reused sessions never inherit or restore always-allow grants');
+
   await fs.rm(output);
   await s.setApprovalMode(f.sessionId, 'readonly');
   await s.send(f.sessionId, 'E2E_FILES', [], 'steer');

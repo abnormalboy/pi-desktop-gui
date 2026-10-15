@@ -19,11 +19,17 @@ export async function createLocalProvider() {
     const content = body.messages[lastUser]?.content;
     const prompt =
       typeof content === 'string' ? content : (content ?? []).map((b: any) => b.text ?? '').join('');
-    if (prompt.includes('E2E_401')) {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(
-        JSON.stringify({ error: { message: 'Invalid API key (local test)', type: 'authentication_error' } }),
-      );
+    const errorScenario = [
+      ['E2E_401', 401, 'authentication_error', 'Invalid API key sk-test12345678901234567890 (local test)'],
+      ['E2E_429', 429, 'rate_limit_exceeded', 'Too many requests (local test)'],
+      ['E2E_QUOTA', 429, 'insufficient_quota', 'Account quota exceeded (local test)'],
+      ['E2E_OVERFLOW', 400, 'context_length_exceeded', 'Maximum context length exceeded (local test)'],
+      ['E2E_MODEL', 404, 'model_not_found', 'Model not found (local test)'],
+    ].find(([marker]) => prompt.startsWith(String(marker)));
+    if (errorScenario) {
+      const [, status, type, message] = errorScenario;
+      res.writeHead(Number(status), { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message, type, code: type } }));
       return;
     }
     res.writeHead(200, {

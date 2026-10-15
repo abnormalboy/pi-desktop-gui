@@ -29,6 +29,12 @@ jobs:
       - run: npm test
       - run: npm run test:integration
       - run: npm run test:features
+      - name: Package Windows and macOS acceptance builds
+        if: matrix.os != 'ubuntu-latest'
+        run: node scripts/package.mjs --dir
+      - name: Measure ten session switches in the packaged app
+        if: matrix.os != 'ubuntu-latest'
+        run: npm run test:session-ui -- --packaged
       - name: Install Linux desktop test dependencies
         if: matrix.os == 'ubuntu-latest'
         run: npx playwright install-deps chromium
@@ -42,10 +48,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" npm run test:features-ui
       - uses: actions/upload-artifact@v4
-        if: failure() && matrix.os == 'ubuntu-latest'
+        if: always()
         with:
-          name: linux-ui-failures
-          path: test-results/
+          name: acceptance-${{ matrix.os }}
+          path: |
+            test-results/
+            output/playwright/
           if-no-files-found: ignore
 
   update-roundtrip:
