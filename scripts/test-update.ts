@@ -5,13 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { build as bundle } from 'esbuild';
 import { build as buildRenderer } from 'vite';
 import { build as packageApp, Platform } from 'electron-builder';
-import { _electron as electron, type ElectronApplication } from 'playwright';
+import {
+  _electron as electron,
+  chromium,
+  type Browser,
+  type ElectronApplication,
+  type Page,
+} from 'playwright';
 import { extractFile } from '@electron/asar';
 import { Store } from '../electron/store';
 
@@ -97,6 +103,8 @@ env.PI_OFFLINE = '1';
 env.APPIMAGE_EXTRACT_AND_RUN = '1';
 delete env.PI_DESKTOP_DATA_DIR;
 let app: ElectronApplication | undefined;
+let portableBrowser: Browser | undefined;
+let portableProcess: ChildProcess | undefined;
 const until = async <T>(check: () => Promise<T>, timeout = 120000): Promise<NonNullable<T>> => {
   const started = Date.now();
   while (Date.now() - started < timeout) {
@@ -262,13 +270,24 @@ try {
       await fs.chmod(executable, 0o755);
     }
     badChecksum = mode === 'restart';
-    app = await electron.launch({
-      executablePath: portable ? assets.get(`Pi-Desktop-${oldVersion}-win-x64.exe`)! : executable,
-      args: [],
-      env,
-      timeout: 60000,
-    });
-    const page = await app.firstWindow();
+    let page: Page;
+    if (portable) {
+      // The NSIS portable launcher hides the child's stderr, which Electron.launch needs.
+      // Connect to its real renderer over a local debugging port instead.
+      portableProcess = spawn(
+        assets.get(`Pi-Desktop-${oldVersion}-win-x64.exe`)!,
+        ['--remote-debugging-port=0'],
+        { env, windowsHide: true, stdio: 'ignore' },
+      );
+      const debugPort = await until(
+        async () => (await fs.readFile(path.join(dataDir, 'DevToolsActivePort'), 'utf8')).split('\n')[0],
+      );
+      portableBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+      page = portableBrowser.contexts()[0].pages()[0];
+    } else {
+      app = await electron.launch({ executablePath: executable, args: [], env, timeout: 60000 });
+      page = await app.firstWindow();
+    }
     page.setDefaultTimeout(60000);
     await page.getByRole('textbox', { name: '任务输入' }).waitFor();
     await page.evaluate(() => {
@@ -302,7 +321,9 @@ try {
     await page
       .getByRole('button', { name: portable ? 'v0.9.1 可用' : '重启以更新到 v0.9.1', exact: true })
       .click();
-    const closed = app.waitForEvent('close', { timeout: 120000 });
+    const closed = portable
+      ? new Promise<void>((resolve) => portableBrowser!.once('disconnected', () => resolve()))
+      : app!.waitForEvent('close', { timeout: 120000 });
     if (mode === 'restart') await page.getByRole('button', { name: '立即重启', exact: true }).click();
     else {
       await page.getByRole('button', { name: '稍后', exact: true }).click();
@@ -310,6 +331,7 @@ try {
     }
     await closed;
     app = undefined;
+    portableBrowser = undefined;
     if (portable)
       await exec(assets.get(`Pi-Desktop-${nextVersion}-win-x64-setup.exe`)!, ['/S', `/D=${installDir}`], {
         windowsHide: true,
@@ -383,6 +405,8 @@ try {
   throw error;
 } finally {
   if (app) await app.close().catch(() => {});
+  if (portableBrowser) await portableBrowser.close().catch(() => {});
+  if (portableProcess && portableProcess.exitCode === null) portableProcess.kill();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   if (process.platform === 'win32') {
