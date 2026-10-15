@@ -191,6 +191,7 @@ try {
   await page.getByLabel('本地数据状态').waitFor();
   assert.match(await page.getByLabel('本地数据状态').innerText(), /v0.10.0.*只读/s);
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
+  await page.locator('.thread').hover();
   await about();
   await app.close();
   app = undefined;

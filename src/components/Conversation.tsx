@@ -11,6 +11,7 @@ export function Conversation(
   props: Pick<
     Workbench,
     | 'state'
+    | 'storage'
     | 'runtime'
     | 'environment'
     | 'pending'
@@ -47,6 +48,7 @@ export function Conversation(
 ) {
   const {
     state,
+    storage,
     runtime,
     environment,
     pending,
@@ -117,8 +119,8 @@ export function Conversation(
           if (autoScroll.current) setNewContent(false);
         }}
         onMouseLeave={() => {
-          if (selected && thread.current)
-            void api.invoke('saveView', selected.id, thread.current.scrollTop, expanded);
+          if (storage.writable && selected && thread.current)
+            void attempt(() => api.invoke('saveView', selected.id, thread.current!.scrollTop, expanded));
         }}
       >
         {!messages.length && (

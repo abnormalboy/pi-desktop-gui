@@ -7,6 +7,7 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 import { build as bundle } from 'esbuild';
 import { build as buildRenderer } from 'vite';
 import { build as packageApp, Platform } from 'electron-builder';
@@ -87,6 +88,8 @@ await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const port = (server.address() as import('node:net').AddressInfo).port;
 const feed = `http://127.0.0.1:${port}/`;
 const config = JSON.parse(await fs.readFile('package.json', 'utf8'));
+// Electron 44 downloads its binary lazily when required; a fresh npm ci has no dist directory yet.
+const electronDist = path.dirname(createRequire(import.meta.url)('electron') as string);
 const env: Record<string, string> = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
 );
@@ -199,7 +202,7 @@ try {
         appId: 'io.yeyuproject.update-test.' + name.slice(-8),
         productName,
         electronVersion: config.devDependencies.electron,
-        electronDist: path.resolve('node_modules/electron/dist'),
+        electronDist,
         directories: { output: out },
         files: [...config.build.files],
         compression: 'store',

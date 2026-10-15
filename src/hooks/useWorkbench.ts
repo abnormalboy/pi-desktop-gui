@@ -475,7 +475,8 @@ export function useWorkbench() {
   const toggleTool = (id: string, open: boolean) => {
     setExpanded((v) => {
       const next = open ? [...new Set([...v, id])] : v.filter((x) => x !== id);
-      if (selected) void api.invoke('saveView', selected.id, thread.current?.scrollTop ?? 0, next);
+      if (storage.writable && selected)
+        void attempt(() => api.invoke('saveView', selected.id, thread.current?.scrollTop ?? 0, next));
       return next;
     });
   };
