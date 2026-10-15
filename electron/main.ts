@@ -68,6 +68,7 @@ let watcherRevision = 0;
 let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
+const appUserModelId = app.isPackaged ? 'io.yeyuproject.pi-desktop' : 'io.yeyuproject.pi-desktop.dev';
 const send = (event: AppEvent) => {
   if (window && !window.isDestroyed()) window.webContents.send('desktop:event', event);
   if (event.type === 'state') void watchSelectedProject();
@@ -1177,6 +1178,17 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  if (process.platform === 'win32') {
+    const executable = (app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE) || app.getPath('exe');
+    // The taskbar group has its own icon, separate from the window's PNG icon.
+    window.setAppDetails({
+      appId: appUserModelId,
+      appIconPath: app.isPackaged ? executable : path.join(app.getAppPath(), 'build', 'icon.ico'),
+      appIconIndex: 0,
+      relaunchCommand: app.isPackaged ? `"${executable}"` : `"${executable}" "${app.getAppPath()}"`,
+      relaunchDisplayName: 'Pi Desktop',
+    });
+  }
   window.once('ready-to-show', () => {
     if (saved.maximized) window?.maximize();
     window?.show();
@@ -1255,7 +1267,7 @@ else {
   app
     .whenReady()
     .then(async () => {
-      app.setAppUserModelId('io.yeyuproject.pi-desktop');
+      app.setAppUserModelId(appUserModelId);
       await loadLoginShellPath();
       store = new Store(app.getPath('userData'), app.getVersion());
       await store.load();
