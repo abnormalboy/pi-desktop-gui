@@ -61,6 +61,6 @@
   resize: vertical;
 }
 .compatibility-warning {
-  color: var(--warning);
+  color: var(--signal);
   margin-block: 12px;
 }
