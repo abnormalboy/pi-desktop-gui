@@ -76,6 +76,7 @@ export class AgentService extends EventEmitter {
   private rpc?: PiRpc;
   private publishing?: NodeJS.Timeout;
   private operation = Promise.resolve();
+  private pendingOperations = 0;
   private stopRequested = false;
   private connecting = false;
   private shutdown = false;
@@ -89,6 +90,16 @@ export class AgentService extends EventEmitter {
   private crashTimes = new Map<string, number>();
   private crashCleanup = Promise.resolve();
   private unsafeExit = false;
+  get hasPendingWork() {
+    return (
+      this.pendingOperations > 0 ||
+      busy(this.runtime.status) ||
+      this.probing ||
+      this.connecting ||
+      this.unsafeExit ||
+      this.runtime.dialogs.length > 0
+    );
+  }
   constructor(
     readonly store: Store,
     readonly workspace: Workspace,
@@ -182,12 +193,15 @@ export class AgentService extends EventEmitter {
     this.publish(true);
   }
   private exclusive<T>(action: () => Promise<T>): Promise<T> {
+    this.pendingOperations++;
     const result = this.operation.then(action, action);
     this.operation = result.then(
       () => {},
       () => {},
     );
-    return result;
+    return result.finally(() => {
+      this.pendingOperations--;
+    });
   }
   private diagnostic(s: string) {
     this.runtime.diagnostic.push(redact(s).slice(-4000));

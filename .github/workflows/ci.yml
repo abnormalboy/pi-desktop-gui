@@ -48,8 +48,39 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
 
+  update-roundtrip:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install Linux desktop test dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: npx playwright install-deps chromium
+      - name: Test Windows installer updates
+        if: matrix.os == 'windows-latest'
+        run: npm run test:update
+      - name: Test Linux AppImage updates
+        if: matrix.os == 'ubuntu-latest'
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" npm run test:update
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: update-roundtrip-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+
   package:
-    needs: build-and-test
+    needs: [build-and-test, update-roundtrip]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
@@ -76,6 +107,8 @@ jobs:
             release/*.zip
             release/*.AppImage
             release/*.deb
+            release/latest*.yml
+            release/*.blockmap
           if-no-files-found: error
           compression-level: 0
 
@@ -87,11 +120,20 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - run: npm ci --ignore-scripts
       - uses: actions/download-artifact@v4
         with:
           pattern: pi-desktop-*
           merge-multiple: true
           path: release-assets
+      - name: Verify updater metadata and download hashes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/verify-update-metadata.mjs release-assets
       - name: Publish installers and checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

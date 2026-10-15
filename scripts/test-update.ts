@@ -1,0 +1,393 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { build as bundle } from 'esbuild';
+import { build as buildRenderer } from 'vite';
+import { build as packageApp, Platform } from 'electron-builder';
+import { _electron as electron, type ElectronApplication } from 'playwright';
+import { extractFile } from '@electron/asar';
+import { Store } from '../electron/store';
+
+// Build two copies of the production app. Only identity, data directory and update transport differ.
+// The fixture has its own installer GUID and never installs or removes the user's Pi Desktop.
+if (!['win32', 'linux'].includes(process.platform)) throw new Error('Update roundtrip runs on Windows/Linux');
+const exec = promisify(execFile);
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-update-roundtrip-'));
+const name = 'pi-desktop-update-fixture-' + randomUUID().slice(0, 8);
+const guid = randomUUID();
+const productName = 'Pi Update Fixture ' + name.slice(-8);
+const installDir = path.join(root, 'installed');
+const oldVersion = '0.9.0',
+  nextVersion = '0.9.1';
+const assets = new Map<string, string>();
+let badChecksum = false;
+const requests: string[] = [];
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url!, 'http://127.0.0.1');
+    requests.push(url.pathname);
+    if (url.pathname.startsWith('/releases/')) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          tag_name: 'v' + nextVersion,
+          body: '# 本地更新验证\n\n保留草稿、会话和审批模式。',
+          draft: false,
+          prerelease: false,
+        }),
+      );
+      return;
+    }
+    const file = assets.get(decodeURIComponent(url.pathname.slice(1)));
+    if (!file) {
+      res.writeHead(404);
+      res.end('fixture asset not found');
+      return;
+    }
+    if (file.endsWith('.yml') && badChecksum) {
+      const text = (await fs.readFile(file, 'utf8')).replace(
+        /sha512: .+/g,
+        'sha512: ' + Buffer.alloc(64).toString('base64'),
+      );
+      res.end(text);
+      return;
+    }
+    const size = (await fs.stat(file)).size;
+    const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+    if (range) {
+      const start = Number(range[1]),
+        end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end || start >= size) {
+        res.writeHead(416);
+        res.end();
+        return;
+      }
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${size}`,
+        'Content-Length': end - start + 1,
+        'Accept-Ranges': 'bytes',
+      });
+      createReadStream(file, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, { 'Content-Length': size, 'Accept-Ranges': 'bytes' });
+      createReadStream(file).pipe(res);
+    }
+  } catch (error) {
+    res.writeHead(500);
+    res.end(String(error));
+  }
+});
+await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+const port = (server.address() as import('node:net').AddressInfo).port;
+const feed = `http://127.0.0.1:${port}/`;
+const config = JSON.parse(await fs.readFile('package.json', 'utf8'));
+const env: Record<string, string> = Object.fromEntries(
+  Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+);
+env.PI_OFFLINE = '1';
+env.APPIMAGE_EXTRACT_AND_RUN = '1';
+delete env.PI_DESKTOP_DATA_DIR;
+let app: ElectronApplication | undefined;
+const until = async <T>(check: () => Promise<T>, timeout = 120000): Promise<NonNullable<T>> => {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const value = await check().catch(() => undefined);
+    if (value) return value as NonNullable<T>;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out; inspect fixture ${root}`);
+};
+const readBoot = (dir: string) =>
+  until(async () => JSON.parse(await fs.readFile(path.join(dir, `boot-${nextVersion}.json`), 'utf8')));
+const instrument = `
+const fixtureFs = require('node:fs'), fixturePath = require('node:path');
+const fixtureRoot = ${JSON.stringify(root)};
+const fixtureCase = JSON.parse(fixtureFs.readFileSync(fixturePath.join(fixtureRoot, 'active-case.json'), 'utf8'));
+const fixtureElectron = require('electron');
+const fixtureDefaultDataDir = fixtureElectron.app.getPath('userData');
+fixtureElectron.app.setPath('userData', fixtureCase.dataDir);
+fixtureElectron.app.on('session-created', session => session.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']}, (details, callback) => {
+  const u = new URL(details.url); const allowed = u.hostname === '127.0.0.1' && u.port === '${port}';
+  if (!allowed) fixtureFs.appendFileSync(fixturePath.join(fixtureRoot, 'external-requests.txt'), details.url + '\\n');
+  callback({cancel: !allowed});
+}));
+fixtureElectron.app.on('browser-window-created', (_, window) => window.webContents.once('did-finish-load', async () => {
+  try {
+    const bootstrap = await window.webContents.executeJavaScript('window.desktop.invoke("bootstrap")');
+    fixtureFs.writeFileSync(fixturePath.join(fixtureCase.dataDir, 'boot-' + fixtureElectron.app.getVersion() + '.json'), JSON.stringify({version:fixtureElectron.app.getVersion(),bootstrap,pid:process.pid,defaultDataDir:fixtureDefaultDataDir}));
+    if (fixtureElectron.app.getVersion() === '${nextVersion}') setTimeout(() => fixtureElectron.app.quit(), 2500);
+  } catch (error) { fixtureFs.writeFileSync(fixturePath.join(fixtureRoot, 'boot-error.txt'), String(error)); }
+}));
+`;
+try {
+  for (const version of [oldVersion, nextVersion]) {
+    const stage = path.join(root, version, 'app'),
+      out = path.join(root, version, 'out');
+    await fs.mkdir(path.join(stage, 'build'), { recursive: true });
+    await fs.mkdir(path.join(stage, 'dist-electron'), { recursive: true });
+    for (const icon of ['icon.png', 'icon-mac.png', 'icon.ico'])
+      await fs.copyFile(path.resolve('build', icon), path.join(stage, 'build', icon));
+    await buildRenderer({
+      define: { __APP_VERSION__: JSON.stringify(version) },
+      build: { outDir: path.join(stage, 'dist'), emptyOutDir: true },
+    });
+    await bundle({
+      entryPoints: ['electron/main.ts'],
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      outfile: path.join(stage, 'dist-electron/main.cjs'),
+      external: ['electron'],
+      banner: { js: instrument },
+      plugins: [
+        {
+          name: 'loopback-update-feed',
+          setup(build) {
+            build.onLoad({ filter: /electron[\\/]update-driver\.ts$/ }, async (args) => {
+              const source = await fs.readFile(args.path, 'utf8');
+              const options = JSON.stringify({
+                provider: 'generic',
+                url: feed,
+                useMultipleRangeRequest: false,
+              });
+              return {
+                loader: 'ts',
+                contents: source
+                  .replace('new NsisUpdater()', `new NsisUpdater(${options})`)
+                  .replace('new AppImageUpdater()', `new AppImageUpdater(${options})`),
+              };
+            });
+            build.onLoad({ filter: /shared[\\/]app-update\.ts$/ }, async (args) => ({
+              loader: 'ts',
+              contents: (await fs.readFile(args.path, 'utf8')).replace(
+                'https://api.github.com/repos/yeyuProject/pi-desktop-gui/releases/latest',
+                feed + 'releases/latest',
+              ),
+            }));
+          },
+        },
+      ],
+    });
+    for (const file of ['preload.cjs', 'pi-bridge.mjs'])
+      await fs.copyFile(path.resolve('dist-electron', file), path.join(stage, 'dist-electron', file));
+    await fs.writeFile(
+      path.join(stage, 'package.json'),
+      JSON.stringify({
+        name,
+        version,
+        private: true,
+        description: 'Isolated Pi Desktop update test',
+        author: 'Pi Desktop tests',
+        type: 'module',
+        main: 'dist-electron/main.cjs',
+      }),
+    );
+    const platform = process.platform === 'win32' ? Platform.WINDOWS : Platform.LINUX;
+    await packageApp({
+      projectDir: stage,
+      targets: platform.createTarget(
+        process.platform === 'win32' ? (version === oldVersion ? ['nsis', 'portable'] : 'nsis') : 'AppImage',
+      ),
+      publish: 'never',
+      config: {
+        appId: 'io.yeyuproject.update-test.' + name.slice(-8),
+        productName,
+        electronVersion: config.devDependencies.electron,
+        electronDist: path.resolve('node_modules/electron/dist'),
+        directories: { output: out },
+        files: [...config.build.files],
+        compression: 'store',
+        win: { icon: path.resolve('build/icon.ico'), signExecutable: false },
+        nsis: {
+          ...config.build.nsis,
+          guid,
+          runAfterFinish: false,
+          createDesktopShortcut: false,
+          createStartMenuShortcut: false,
+        },
+        portable: { artifactName: 'Pi-Desktop-${version}-win-x64.exe' },
+        linux: {
+          icon: path.resolve('build/icon-mac.png'),
+          category: 'Development',
+          artifactName: 'Pi-Desktop-${version}-linux-x64.${ext}',
+        },
+        publish: { provider: 'generic', url: feed },
+      },
+    });
+    for (const file of await fs.readdir(out))
+      if (/\.(?:exe|AppImage|blockmap|yml)$/.test(file)) assets.set(file, path.join(out, file));
+  }
+  const executable =
+    process.platform === 'win32'
+      ? path.join(installDir, productName + '.exe')
+      : path.join(root, 'current.AppImage');
+  const modes =
+    process.platform === 'win32' ? ['restart', 'on-quit', 'portable-to-installer'] : ['restart', 'on-quit'];
+  for (const mode of modes) {
+    const portable = mode === 'portable-to-installer';
+    const dataDir = path.join(root, mode, 'data');
+    const store = new Store(dataDir, oldVersion);
+    await store.load();
+    const session = store.createSession();
+    session.title = '升级保留测试';
+    session.draft = '升级前草稿';
+    session.approvalMode = 'confirm';
+    Object.assign(store.state.settings, {
+      piPath: path.resolve('tests/support/fixture-pi.mjs'),
+      nodePath: process.execPath,
+      agentDir: dataDir,
+      provider: 'fixture',
+      modelId: 'test',
+      theme: 'dark',
+      onboardingDone: true,
+    });
+    await store.save();
+    await fs.writeFile(path.join(root, 'active-case.json'), JSON.stringify({ dataDir, mode }));
+    if (process.platform === 'win32' && !portable) {
+      await exec(assets.get(`Pi-Desktop-${oldVersion}-win-x64-setup.exe`)!, ['/S', `/D=${installDir}`], {
+        windowsHide: true,
+        timeout: 180000,
+      });
+    } else if (process.platform === 'linux') {
+      await fs.copyFile(assets.get(`Pi-Desktop-${oldVersion}-linux-x64.AppImage`)!, executable);
+      await fs.chmod(executable, 0o755);
+    }
+    badChecksum = mode === 'restart';
+    app = await electron.launch({
+      executablePath: portable ? assets.get(`Pi-Desktop-${oldVersion}-win-x64.exe`)! : executable,
+      args: [],
+      env,
+      timeout: 60000,
+    });
+    const page = await app.firstWindow();
+    page.setDefaultTimeout(60000);
+    await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+    await page.evaluate(() => {
+      (window as any).updateStates = [];
+      window.desktop.onEvent((event) => {
+        if (event.type === 'update') (window as any).updateStates.push(event.update);
+      });
+    });
+    await page.evaluate(() => window.desktop.invoke('checkUpdate'));
+    if (badChecksum) {
+      await page.waitForFunction(() => (window as any).updateStates.at(-1)?.state === 'error');
+      assert.match(await page.evaluate(() => (window as any).updateStates.at(-1).error), /校验失败/);
+      badChecksum = false;
+      await page.evaluate(() => window.desktop.invoke('checkUpdate'));
+      console.log('PASS real checksum failure rejects the downloaded installer and permits a clean retry');
+    }
+    await page.waitForFunction(
+      (portable) => (window as any).updateStates.at(-1)?.state === (portable ? 'available' : 'ready'),
+      portable,
+    );
+    if (!portable) {
+      await page.evaluate((id) => window.desktop.invoke('send', id, 'hold', [], 'steer'), session.id);
+      await assert.rejects(
+        page.evaluate(() => window.desktop.invoke('installUpdate')),
+        /当前任务或审批/,
+      );
+      await page.evaluate(() => window.desktop.invoke('stop'));
+    }
+    const draft = `保留 ${mode} 更新前的新草稿`;
+    await page.getByRole('textbox', { name: '任务输入' }).fill(draft);
+    await page
+      .getByRole('button', { name: portable ? 'v0.9.1 可用' : '重启以更新到 v0.9.1', exact: true })
+      .click();
+    const closed = app.waitForEvent('close', { timeout: 120000 });
+    if (mode === 'restart') await page.getByRole('button', { name: '立即重启', exact: true }).click();
+    else {
+      await page.getByRole('button', { name: '稍后', exact: true }).click();
+      await page.evaluate(() => window.desktop.invoke('quit'));
+    }
+    await closed;
+    app = undefined;
+    if (portable)
+      await exec(assets.get(`Pi-Desktop-${nextVersion}-win-x64-setup.exe`)!, ['/S', `/D=${installDir}`], {
+        windowsHide: true,
+        timeout: 180000,
+      });
+    if (mode !== 'restart') {
+      if (process.platform === 'win32')
+        await until(
+          async () =>
+            JSON.parse(extractFile(path.join(installDir, 'resources/app.asar'), 'package.json').toString())
+              .version === nextVersion,
+        );
+      else
+        await until(
+          async () =>
+            (await fs.stat(executable)).size ===
+            (await fs.stat(assets.get(`Pi-Desktop-${nextVersion}-linux-x64.AppImage`)!)).size,
+        );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const next = spawn(executable, [], { env, windowsHide: true, stdio: 'ignore' });
+      next.on('error', (error) => console.error(error));
+    }
+    const boot = await readBoot(dataDir);
+    assert.equal(boot.version, nextVersion);
+    const oldBoot = JSON.parse(await fs.readFile(path.join(dataDir, `boot-${oldVersion}.json`), 'utf8'));
+    assert.equal(
+      boot.defaultDataDir,
+      oldBoot.defaultDataDir,
+      'package identity must preserve the default data directory',
+    );
+    const restored = boot.bootstrap.state.sessions.find((item: any) => item.id === session.id);
+    assert.equal(restored.draft, draft);
+    assert.equal(restored.title, session.title);
+    assert.equal(restored.approvalMode, 'confirm');
+    assert.equal(boot.bootstrap.state.settings.theme, 'dark');
+    assert.equal(boot.bootstrap.state.appVersion, nextVersion);
+    await fs.access(path.join(dataDir, `state.pre-${oldVersion}.json`));
+    await until(async () => {
+      try {
+        process.kill(boot.pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    console.log(
+      `PASS ${process.platform} ${mode}: production app ${oldVersion} -> ${nextVersion}, data and approvals preserved`,
+    );
+  }
+  await assert.rejects(fs.access(path.join(root, 'external-requests.txt')));
+  await fs.mkdir('test-results', { recursive: true });
+  await fs.writeFile(
+    'test-results/update-roundtrip.json',
+    JSON.stringify({ passed: true, platform: process.platform, root, modes, requests }, null, 2),
+  );
+} catch (error) {
+  await fs.mkdir('test-results', { recursive: true });
+  await fs.writeFile(
+    'test-results/update-roundtrip.json',
+    JSON.stringify(
+      { passed: false, platform: process.platform, root, requests, error: String(error) },
+      null,
+      2,
+    ),
+  );
+  if (app) {
+    const page = app.windows()[0];
+    if (page && !page.isClosed())
+      await page.screenshot({ path: 'test-results/update-roundtrip-failure.png' }).catch(() => {});
+  }
+  throw error;
+} finally {
+  if (app) await app.close().catch(() => {});
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (process.platform === 'win32') {
+    const uninstaller = path.join(installDir, `Uninstall ${productName}.exe`);
+    if (await fs.stat(uninstaller).catch(() => undefined))
+      await exec(uninstaller, ['/S'], { windowsHide: true, timeout: 120000 }).catch((error) =>
+        console.error('Fixture uninstall failed:', error.message),
+      );
+  }
+  console.log(`Update fixture artifacts: ${root}`);
+}

@@ -8,6 +8,8 @@ import {
   Menu,
   Notification,
   screen,
+  net,
+  powerMonitor,
   type Rectangle,
 } from 'electron';
 import fs from 'node:fs/promises';
@@ -20,6 +22,8 @@ import { AgentService, redact } from './agent';
 import { Workspace, listDirectory, allFiles, previewFile, safePath } from './workspace';
 import { detectEnvironment, requireSupportedPi, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
+import { UpdateService, updateInstallation, fetchLatestRelease, fetchReleaseNotes } from './updater';
+import { createNativeUpdateDriver } from './update-driver';
 import { validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
 import {
@@ -35,7 +39,11 @@ import {
 import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
+let updates: UpdateService;
 let quitting = false;
+let closing = false;
+let sessionEnding = false;
+let activeOperations = 0;
 let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
@@ -250,8 +258,12 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       environment,
       dataDir: store.dir,
       storage: store.storage,
+      update: updates.state,
     };
   },
+  checkUpdate: () => updates.check(),
+  downloadUpdate: () => updates.download(),
+  installUpdate: () => updates.install(),
   addProject: async () => {
     const chosen = await dialog.showOpenDialog(window!, {
       title: '添加本地项目',
@@ -585,8 +597,13 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       }
     if (typeof value.onboardingDone === 'boolean') next.onboardingDone = value.onboardingDone;
     if (typeof value.notifyOnFinish === 'boolean') next.notifyOnFinish = value.notifyOnFinish;
+    if (value.autoDownloadUpdates !== undefined) {
+      if (typeof value.autoDownloadUpdates !== 'boolean') throw new Error('自动下载更新设置无效');
+      next.autoDownloadUpdates = value.autoDownloadUpdates;
+    }
     store.state.settings = next;
     await save();
+    updates.configure(next.autoDownloadUpdates);
   },
   connect: async (id) => {
     text(id, 100);
@@ -928,10 +945,14 @@ async function createWindow() {
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   window.webContents.session.setPermissionCheckHandler(() => false);
-  let closing = false;
+  window.on('session-end', () => {
+    sessionEnding = true;
+    updates.prepareForQuit(false);
+  });
   window.on('close', (event) => {
     if (quitting) return;
     event.preventDefault();
+    if (updates.state.installing) return;
     if (isMac && !appQuitRequested) {
       window?.hide();
       return;
@@ -965,6 +986,8 @@ async function createWindow() {
         windowTimer = undefined;
         await writeWindowState();
         await service.dispose();
+        updates.prepareForQuit(!sessionEnding && (store.storage.writable || !!store.storage.newerFormat));
+        updates.dispose();
         window?.destroy();
         app.quit();
       } finally {
@@ -990,14 +1013,15 @@ else {
     .then(async () => {
       app.setAppUserModelId('io.yeyuproject.pi-desktop');
       await loadLoginShellPath();
-      store = new Store(app.getPath('userData'));
+      store = new Store(app.getPath('userData'), app.getVersion());
       await store.load();
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
         const initial = store.state.sessions[0] ?? store.createSession();
         store.selectSession(initial.id);
         if (store.storage.writable) await store.save().catch(() => {});
       }
-      if (store.storage.recovery && store.storage.writable) await store.save().catch(() => {});
+      if ((store.storage.recovery || store.state.appVersion !== app.getVersion()) && store.storage.writable)
+        await store.save().catch(() => {});
       workspace = new Workspace(store.dir);
       if (store.storage.writable) await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
@@ -1007,6 +1031,40 @@ else {
       });
       service.on('state', (state) => send({ type: 'state', state }));
       store.on('storage', (storage) => send({ type: 'storage', storage }));
+      const installation = updateInstallation(process.platform, app.isPackaged, process.env);
+      const updateEnabled = app.isPackaged && !process.env.PI_DESKTOP_DATA_DIR;
+      updates = new UpdateService({
+        currentVersion: app.getVersion(),
+        installation,
+        enabled: updateEnabled,
+        disabledReason: updateEnabled ? undefined : '开发和测试环境不检查更新。',
+        autoDownload: store.state.settings.autoDownloadUpdates,
+        driver:
+          updateEnabled && (installation === 'nsis' || installation === 'appimage')
+            ? createNativeUpdateDriver(installation)
+            : undefined,
+        fetchRelease: () => fetchLatestRelease(net.fetch),
+        fetchNotes: (version) => fetchReleaseNotes(version, net.fetch),
+        busy: () => service.hasPendingWork || updatingConfiguration || activeOperations > 0,
+        beforeInstall: async () => {
+          if (closing || sessionEnding) throw new Error('应用正在退出，请下次启动后重试更新');
+          if (!store.storage.writable && !store.storage.newerFormat) store.assertWritable();
+          await service.disconnect();
+          if (store.storage.writable) await store.flush();
+          clearTimeout(windowTimer);
+          windowTimer = undefined;
+          await writeWindowState();
+          quitting = true;
+        },
+        installFailed: () => {
+          quitting = false;
+        },
+      });
+      updates.on('update', (update) => send({ type: 'update', update }));
+      powerMonitor.on('shutdown', () => {
+        sessionEnding = true;
+        updates.prepareForQuit(false);
+      });
       ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {
         if (
           !window ||
@@ -1020,9 +1078,17 @@ else {
           args.length > 6
         )
           throw new Error('无效请求');
+        let trackedOperation = false;
         try {
+          // Late layout cleanup must not create writes after the update's persistence barrier.
+          if (updates.state.installing && method === 'saveView') return;
+          if (updates.state.installing && !['bootstrap', 'diagnostics', 'copy'].includes(method))
+            throw new Error('正在准备重启更新，请稍候');
           const readOnlyMethods: (keyof ApiMap)[] = [
             'bootstrap',
+            'checkUpdate',
+            'downloadUpdate',
+            'installUpdate',
             'selectSession',
             'readHistory',
             'searchSessions',
@@ -1075,6 +1141,8 @@ else {
             'messageAction',
             'setEntryLabel',
           ].includes(method);
+          trackedOperation = engineOperation || !readOnlyMethods.includes(method as keyof ApiMap);
+          if (trackedOperation) activeOperations++;
           if (engineOperation) {
             service.assertCommandsStopped();
             if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');
@@ -1089,6 +1157,8 @@ else {
           }
         } catch (e) {
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
+        } finally {
+          if (trackedOperation) activeOperations--;
         }
       });
       Menu.setApplicationMenu(
@@ -1175,6 +1245,7 @@ else {
         ]),
       );
       await createWindow();
+      updates.start();
     })
     .catch((error) => {
       dialog.showErrorBox('Pi Desktop 无法启动', String(error));

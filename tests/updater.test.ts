@@ -1,0 +1,254 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  UpdateService,
+  updateInstallation,
+  fetchLatestRelease,
+  type UpdateDriver,
+  type UpdateDriverEvent,
+  type UpdateOptions,
+} from '../electron/updater';
+import { compareAppVersions, stableVersion, releaseUrl } from '../shared/app-update';
+import { AgentService } from '../electron/agent';
+
+class Driver implements UpdateDriver {
+  listener?: (event: UpdateDriverEvent) => void;
+  checks = 0;
+  downloads = 0;
+  installs = 0;
+  autoDownload = true;
+  installOnQuit = true;
+  subscribe(listener: (event: UpdateDriverEvent) => void) {
+    this.listener = listener;
+    return () => {
+      this.listener = undefined;
+    };
+  }
+  configure(auto: boolean, install: boolean) {
+    this.autoDownload = auto;
+    this.installOnQuit = install;
+  }
+  async check() {
+    this.checks++;
+    this.listener?.({ type: 'available', release: { version: '0.10.0', notes: '测试说明' } });
+  }
+  async download() {
+    this.downloads++;
+    this.listener?.({ type: 'downloaded', release: { version: '0.10.0', notes: '测试说明' } });
+  }
+  install() {
+    this.installs++;
+  }
+}
+const options = (driver?: Driver): UpdateOptions => ({
+  currentVersion: '0.9.0',
+  installation: driver ? 'nsis' : 'portable',
+  enabled: true,
+  autoDownload: false,
+  driver,
+  busy: () => false,
+  beforeInstall: async () => {},
+  installFailed: () => {},
+});
+test('installation policy distinguishes automatic and notification-only targets', () => {
+  assert.equal(updateInstallation('win32', true, {}), 'nsis');
+  assert.equal(updateInstallation('win32', true, { PORTABLE_EXECUTABLE_DIR: 'C:/Temp' }), 'portable');
+  assert.equal(updateInstallation('linux', true, { APPIMAGE: '/tmp/app.AppImage' }), 'appimage');
+  assert.equal(updateInstallation('linux', true, {}), 'deb');
+  assert.equal(updateInstallation('darwin', true, {}), 'mac');
+  assert.equal(updateInstallation('win32', false, {}), 'development');
+  assert.equal(compareAppVersions('0.10.0', '0.9.1'), 1);
+  assert.equal(compareAppVersions('0.9.10', '0.9.9'), 1);
+  assert.equal(compareAppVersions('1.0.0', '1.0.0'), 0);
+  for (const value of ['0.9.1-beta.1', '09.0.0', 'next', '../other'])
+    assert.equal(stableVersion(value), undefined);
+  assert.match(releaseUrl('0.10.0'), /\/tag\/v0\.10\.0$/);
+});
+test('disabled environments make no network requests even when called manually', async (t) => {
+  let calls = 0;
+  const service = new UpdateService({
+    ...options(),
+    enabled: false,
+    fetchRelease: async () => {
+      calls++;
+      return undefined;
+    },
+  });
+  t.after(() => service.dispose());
+  service.start();
+  await service.check();
+  await service.download();
+  await assert.rejects(service.install(), /尚未下载完成/);
+  assert.equal(calls, 0);
+});
+
+test('startup waits ten seconds, periodic checks wait six hours, and manual checks are immediate', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let calls = 0;
+  const service = new UpdateService({
+    ...options(),
+    fetchRelease: async () => {
+      calls++;
+      return undefined;
+    },
+  });
+  t.after(() => service.dispose());
+  service.start();
+  t.mock.timers.tick(9999);
+  assert.equal(calls, 0);
+  t.mock.timers.tick(1);
+  await service.check();
+  assert.equal(calls, 1);
+  t.mock.timers.tick(6 * 60 * 60 * 1000 - 1);
+  assert.equal(calls, 1);
+  t.mock.timers.tick(1);
+  await service.check();
+  assert.equal(calls, 2);
+  await service.check();
+  assert.equal(calls, 3);
+  service.dispose();
+  t.mock.timers.tick(6 * 60 * 60 * 1000);
+  assert.equal(calls, 3);
+});
+test('checking is quiet on failure, deduplicates requests and can be retried', async (t) => {
+  let resolve!: (value: { version: string; notes: string }) => void;
+  let calls = 0;
+  const service = new UpdateService({
+    ...options(),
+    fetchRelease: () => {
+      calls++;
+      return new Promise((done) => {
+        resolve = done;
+      });
+    },
+  });
+  t.after(() => service.dispose());
+  const first = service.check(),
+    second = service.check();
+  assert.equal(first, second);
+  assert.equal(calls, 1);
+  resolve({ version: '0.10.0', notes: '新功能' });
+  await first;
+  assert.equal(service.state.state, 'available');
+  assert.equal(service.state.notes, '新功能');
+  const offline = new UpdateService({
+    ...options(),
+    fetchRelease: async () => {
+      throw new Error('offline');
+    },
+  });
+  t.after(() => offline.dispose());
+  await offline.check();
+  assert.equal(offline.state.state, 'error');
+  assert.match(offline.state.error!, /检查网络/);
+});
+test('manual download, preference changes and progress reach independent update state', async (t) => {
+  const driver = new Driver(),
+    service = new UpdateService(options(driver));
+  t.after(() => service.dispose());
+  await service.check();
+  assert.equal(service.state.state, 'available');
+  service.configure(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(driver.autoDownload, true);
+  assert.equal(driver.downloads, 1);
+  assert.equal(service.state.state, 'ready');
+  await service.check();
+  assert.equal(driver.checks, 1, 'a ready update is retained during subsequent checks');
+  service.prepareForQuit(true);
+  assert.equal(driver.installOnQuit, true);
+});
+test('install waits for preparation, rejects busy work and prevents concurrent installs', async (t) => {
+  const driver = new Driver();
+  let busy = true,
+    prepared = false,
+    unblock!: () => void;
+  const service = new UpdateService({
+    ...options(driver),
+    busy: () => busy,
+    beforeInstall: async () => {
+      await new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      prepared = true;
+    },
+  });
+  t.after(() => service.dispose());
+  await service.check();
+  await service.download();
+  await assert.rejects(service.install(), /当前任务或审批/);
+  service.prepareForQuit(true);
+  assert.equal(driver.installOnQuit, false);
+  busy = false;
+  const installing = service.install();
+  assert.equal(service.state.installing, true);
+  assert.equal(driver.installs, 0);
+  await service.install();
+  unblock();
+  await installing;
+  assert.equal(prepared, true);
+  assert.equal(driver.installs, 1);
+});
+test('failed preparation never starts the installer, and checksum errors forbid on-quit install', async (t) => {
+  const driver = new Driver();
+  let cancelled = false;
+  const service = new UpdateService({
+    ...options(driver),
+    beforeInstall: async () => {
+      throw new Error('草稿保存失败');
+    },
+    installFailed: () => {
+      cancelled = true;
+    },
+  });
+  t.after(() => service.dispose());
+  await service.check();
+  await service.download();
+  await assert.rejects(service.install(), /草稿保存失败/);
+  assert.equal(driver.installs, 0);
+  assert.equal(service.state.installing, false);
+  assert.equal(cancelled, true);
+  driver.listener?.({ type: 'error', error: new Error('sha512 checksum mismatch') });
+  service.prepareForQuit(true);
+  assert.equal(driver.installOnQuit, false);
+  assert.match(service.state.error!, /校验失败/);
+});
+
+test('accepted service operations block updates even before their runtime status changes', async (t) => {
+  const agent = new AgentService({} as never, {} as never);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pending = (
+    agent as unknown as { exclusive: (action: () => Promise<void>) => Promise<void> }
+  ).exclusive(() => held);
+  const driver = new Driver();
+  const service = new UpdateService({ ...options(driver), busy: () => agent.hasPendingWork });
+  t.after(() => {
+    release();
+    service.dispose();
+  });
+  assert.equal(agent.runtime.status, 'idle');
+  assert.equal(agent.hasPendingWork, true);
+  await service.check();
+  await service.download();
+  await assert.rejects(service.install(), /当前任务或审批/);
+  assert.equal(driver.installs, 0);
+  release();
+  await pending;
+  assert.equal(agent.hasPendingWork, false);
+});
+test('the GitHub notifier reads stable release Markdown and rejects prereleases', async () => {
+  const release = await fetchLatestRelease(async (url) => {
+    assert.match(url, /^https:\/\/api.github.com\/repos\/yeyuProject\/pi-desktop-gui\/releases\/latest$/);
+    return new Response(
+      JSON.stringify({ tag_name: 'v0.10.0', body: '# 新功能', prerelease: false, draft: false }),
+    );
+  });
+  assert.deepEqual(release, { version: '0.10.0', notes: '# 新功能' });
+  assert.equal(
+    await fetchLatestRelease(async () => new Response(JSON.stringify({ prerelease: true }))),
+    undefined,
+  );
+});

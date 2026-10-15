@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { IndexRecovery, Message, Session, StorageStatus } from '../shared/types';
 import { emptyState, parseState } from './store-state';
+import { compareAppVersions, stableVersion } from '../shared/app-update';
 export { defaultSettings } from './store-state';
 
 const BACKUP_INTERVAL = 10 * 60 * 1000;
@@ -11,7 +12,10 @@ export class Store extends EventEmitter {
   state = emptyState();
   storage: StorageStatus = { writable: true };
   private writing = Promise.resolve();
-  constructor(readonly dir: string) {
+  constructor(
+    readonly dir: string,
+    private readonly appVersion?: string,
+  ) {
     super();
   }
   private file(name: string) {
@@ -45,10 +49,37 @@ export class Store extends EventEmitter {
     }
     if (contents !== undefined) {
       let valid: ReturnType<typeof parseState> | undefined;
+      let raw: unknown;
       try {
-        valid = parseState(JSON.parse(contents));
+        raw = JSON.parse(contents);
+      } catch {}
+      if (
+        raw &&
+        typeof raw === 'object' &&
+        'version' in raw &&
+        typeof raw.version === 'number' &&
+        Number.isInteger(raw.version) &&
+        raw.version > 1
+      ) {
+        const writer = 'appVersion' in raw ? stableVersion(raw.appVersion) : undefined;
+        this.storage = {
+          writable: false,
+          newerFormat: { version: raw.version, appVersion: writer },
+          problem: `本地数据来自更新的 Pi Desktop${writer ? `，请使用 v${writer} 或更高版本` : '，请更新应用后再打开'}。当前仅以只读方式打开，原文件不会被改写。`,
+        };
+        return this.storage;
+      }
+      try {
+        valid = parseState(raw);
       } catch {}
       if (valid) this.state = valid.state;
+      if (valid && this.appVersion) {
+        try {
+          await this.backupBeforeUpgrade(contents, valid.state.appVersion);
+        } catch (error) {
+          this.writeFailure(error);
+        }
+      }
       if (!valid || valid.discardedProjects || valid.discardedSessions || valid.repairedSettings) {
         const recovery = {
           corruptFile: this.file(`state.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`),
@@ -58,11 +89,15 @@ export class Store extends EventEmitter {
           restarted: !valid,
         };
         this.storage.recovery = recovery;
-        try {
-          await fs.rename(this.file('state.json'), recovery.corruptFile);
-        } catch (error) {
+        if (this.storage.writable) {
+          try {
+            await fs.rename(this.file('state.json'), recovery.corruptFile);
+          } catch (error) {
+            recovery.corruptFile = this.file('state.json');
+            this.writeFailure(error);
+          }
+        } else {
           recovery.corruptFile = this.file('state.json');
-          this.writeFailure(error);
         }
         if (!valid) await this.restoreBackup(recovery);
       }
@@ -101,6 +136,19 @@ export class Store extends EventEmitter {
       } catch {}
     }
   }
+  private async backupBeforeUpgrade(contents: string, previous?: string) {
+    const version = stableVersion(previous);
+    if (version && compareAppVersions(version, this.appVersion!) >= 0) return;
+    // Older releases did not record appVersion; preserve that file without inventing its version.
+    await this.replace(`state.pre-${version ?? 'unversioned'}.json`, contents);
+    const backups = await Promise.all(
+      (await fs.readdir(this.dir))
+        .filter((name) => /^state\.pre-(?:\d+\.\d+\.\d+|unversioned)\.json$/.test(name))
+        .map(async (name) => ({ name, modified: (await fs.stat(this.file(name))).mtimeMs })),
+    );
+    backups.sort((a, b) => b.modified - a.modified);
+    for (const backup of backups.slice(3)) await fs.unlink(this.file(backup.name));
+  }
   private async replace(name: string, contents: string) {
     const temporary = this.file(name + '.tmp');
     await fs.writeFile(temporary, contents, { mode: 0o600 });
@@ -134,6 +182,7 @@ export class Store extends EventEmitter {
     await this.replace('state.backup-1.json', contents);
   }
   save() {
+    if (this.appVersion && this.storage.writable) this.state.appVersion = this.appVersion;
     const contents = JSON.stringify(this.state, null, 2);
     const write = async () => {
       this.assertWritable();

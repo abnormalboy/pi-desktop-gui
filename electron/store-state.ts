@@ -15,6 +15,7 @@ export const defaultSettings: Settings = {
   inspectorWidth: 380,
   onboardingDone: false,
   notifyOnFinish: true,
+  autoDownloadUpdates: true,
 };
 export const emptyState = (): AppState => ({
   version: 1,
@@ -55,6 +56,7 @@ export function parseState(value: unknown) {
   )
     throw new Error('本地索引格式不受支持');
   const state = emptyState();
+  if (typeof value.appVersion === 'string') state.appVersion = value.appVersion;
   let discardedProjects = 0,
     discardedSessions = 0,
     repairedSettings = 0;

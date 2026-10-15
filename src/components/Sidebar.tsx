@@ -19,6 +19,7 @@ import { platform, shortcut } from '../lib/platform';
 import { IconButton } from './IconButton';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
+import type { ReactNode } from 'react';
 import type { AppState } from '../../shared/types';
 
 export function Sidebar(
@@ -43,7 +44,7 @@ export function Sidebar(
     | 'selectSession'
     | 'createSession'
     | 'openSettings'
-  > & { state: AppState },
+  > & { state: AppState; updateBadge: ReactNode },
 ) {
   const {
     state,
@@ -268,6 +269,7 @@ export function Sidebar(
         <div className="sidebar-version">
           Pi Desktop <span>v{__APP_VERSION__}</span>
         </div>
+        {props.updateBadge}
       </div>
     </aside>
   );

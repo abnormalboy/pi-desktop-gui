@@ -31,7 +31,7 @@ export function useWorkbench() {
     [settingsOpen, setSettingsOpen] = useState(false),
     [settingsTab, setSettingsTab] = useState('environment'),
     [prefs, setPrefs] = useState<Settings>();
-  const { state, runtime, environment, setEnvironment, storage } = useRuntime(setError, setPrefs);
+  const { state, runtime, environment, setEnvironment, storage, update } = useRuntime(setError, setPrefs);
   const [pending, setPending] = useState(false);
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
@@ -550,6 +550,7 @@ export function useWorkbench() {
     setInspector,
   });
   return {
+    update,
     state,
     storage,
     runtime,

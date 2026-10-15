@@ -110,9 +110,17 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1
 
 | 平台 | 支持架构 | 分发格式 |
 | :--- | :--- | :--- |
-| **Windows** | `x64` | `.exe` 便携版（双击即用，无需安装） |
+| **Windows** | `x64` | `-setup.exe` 安装版（推荐，支持自动更新） / `.exe` 便携版 |
 | **macOS** | `Apple Silicon (M系列)` / `Intel` | `.dmg` 磁盘映像 / `.zip` |
 | **Linux** | `x86_64` | `.AppImage` / `.deb` |
+
+从 v0.9.0 起，Windows 安装版按当前用户安装，无需管理员权限；它与便携版共用原有数据目录，切换后会话、草稿与设置仍可使用。旧版本需要手动安装 v0.9.0 一次。
+
+Windows 安装版和 Linux AppImage 启动 10 秒后检查更新，之后每 6 小时检查；默认后台下载，可在 **设置 → 关于与更新** 关闭。下载完成后点击侧栏的“重启以更新”，先查看更新说明，再选择立即重启或稍后；选择稍后会在下次正常退出时安装。任务或审批未结束时不能直接重启更新。
+
+便携版、deb 和当前未签名的 macOS 版本只提示新版本，通过“前往下载”手动安装。网络失败不会弹窗打断任务，可在“关于与更新”查看原因、重试或打开版本页面。Windows 安装包目前也未签名，首次运行可能出现系统提示；更新下载会校验 SHA-512。
+
+升级首次启动前保留原始索引 `state.pre-<旧版本>.json`，最多三份；旧索引没有记录应用版本时使用 `state.pre-unversioned.json`。若降级到不认识当前数据格式的应用，只读打开且不改写原文件。
 
 <details>
 <summary><b>macOS 首次打开提示「无法验证开发者」或「已损坏」？</b></summary>
@@ -173,6 +181,8 @@ pi-desktop/
 │   ├── pi/protocol.ts  # Pi 核心响应校验与数据转换
 │   ├── store.ts        # 索引、备份轮转与损坏恢复
 │   ├── store-state.ts  # 项目、会话与设置的逐项校验
+│   ├── updater.ts      # 检查、下载、安装策略及更新状态
+│   ├── update-driver.ts # electron-updater 事件与安装接口适配
 │   ├── workspace.ts    # 工作区文件监控、Git Diff 与快照回滚
 │   ├── snapshot.ts     # 基于 Git 对象的私有运行快照
 │   ├── pi-bridge.ts    # 注入 Pi 的桌面适配扩展（含工具审批）
@@ -213,6 +223,7 @@ npm run build            # TypeScript 类型检查 + 生产环境构建
 npm test                 # 运行核心单元测试
 npm run test:integration # 运行 Pi RPC 与工具链集成测试
 npm run test:ui          # 运行 Playwright + Electron 端到端桌面交互测试
+npm run test:update      # Windows/Linux 两个真实安装包的升级回归，使用独立数据及本地服务
 npm run icons            # 从 1024 × 1024 原图重新导出各平台图标（在桌面环境执行）
 npm run package          # 打包当前操作系统的发行安装包 (输出至 release/)
 ```
@@ -223,7 +234,9 @@ npm run package          # 打包当前操作系统的发行安装包 (输出至
 
 普通提交和 Pull Request 会在 Windows、macOS、Linux 上构建并执行测试。在 Actions 中手动运行 **Build, test and release**，测试通过后可以从该次运行的 Artifacts 下载安装包。
 
-正式发布时，更新 `package.json` 的版本号与锁文件，补充 `docs/releases/v<版本>.md` 发布说明，再推送对应的 `v<版本>` 标签。三平台测试和打包全部成功后，工作流会创建 GitHub Release，上传安装包和 SHA-256 校验文件。标签版本必须与包版本一致；应用界面中的版本号从包版本自动生成。
+正式发布时，更新 `package.json` 的版本号与锁文件，补充 `docs/releases/v<版本>.md` 发布说明，再推送对应的 `v<版本>` 标签。三平台测试、Windows/Linux 升级回归和打包全部成功后，工作流会创建 GitHub Release，上传安装包、`latest.yml`、`latest-linux.yml`、`.blockmap` 与覆盖全部文件的 `SHA256SUMS.txt`。发布前校验更新清单的版本号、目标文件、大小和 SHA-512；标签版本必须与包版本一致。应用界面版本从包版本自动生成。
+
+开发模式以及指定 `PI_DESKTOP_DATA_DIR` 的测试模式不会请求更新服务。升级回归单独打包真实应用，只在测试构建时改用 `127.0.0.1` 更新源和独立安装标识，并拦截、记录非本地请求。
 
 ---
 

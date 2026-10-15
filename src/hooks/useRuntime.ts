@@ -9,6 +9,7 @@ import {
   type StorageStatus,
 } from '../../shared/types';
 import { readableError } from '../lib/format';
+import type { UpdateState } from '../../shared/app-update';
 const api = window.desktop;
 export function useRuntime(
   setError: (value: string) => void,
@@ -17,6 +18,7 @@ export function useRuntime(
   const [state, setState] = useState<AppState>(),
     [runtime, setRuntime] = useState<Runtime>(emptyRuntime),
     [environment, setEnvironment] = useState<Environment>(),
+    [update, setUpdate] = useState<UpdateState>(),
     [storage, setStorage] = useState<StorageStatus>({ writable: false });
   useEffect(() => {
     let alive = true;
@@ -24,6 +26,7 @@ export function useRuntime(
       if (!alive) return;
       if (event.type === 'state') setState(event.state);
       else if (event.type === 'storage') setStorage(event.storage);
+      else if (event.type === 'update') setUpdate(event.update);
       else if (event.type === 'runtimePatch')
         setRuntime((previous) => applyRuntimePatch(previous, event.patch));
       else setRuntime(event.runtime);
@@ -37,6 +40,7 @@ export function useRuntime(
         setEnvironment(v.environment);
         setPrefs(v.state.settings);
         setStorage(v.storage);
+        setUpdate(v.update);
       })
       .catch((e) => setError(readableError(e)));
     return () => {
@@ -44,5 +48,5 @@ export function useRuntime(
       unsubscribe();
     };
   }, []);
-  return { state, setState, runtime, environment, setEnvironment, storage };
+  return { state, setState, runtime, environment, setEnvironment, storage, update };
 }

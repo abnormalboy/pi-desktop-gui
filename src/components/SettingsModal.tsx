@@ -24,6 +24,7 @@ import { compatibilityLabels, PI_INSTALL_COMMAND, PI_SOURCE_URL } from '../../sh
 import { PiCompatibilityNotice } from './PiCompatibilityNotice';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
+import type { ReactNode } from 'react';
 
 export function SettingsModal(
   props: Pick<
@@ -55,7 +56,7 @@ export function SettingsModal(
     | 'chooseSettingPath'
     | 'setModel'
     | 'setThinking'
-  >,
+  > & { updatePanel: ReactNode },
 ) {
   const {
     runtime,
@@ -103,6 +104,7 @@ export function SettingsModal(
                 ['models', '模型连接', Link2],
                 ['appearance', '外观与编辑器', Monitor],
                 ['diagnostic', '诊断', CircleHelp],
+                ['updates', '关于与更新', Download],
               ].map(([key, label, Icon]) => (
                 <button
                   key={String(key)}
@@ -115,6 +117,7 @@ export function SettingsModal(
               ))}
             </nav>
             <div className="settings-content">
+              {settingsTab === 'updates' && props.updatePanel}
               {error && (
                 <div className="error-banner" role="alert">
                   <AlertCircle size={16} />

@@ -1,5 +1,6 @@
 import type { ApprovalMode, ApprovalRequest } from './approval';
 import type { PiCompatibility } from './pi-version';
+import type { UpdateState } from './app-update';
 export type { ApprovalMode, ApprovalRequest } from './approval';
 export type RunStatus =
   | 'idle'
@@ -54,9 +55,11 @@ export interface Settings {
   inspectorWidth: number;
   onboardingDone: boolean;
   notifyOnFinish: boolean;
+  autoDownloadUpdates: boolean;
 }
 export interface AppState {
   version: 1;
+  appVersion?: string;
   projects: Project[];
   sessions: Session[];
   settings: Settings;
@@ -76,6 +79,7 @@ export interface StorageStatus {
   writable: boolean;
   problem?: string;
   recovery?: IndexRecovery;
+  newerFormat?: { version: number; appVersion?: string };
 }
 export interface ContentBlock {
   type: string;
@@ -307,6 +311,7 @@ export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
 export type AppEvent =
   | { type: 'state'; state: AppState }
   | { type: 'storage'; storage: StorageStatus }
+  | { type: 'update'; update: UpdateState }
   | { type: 'runtime'; runtime: Runtime }
   | { type: 'runtimePatch'; patch: RuntimePatch };
 /** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
@@ -330,9 +335,13 @@ export interface Bootstrap {
   environment: Environment;
   dataDir: string;
   storage: StorageStatus;
+  update: UpdateState;
 }
 export interface ApiMap {
   bootstrap: { args: []; result: Bootstrap };
+  checkUpdate: { args: []; result: void };
+  downloadUpdate: { args: []; result: void };
+  installUpdate: { args: []; result: void };
   addProject: { args: []; result: Project | null };
   renameProject: { args: [string, string]; result: void };
   removeProject: { args: [string]; result: void };

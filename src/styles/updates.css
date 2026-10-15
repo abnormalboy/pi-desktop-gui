@@ -1,0 +1,38 @@
+.sidebar-footer .update-badge {
+  color: var(--accent);
+  font-size: calc(11px * var(--font-scale));
+  white-space: normal;
+  line-height: 1.5;
+  padding-block: 6px;
+}
+.about-updates dl {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 10px;
+  margin: 20px 0;
+}
+.about-updates dt {
+  color: var(--muted);
+}
+.about-updates dd {
+  margin: 0;
+}
+.about-updates .button-row {
+  margin-block: 14px;
+}
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+.update-progress progress {
+  width: 200px;
+  accent-color: var(--accent);
+}
+.update-notes {
+  max-height: 360px;
+  overflow: auto;
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+}

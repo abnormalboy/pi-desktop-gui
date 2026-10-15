@@ -10,8 +10,11 @@ import { Composer } from './components/Composer';
 import { SettingsModal } from './components/SettingsModal';
 import { StorageBanner } from './components/StorageBanner';
 import { CrashCard } from './components/CrashCard';
+import { useState } from 'react';
+import { AboutUpdates, UpdateBadge, UpdateDialog } from './components/Updates';
 export default function App() {
   const model = useWorkbench();
+  const [updateOpen, setUpdateOpen] = useState(false);
   const { state, compact, columns, error } = model;
   if (!state)
     return (
@@ -27,9 +30,38 @@ export default function App() {
         )}
       </main>
     );
+  const updateBusy = model.running || model.runtime.dialogs.length > 0 || model.pending;
+  const installUpdate = async () => {
+    if (model.selected && model.storage.writable)
+      await window.desktop.invoke(
+        'saveDraft',
+        model.selected.id,
+        model.draft,
+        model.attachments,
+        model.images,
+      );
+    await window.desktop.invoke('installUpdate');
+  };
+  const updatePanel = model.update && (
+    <AboutUpdates
+      update={model.update}
+      busy={updateBusy}
+      install={installUpdate}
+      autoDownload={state.settings.autoDownloadUpdates}
+      readOnly={!model.storage.writable}
+      saveAutoDownload={async (value) => {
+        await window.desktop.invoke('saveSettings', { autoDownloadUpdates: value });
+        model.setPrefs((previous) => previous && { ...previous, autoDownloadUpdates: value });
+      }}
+    />
+  );
   return (
     <div className="app-shell">
-      <Sidebar {...model} state={state} />
+      <Sidebar
+        {...model}
+        state={state}
+        updateBadge={<UpdateBadge update={model.update} open={() => setUpdateOpen(true)} />}
+      />
       <main className="workspace">
         <StorageBanner
           storage={model.storage}
@@ -67,7 +99,19 @@ export default function App() {
         </div>
       </main>
       <Toasts {...model} />
-      <WorkbenchDialogs {...model} state={state} settings={<SettingsModal {...model} />} />
+      <WorkbenchDialogs
+        {...model}
+        state={state}
+        settings={<SettingsModal {...model} updatePanel={updatePanel} />}
+      />
+      {updateOpen && model.update && (
+        <UpdateDialog
+          update={model.update}
+          busy={updateBusy}
+          install={installUpdate}
+          close={() => setUpdateOpen(false)}
+        />
+      )}
     </div>
   );
 }

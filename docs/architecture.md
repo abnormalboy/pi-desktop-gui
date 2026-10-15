@@ -9,6 +9,9 @@ flowchart LR
   IPC --> Main[main 参数校验与入口限制]
   Main --> Agent[AgentService 会话与任务生命周期]
   Main --> Store[Store 索引持久化与恢复]
+  Main --> Updates[UpdateService 更新策略]
+  Updates --> Driver[update-driver 原生更新适配]
+  Driver --> Native[electron-updater]
   Main --> Workspace[Workspace / Snapshot 文件快照]
   Agent --> RPC[PiRpc JSONL 请求与响应]
   RPC --> Protocol[pi/protocol 协议校验]
@@ -42,6 +45,15 @@ flowchart LR
 - Pi 意外退出时先把尚未执行的队列文字、图片恢复为草稿，再开放重连；不会自动重发原始提问。用户编辑的续写内容作为一条新消息发送。
 - Pi 主进程退出不等于工具进程退出。应用自身成功结束完整进程树后可以恢复；退出时还有运行工具且无法确认清理时，后端与界面都暂停启动、切换及撤销。用户须先在系统中结束残留命令，再重新启动应用。仅刷新窗口或等待不会解除限制；仅重启应用不会结束旧命令。
 - 这不是操作系统沙箱，也不负责追踪扩展主动脱离进程树的后台服务。
+
+## 桌面应用更新
+
+- `shared/app-update.ts` 定义独立更新状态、安装方式、稳定版版本比较和官方 Release 地址。更新状态通过 `update` 事件推送，不混入 Pi 的消息与工具状态。
+- `electron/updater.ts` 管理检查间隔、通知与自动下载模式、重试、安装前检查。它不依赖 Electron；`electron/update-driver.ts` 单独把 `electron-updater` 的事件和安装接口转换为桌面使用的接口。
+- `main.ts` 提供具体安装方式、网络请求、忙碌判断和安装前保存步骤。已接收但尚未切换运行状态的 IPC 与 Agent 操作同样阻止安装，避免“刚点击发送，更新先关闭了应用”。开始准备安装后禁止新操作，先保存草稿、断开空闲 Pi 并等待写盘，再交给安装器；系统关机不触发安装。
+- `Updates.tsx` 组合侧栏提示、更新说明和“关于与更新”，展示失败原因及重试入口。支持自动替换的安装方式只有 Windows NSIS 和 Linux AppImage；其余方式通过 GitHub Release 接口检查并提示手动下载。
+- `Store` 记录最后写入的 `appVersion`。升级前保存原始索引并保留三份；未知的较新格式直接只读打开，不按损坏文件重命名，也不投影后写回旧格式。已知格式允许降级使用。
+- `electron-updater` 由 esbuild 一起打入主进程。发布依旧只包含 `build.files` 白名单，CI 校验更新清单中的版本、文件与 SHA-512 后才上传 Release。
 
 ## 验证入口
 
