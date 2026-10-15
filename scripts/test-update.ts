@@ -283,7 +283,8 @@ try {
         async () => (await fs.readFile(path.join(dataDir, 'DevToolsActivePort'), 'utf8')).split('\n')[0],
       );
       portableBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
-      page = portableBrowser.contexts()[0].pages()[0];
+      const context = portableBrowser.contexts()[0];
+      page = context.pages()[0] ?? (await context.waitForEvent('page', { timeout: 60000 }));
     } else {
       app = await electron.launch({ executablePath: executable, args: [], env, timeout: 60000 });
       page = await app.firstWindow();
