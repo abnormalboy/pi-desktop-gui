@@ -985,10 +985,11 @@ export class AgentService extends EventEmitter {
     this.runtime.thinkingLevels = levels.levels;
   }
   setModel(id: string, provider: string, modelId: string) {
+    if (this.connecting) return Promise.reject(new Error('Pi 正在连接或切换会话，请稍后再切换模型'));
     return this.exclusive(async () => {
       const session = this.store.session(id);
-      if (this.runtime.sessionId === id && busy(this.runtime.status))
-        throw new Error('执行中不能切换模型，请等待本轮结束');
+      if (this.runtime.sessionId === id && ['starting', 'stopping'].includes(this.runtime.status))
+        throw new Error('Pi 正在连接或停止，请稍后再切换模型');
       const rpc = this.rpc;
       if (rpc && !rpc.closed && this.runtime.sessionId === id) {
         if (!this.runtime.models.some((m) => m.provider === provider && m.id === modelId))

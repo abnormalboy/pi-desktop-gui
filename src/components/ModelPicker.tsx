@@ -8,6 +8,7 @@ export function ModelPicker({
   runtime,
   fallback,
   locked,
+  thinkingLocked,
   canConnect,
   connect,
   pick,
@@ -19,6 +20,7 @@ export function ModelPicker({
   runtime: Runtime;
   fallback: string;
   locked: boolean;
+  thinkingLocked: boolean;
   canConnect: boolean;
   connect: () => void;
   pick: (key: string) => void;
@@ -187,7 +189,7 @@ export function ModelPicker({
                     key={level}
                     role="radio"
                     aria-checked={runtime.thinking === level}
-                    disabled={locked}
+                    disabled={thinkingLocked}
                     onClick={() => level !== runtime.thinking && setThinking(level)}
                   >
                     {level}
@@ -197,7 +199,7 @@ export function ModelPicker({
             </div>
           )}
           <div className="model-picker-foot">
-            {locked ? <span>执行中，结束后可切换</span> : <span>切换后从下一条消息生效</span>}
+            {locked ? <span>请等待当前操作完成</span> : <span>模型从下一次请求生效，不中断当前回复</span>}
             <button
               onClick={() => {
                 close();

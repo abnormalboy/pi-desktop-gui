@@ -69,6 +69,10 @@ export function useWorkbench() {
   const ownRuntime = runtime.sessionId === selected?.id,
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
+  const modelLocked =
+    pending ||
+    !sessionEnabled ||
+    (running && (!ownRuntime || ['starting', 'stopping'].includes(runtime.status)));
   const draftState = useDraft({
     state,
     stateRef,
@@ -346,7 +350,7 @@ export function useWorkbench() {
     });
   }
   async function selectSession(s: Session) {
-    await attempt(async () => {
+    await action(async () => {
       const m = await api.invoke('selectSession', s.id);
       setHistory(m);
     });
@@ -395,8 +399,10 @@ export function useWorkbench() {
   async function setModel(key: string) {
     if (!selected) return;
     const [provider, modelId] = key.split('::');
-    setPrefs((prev) => (prev ? { ...prev, provider, modelId } : prev));
-    await action(() => api.invoke('setSessionModel', selected.id, provider, modelId));
+    await action(async () => {
+      await api.invoke('setSessionModel', selected.id, provider, modelId);
+      setPrefs((prev) => (prev ? { ...prev, provider, modelId } : prev));
+    });
   }
   async function setThinking(thinking: string) {
     if (!selected) return;
@@ -591,6 +597,7 @@ export function useWorkbench() {
     sessionEnabled,
     ownRuntime,
     running,
+    modelLocked,
     messages,
     approvals,
     lastAssistant,

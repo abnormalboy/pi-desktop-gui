@@ -64,6 +64,7 @@ export type ComposerProps = Pick<
   | 'sessionEnabled'
   | 'ownRuntime'
   | 'running'
+  | 'modelLocked'
   | 'ownRunning'
   | 'sentPrompts'
   | 'commandOptions'
@@ -128,6 +129,7 @@ export function Composer(props: ComposerProps) {
     sessionEnabled,
     ownRuntime,
     running,
+    modelLocked,
     ownRunning,
     sentPrompts,
     commandOptions,
@@ -547,7 +549,8 @@ export function Composer(props: ComposerProps) {
               setOpen={setModelPickerOpen}
               runtime={ownRuntime ? runtime : { ...runtime, connected: false }}
               fallback={state.settings.modelId}
-              locked={running || pending}
+              locked={modelLocked}
+              thinkingLocked={running || pending || !sessionEnabled}
               canConnect={sessionEnabled && !running && !pending}
               connect={() => void connect()}
               pick={(key) => void setModel(key)}

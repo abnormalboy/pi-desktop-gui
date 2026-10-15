@@ -48,6 +48,7 @@ export function SettingsModal(
     | 'selected'
     | 'sessionEnabled'
     | 'running'
+    | 'modelLocked'
     | 'attempt'
     | 'action'
     | 'detect'
@@ -78,6 +79,7 @@ export function SettingsModal(
     selected,
     sessionEnabled,
     running,
+    modelLocked,
     attempt,
     action,
     detect,
@@ -230,7 +232,7 @@ export function SettingsModal(
                   <select
                     className="input"
                     aria-label="选择模型"
-                    disabled={running || pending || !runtime.models.length}
+                    disabled={modelLocked || !runtime.models.length}
                     value={runtime.model ? `${runtime.model.provider}::${runtime.model.id}` : ''}
                     onChange={(e) => void setModel(e.target.value)}
                   >
@@ -243,6 +245,7 @@ export function SettingsModal(
                       </option>
                     ))}
                   </select>
+                  <p className="settings-copy">模型从下一次请求生效，不中断当前回复，无需点击保存设置。</p>
                   <label className="field-label">推理级别</label>
                   <select
                     className="input"
@@ -465,7 +468,13 @@ export function SettingsModal(
           </div>
           <footer>
             <span className="settings-footer-note">
-              {running ? '任务执行中，运行环境和模型暂不可修改' : '设置保存在本机'}
+              {running
+                ? runtime.status === 'starting'
+                  ? '正在连接 Pi，请稍候再修改运行环境'
+                  : runtime.status === 'stopping'
+                    ? '正在停止 Pi，请稍候再修改运行环境'
+                    : '任务执行中，运行环境设置暂不可修改'
+                : '设置保存在本机'}
             </span>
             <button onClick={() => setSettingsOpen(false)}>关闭</button>
             <button className="primary" disabled={pending || running} onClick={saveSettings}>
