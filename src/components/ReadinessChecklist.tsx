@@ -1,0 +1,81 @@
+import { CheckCircle2 } from 'lucide-react';
+import { type Runtime, type Environment } from '../../shared/types';
+
+export function ReadinessChecklist({
+  environment,
+  runtime,
+  ownRuntime,
+  savedModel,
+  canConnect,
+  checkEnvironment,
+  connect,
+  providers,
+}: {
+  environment?: Environment;
+  runtime: Runtime;
+  ownRuntime: boolean;
+  savedModel: string;
+  canConnect: boolean;
+  checkEnvironment: () => void;
+  connect: () => void;
+  providers: () => void;
+}) {
+  if (!environment) return null;
+  const connected = ownRuntime && runtime.connected;
+  const piReady = environment.supported;
+  const modelReady = connected ? Boolean(runtime.model) : Boolean(savedModel);
+  if (piReady && modelReady) return null;
+  const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();
+  const steps: { done: boolean; title: string; detail: string; action?: [string, () => void] }[] = [
+    {
+      done: piReady,
+      title: piReady ? `已找到 Pi ${environment.version ?? ''}` : '找到 Pi',
+      detail: piReady
+        ? environment.piPath
+        : environment.version
+          ? `检测到 Pi ${environment.version}，当前适配 1.1.0`
+          : '未检测到 Pi，请安装或在设置中指定 cli.js',
+      action: piReady ? undefined : ['检查运行环境', checkEnvironment],
+    },
+    {
+      done: modelReady,
+      title: modelReady ? `模型：${(connected && runtime.model?.name) || savedModel}` : '选择一个模型',
+      detail: !piReady
+        ? '找到 Pi 后读取可用模型'
+        : !connected
+          ? environment.authExists || environment.modelsExist
+            ? '已发现凭据配置，连接后读取可用模型'
+            : '还没有发现凭据；可先连接，再登录供应商'
+          : runtime.models.length
+            ? `共 ${runtime.models.length} 个可用模型`
+            : '没有可用模型，登录供应商或添加自定义端点',
+      action:
+        modelReady || !piReady
+          ? undefined
+          : !connected
+            ? ['连接并读取模型', connect]
+            : runtime.models.length
+              ? ['选择模型', chooseModel]
+              : ['登录供应商', providers],
+    },
+  ];
+  return (
+    <div className="readiness" role="region" aria-label="开始前检查">
+      <strong>开始前还差一步</strong>
+      {steps.map((s, i) => (
+        <div key={i} className={'readiness-step' + (s.done ? ' done' : '')}>
+          {s.done ? <CheckCircle2 size={17} /> : <span className="step-number">{i + 1}</span>}
+          <span>
+            {s.title}
+            <small title={s.detail}>{s.detail}</small>
+          </span>
+          {s.action && (
+            <button disabled={s.action[1] === connect && !canConnect} onClick={s.action[1]}>
+              {s.action[0]}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}

@@ -1,0 +1,144 @@
+import {
+  ChevronDown,
+  FileText,
+  Check,
+  AlertCircle,
+  LoaderCircle,
+  Copy,
+  Terminal,
+  Command,
+} from 'lucide-react';
+import { type ToolActivity } from '../../../shared/types';
+const api = window.desktop;
+
+export const patchLines = (patch: string) => {
+  const all = patch.split('\n');
+  const start = all.findIndex((l) => l.startsWith('@@'));
+  return (start < 0 ? all : all.slice(start)).filter((l) => !l.startsWith('\\ No newline'));
+};
+export function ToolCard({
+  tool,
+  expanded,
+  onToggle,
+  openFile,
+}: {
+  tool: ToolActivity;
+  expanded: boolean;
+  onToggle: (v: boolean) => void;
+  openFile: (p: string) => void;
+}) {
+  const target = String(tool.args.path ?? tool.args.file_path ?? tool.args.command ?? '');
+  const shell = tool.name === 'bash' || tool.name === 'powershell';
+  const exitCode = shell
+    ? /(?:Command exited with code|exit code:?)\s*(-?\d+)/i.exec(tool.output)?.[1]
+    : undefined;
+  const lines = tool.patch ? patchLines(tool.patch) : [];
+  const added = lines.filter((l) => l.startsWith('+')).length,
+    removed = lines.filter((l) => l.startsWith('-')).length;
+  const written =
+    tool.name === 'write' && typeof tool.args.content === 'string'
+      ? String(tool.args.content).split('\n').length
+      : undefined;
+  return (
+    <details
+      className={'tool-card ' + tool.status}
+      open={expanded || tool.status === 'error'}
+      onToggle={(e) => onToggle(e.currentTarget.open)}
+    >
+      <summary>
+        <span className="tool-icon">
+          {tool.name === 'bash' || tool.name === 'powershell' ? (
+            <Terminal size={15} />
+          ) : (
+            <FileText size={15} />
+          )}
+        </span>
+        <span className="tool-description">
+          <strong>
+            {(
+              {
+                read: '读取文件',
+                write: '写入文件',
+                edit: '修改文件',
+                bash: '执行命令',
+                powershell: '执行命令',
+              } as Record<string, string>
+            )[tool.name] || tool.name}
+          </strong>
+          {target && <code title={target}>{target}</code>}
+          {tool.patch && (
+            <span className="line-delta">
+              <ins>+{added}</ins>
+              <del>−{removed}</del>
+            </span>
+          )}
+          {written !== undefined && tool.status === 'done' && !tool.patch && (
+            <span className="line-delta">
+              <ins>{written} 行</ins>
+            </span>
+          )}
+        </span>
+        <span className="tool-result">
+          {tool.status === 'running' ? (
+            <LoaderCircle size={14} className="spin" />
+          ) : tool.status === 'error' ? (
+            <AlertCircle size={14} />
+          ) : (
+            <Check size={14} />
+          )}{' '}
+          {tool.status === 'running'
+            ? '运行中'
+            : tool.status === 'error'
+              ? exitCode
+                ? `退出码 ${exitCode}`
+                : '失败'
+              : `${((tool.durationMs ?? 0) / 1000).toFixed(1)}s`}
+        </span>
+        <ChevronDown size={13} />
+      </summary>
+      <div className="tool-body">
+        {tool.patch ? (
+          <pre className="diff-lines inline-diff">
+            {lines.map((l, i) => (
+              <div
+                key={i}
+                className={
+                  l.startsWith('+')
+                    ? 'added'
+                    : l.startsWith('-')
+                      ? 'removed'
+                      : l.startsWith('@@')
+                        ? 'hunk'
+                        : ''
+                }
+              >
+                {l || ' '}
+              </div>
+            ))}
+          </pre>
+        ) : (
+          <>
+            {Object.keys(tool.args).length > 0 && (
+              <pre className="arguments">
+                {shell ? String(tool.args.command ?? '') : JSON.stringify(tool.args, null, 2)}
+              </pre>
+            )}
+            <pre>{tool.output || '等待输出…'}</pre>
+          </>
+        )}
+        <div className="tool-actions">
+          {Boolean(tool.args.path) && (
+            <button onClick={() => openFile(String(tool.args.path))}>
+              <FileText size={13} />
+              查看文件
+            </button>
+          )}
+          <button onClick={() => void api.invoke('copy', tool.output)}>
+            <Copy size={13} />
+            复制输出
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}

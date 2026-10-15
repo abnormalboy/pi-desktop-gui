@@ -10,7 +10,8 @@ import type {
   ProviderInfo,
 } from '../shared/types';
 import { busy } from '../shared/types';
-import { Modal, shortcut } from './App';
+import { Modal } from './components/Modal';
+import { shortcut } from './lib/platform';
 import { SettingsForm } from './SettingsForm';
 const api = window.desktop;
 export const builtinCommands = [
