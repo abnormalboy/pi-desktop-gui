@@ -20,7 +20,8 @@ await store.save();
 let app, page;
 const errors = [];
 try {
-  for (const version of ['1.1.1', '1.2.0']) {
+  for (const version of ['1.1.1', '1.2.0', '2.0.0', 'no version']) {
+    const recognized = version !== 'no version';
     await fs.writeFile(path.join(dir, 'fixture-version.txt'), version);
     app = await electron.launch({
       executablePath: process.env.PI_DESKTOP_EXE,
@@ -34,34 +35,31 @@ try {
     await input.waitFor();
     const notice = page.getByLabel('Pi 版本兼容性');
     await notice.waitFor();
-    if (version === '1.1.1') {
-      assert.match(await notice.innerText(), /兼容.*同一版本线/s);
+    if (recognized) {
+      assert.match(await notice.innerText(), /未验证.*可以继续使用/s);
+      assert.equal(await notice.getByRole('button', { name: '复制代码' }).count(), 0);
       await page.evaluate((id) => window.desktop.invoke('connect', id), session.id);
       await input.fill('compatibility UI test');
       await page.getByRole('button', { name: '发送任务', exact: true }).click();
       await page.locator('.run-meta .completed').waitFor();
     } else {
-      assert.match(await notice.innerText(), /尚未适配 Pi 1.2.0/);
-      await input.fill('blocked by version policy');
+      assert.match(await notice.innerText(), /未检测到可识别的 Pi 版本/);
+      await input.fill('blocked by unrecognized entry');
       assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
       await assert.rejects(
         page.evaluate((id) => window.desktop.invoke('send', id, 'blocked', [], 'steer'), session.id),
-        /尚未适配/,
+        /未检测到可识别的 Pi 版本/,
       );
       await notice.getByRole('button', { name: '复制代码' }).click();
       assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), PI_INSTALL_COMMAND);
     }
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('button', { name: '运行环境', exact: true }).click();
-    assert.match(
-      await page.locator('.environment-status').innerText(),
-      version === '1.1.1' ? /1\.1\.1 · 兼容/ : /1\.2\.0 · 过新/,
-    );
+    const status = await page.locator('.environment-status').innerText();
+    if (recognized) assert.ok(status.includes(`${version} · 未验证`));
+    else assert.match(status, /未知/);
     const diagnostic = await page.evaluate(() => window.desktop.invoke('diagnostics'));
-    assert.match(
-      diagnostic,
-      version === '1.1.1' ? /"piCompatibility": "compatible"/ : /"piCompatibility": "tooNew"/,
-    );
+    assert.match(diagnostic, recognized ? /"piCompatibility": "unverified"/ : /"piCompatibility": "unknown"/);
     console.log(`PASS ${version} welcome/settings, sending policy and diagnostic compatibility`);
     await app.close();
     app = undefined;

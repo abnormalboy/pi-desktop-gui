@@ -12,6 +12,8 @@ import { StorageBanner } from './components/StorageBanner';
 import { CrashCard } from './components/CrashCard';
 import { useState } from 'react';
 import { AboutUpdates, UpdateBadge, UpdateDialog } from './components/Updates';
+import { ResizeHandle } from './components/ResizeHandle';
+import { CheckpointDialog } from './components/CheckpointDialog';
 export default function App() {
   const model = useWorkbench();
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -39,6 +41,7 @@ export default function App() {
         model.draft,
         model.attachments,
         model.images,
+        model.snippets,
       );
     await window.desktop.invoke('installUpdate');
   };
@@ -55,6 +58,10 @@ export default function App() {
       }}
     />
   );
+  const saveWidth = (key: 'sidebarWidth' | 'inspectorWidth', width: number) => {
+    model.setPrefs((previous) => previous && { ...previous, [key]: width });
+    void model.attempt(() => window.desktop.invoke('saveSettings', { [key]: width }));
+  };
   return (
     <div className="app-shell">
       <Sidebar
@@ -62,6 +69,18 @@ export default function App() {
         state={state}
         updateBadge={<UpdateBadge update={model.update} open={() => setUpdateOpen(true)} />}
       />
+      {model.sidebar && !compact && (
+        <ResizeHandle
+          label="项目侧栏宽度"
+          variable="--sidebar-width"
+          value={state.settings.sidebarWidth}
+          min={180}
+          max={360}
+          defaultValue={240}
+          direction={1}
+          save={(width) => saveWidth('sidebarWidth', width)}
+        />
+      )}
       <main className="workspace">
         <StorageBanner
           storage={model.storage}
@@ -78,6 +97,7 @@ export default function App() {
                   key={model.runtime.crash.at}
                   crash={model.runtime.crash}
                   projectId={model.project?.id}
+                  sessionId={model.selected.id}
                   disabled={model.pending || model.running || !model.storage.writable}
                   recover={(prompt) =>
                     model.action(() => window.desktop.invoke('recover', model.selected!.id, prompt))
@@ -95,6 +115,18 @@ export default function App() {
           >
             <Composer {...model} state={state} />
           </Conversation>
+          {model.inspector && !compact && (
+            <ResizeHandle
+              label="文件面板宽度"
+              variable="--inspector-width"
+              value={state.settings.inspectorWidth}
+              min={300}
+              max={720}
+              defaultValue={380}
+              direction={-1}
+              save={(width) => saveWidth('inspectorWidth', width)}
+            />
+          )}
           <Inspector {...model} state={state} />
         </div>
       </main>
@@ -104,6 +136,17 @@ export default function App() {
         state={state}
         settings={<SettingsModal {...model} updatePanel={updatePanel} />}
       />
+      {model.checkpointPreview && (
+        <CheckpointDialog
+          key={model.checkpointPreview.id + model.checkpointPreview.revision}
+          preview={model.checkpointPreview}
+          pending={model.pending}
+          restoredCount={model.checkpointRestoredCount}
+          onClose={model.closeCheckpoint}
+          onConfirm={(paths, revision) => void model.confirmCheckpoint(paths, revision)}
+          onReturnToMessage={() => void model.returnToCheckpointMessage()}
+        />
+      )}
       {updateOpen && model.update && (
         <UpdateDialog
           update={model.update}

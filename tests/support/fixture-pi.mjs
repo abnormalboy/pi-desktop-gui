@@ -116,9 +116,10 @@ io.on('line', (line) => {
           type: 'desktop_result',
           id: request.id,
           data: {
-            protocolVersion: 2,
+            protocolVersion: 3,
             autoRetry: true,
             approvalMode: process.env.PI_DESKTOP_APPROVAL || 'auto',
+            approvalGrants: [],
           },
         });
         respond(r, { disposition: 'handled' });

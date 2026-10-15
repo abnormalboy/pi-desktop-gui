@@ -1,4 +1,4 @@
-name: Pi 1.1 patch compatibility
+name: Pi latest compatibility
 on:
   schedule:
     - cron: '23 3 * * 1'
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 jobs:
-  latest-patch:
+  latest-release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -16,8 +16,8 @@ jobs:
           node-version: '22.22.0'
           cache: npm
       - run: npm ci
-      - name: Install the newest patch in the supported line
-        run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-coding-agent@1.1
+      - name: Install the latest Pi release
+        run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-coding-agent@latest
       - name: Record the version actually tested
         run: node node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --version
       - run: npm run build
@@ -27,6 +27,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: pi-patch-failure
+          name: pi-compatibility-failure
           path: test-results/
           if-no-files-found: ignore

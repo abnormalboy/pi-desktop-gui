@@ -2,11 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { load as loadYaml } from 'js-yaml';
 import { PiRpc } from './rpc';
 import { agentDirectory, requireSupportedPi, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
 import { Workspace, attachmentPrompt } from './workspace';
 import { Configuration } from './configuration';
+import { CheckpointRecorder, type WorkspaceRequest } from './checkpoint-recorder';
+import { composeDraftText } from '../shared/draft';
+import { stripAnsi } from '../shared/ansi';
 import {
   busy,
   emptyRuntime,
@@ -28,7 +32,7 @@ import { APPROVAL_DENY, APPROVAL_PREFIX } from '../shared/approval';
 import { validateImages } from './images';
 import { piShellEnvironment, samePath } from './platform';
 import { sessionStats } from './pi/protocol';
-import { DESKTOP_BRIDGE_COMMAND } from '../shared/pi-bridge';
+import { DESKTOP_BRIDGE_COMMAND, DESKTOP_WORKSPACE_PREFIX } from '../shared/pi-bridge';
 import { classifyModelError, redact, redactMessageError, type ModelErrorKind } from '../shared/errors';
 export { redact } from '../shared/errors';
 
@@ -58,8 +62,12 @@ export async function argumentHint(file: string) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       const head = buffer.subarray(0, bytesRead).toString('utf8');
       const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(head)?.[1];
-      const hint = front && /^argument-hint:\s*(.+)$/m.exec(front)?.[1].trim();
-      return hint ? hint.replace(/^(['"])(.*)\1$/, '$2').slice(0, 200) : undefined;
+      const values = front ? loadYaml(front) : undefined;
+      const hint =
+        values && typeof values === 'object'
+          ? (values as Record<string, unknown>)['argument-hint']
+          : undefined;
+      return typeof hint === 'string' && hint.trim() ? hint.trim().slice(0, 200) : undefined;
     } finally {
       await handle.close();
     }
@@ -92,6 +100,7 @@ export class AgentService extends EventEmitter {
   lastSwitch?: { mode: 'reuse' | 'restart'; elapsedMs: number; reason?: string; pid?: number };
   recentModelErrors: { kind: ModelErrorKind; at: number }[] = [];
   private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
+  private checkpointRecorder: CheckpointRecorder;
   get hasPendingWork() {
     return (
       this.pendingOperations > 0 ||
@@ -109,6 +118,7 @@ export class AgentService extends EventEmitter {
     private bridgeSource = path.resolve('dist-electron/pi-bridge.mjs'),
   ) {
     super();
+    this.checkpointRecorder = new CheckpointRecorder(store, workspace);
   }
   publish(immediate = false) {
     if (immediate) {
@@ -215,6 +225,14 @@ export class AgentService extends EventEmitter {
     this.runtime.errorKind = undefined;
     this.runtime.errorCount = undefined;
   }
+  private updateStats(stats: Runtime['stats']) {
+    this.runtime.stats = stats;
+    if (!stats || !this.runtime.sessionId) return;
+    const session = this.store.session(this.runtime.sessionId);
+    if (session.stats?.tokens === stats.tokens && session.stats?.cost === stats.cost) return;
+    session.stats = { tokens: stats.tokens, cost: stats.cost };
+    this.save();
+  }
   private modelError(error: string, settled: boolean) {
     const kind = classifyModelError(error).kind;
     this.runtime.error = redact(error);
@@ -242,6 +260,9 @@ export class AgentService extends EventEmitter {
   private onEvent(record: any) {
     const r = this.runtime;
     switch (record.type) {
+      case 'desktop_approval_grants':
+        r.approvalGrants = record.grants;
+        break;
       case 'desktop_auth':
         r.auth = record.clear
           ? undefined
@@ -412,6 +433,29 @@ export class AgentService extends EventEmitter {
   }
   private extension(record: any) {
     const r = this.runtime;
+    if (record.method === 'input' && String(record.title).startsWith(DESKTOP_WORKSPACE_PREFIX)) {
+      const rpc = this.rpc;
+      const epoch = this.stopEpoch;
+      void (async () => {
+        let result: { ok: boolean; error?: string };
+        try {
+          if (!r.sessionId || this.stopRequested) throw new Error('检查点操作已取消');
+          const request = JSON.parse(
+            String(record.title).slice(DESKTOP_WORKSPACE_PREFIX.length),
+          ) as WorkspaceRequest;
+          await this.checkpointRecorder.handle(r.sessionId, request);
+          if (this.rpc !== rpc || this.runtime !== r || epoch !== this.stopEpoch || this.stopRequested)
+            throw new Error('检查点操作已取消');
+          result = { ok: true };
+        } catch (error) {
+          result = { ok: false, error: redact(errorText(error)) };
+          if (this.runtime === r && !this.stopRequested)
+            this.notify(`无法保存文件检查点：${result.error}`, 'error');
+        }
+        await rpc?.write({ type: 'extension_ui_response', id: record.id, value: JSON.stringify(result) });
+      })().catch((error) => this.diagnostic(errorText(error)));
+      return;
+    }
     if (['select', 'confirm', 'input', 'editor'].includes(record.method)) {
       const expiresAt = record.timeout ? Date.now() + record.timeout : undefined;
       let approval: ApprovalRequest | undefined;
@@ -450,6 +494,7 @@ export class AgentService extends EventEmitter {
       (r.widgetPlacements ??= {})[record.widgetKey] = record.widgetPlacement ?? 'aboveEditor';
     } else if (record.method === 'set_editor_text' && r.sessionId) {
       this.store.session(r.sessionId).draft = String(record.text ?? '');
+      this.store.session(r.sessionId).draftSnippets = [];
       this.save();
     } else if (record.method === 'setTitle') r.title = String(record.title ?? 'Pi Desktop');
     else this.notify(`扩展界面能力 ${record.method} 暂不支持，请在终端使用该扩展。`, 'warning');
@@ -497,7 +542,7 @@ export class AgentService extends EventEmitter {
       try {
         const stats = await rpc.request('get_session_stats');
         if (this.rpc === rpc && this.runtime === runtime && !this.switchEvents)
-          this.runtime.stats = sessionStats(stats);
+          this.updateStats(sessionStats(stats));
       } catch {}
     }
     this.publish();
@@ -601,6 +646,7 @@ export class AgentService extends EventEmitter {
         PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
         PI_TELEMETRY: '0',
         PI_DESKTOP_APPROVAL: session.approvalMode ?? 'auto',
+        PI_DESKTOP_CHECKPOINTS: '1',
         ...piShellEnvironment(environment.bash),
       };
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
@@ -622,6 +668,7 @@ export class AgentService extends EventEmitter {
     }
   }
   private resetSession(sessionId: string, cwd: string) {
+    this.checkpointRecorder.reset();
     this.clearDialogs();
     const crash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
     this.runtime = { ...emptyRuntime(), sessionId, cwd, crash };
@@ -788,7 +835,7 @@ export class AgentService extends EventEmitter {
       this.runtime.thinking = thinking;
     }
     try {
-      this.runtime.stats = sessionStats(await rpc.request('get_session_stats'));
+      this.updateStats(sessionStats(await rpc.request('get_session_stats')));
     } catch {}
     assertActive();
     this.runtime.status = 'idle';
@@ -856,7 +903,8 @@ export class AgentService extends EventEmitter {
       this.status('starting');
       if (project)
         try {
-          await this.workspace.capture(project);
+          if (shellCommand) await this.workspace.capture(project);
+          else if (!text.startsWith('/')) await this.checkpointRecorder.prepare(id);
         } catch (error) {
           this.setError(`无法建立本轮快照，任务未开始：${errorText(error)}`);
           this.status(this.stopRequested ? 'stopped' : 'error');
@@ -888,6 +936,7 @@ export class AgentService extends EventEmitter {
           { command: text.replace(/^!!?/, ''), excludeFromContext: text.startsWith('!!') },
           3600000,
         );
+        if (project) await this.workspace.endTool(project, id, 'desktop-bash');
         const tool = this.runtime.tools.find((t) => t.id === 'desktop-bash')!;
         tool.output = output.output;
         tool.status = output.exitCode === 0 ? 'done' : 'error';
@@ -913,10 +962,11 @@ export class AgentService extends EventEmitter {
         const state = await this.rpc!.request('get_state');
         if (!state.isStreaming && !state.isCompacting && !state.pendingMessageCount) this.status('idle');
       }
-      if (session.draft === text) {
+      if (composeDraftText(session.draft, session.draftSnippets ?? []) === text) {
         session.draft = '';
         session.attachments = [];
         session.images = [];
+        session.draftSnippets = [];
       }
       if (session.title === '新会话' || session.title === '新对话') {
         session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
@@ -996,6 +1046,7 @@ export class AgentService extends EventEmitter {
     const result = await rpc.bridge('approval_mode', { mode });
     if (this.rpc === rpc && this.runtime.sessionId === id) {
       this.runtime.approvalMode = result.approvalMode;
+      this.runtime.approvalGrants = result.approvalGrants;
       this.publish(true);
     }
   }
@@ -1004,6 +1055,18 @@ export class AgentService extends EventEmitter {
     await this.rpc.request('abort_retry');
     this.runtime.retry = undefined;
     this.publish(true);
+  }
+  async revokeApproval(id: string, grantId?: string) {
+    this.store.assertWritable();
+    this.store.session(id);
+    const rpc = this.rpc;
+    if (!rpc || rpc.closed || this.runtime.sessionId !== id || !this.runtime.connected || this.connecting)
+      throw new Error('请先连接这个会话，再撤回授权');
+    const result = await rpc.bridge('revoke_approval', grantId === undefined ? {} : { id: grantId });
+    if (this.rpc === rpc && this.runtime.sessionId === id) {
+      this.runtime.approvalGrants = result.approvalGrants;
+      this.publish(true);
+    }
   }
   private async entryFor(rpc: PiRpc, role: string, timestamp: number) {
     const { entries = [], leafId } = await rpc.request('get_entries');
@@ -1038,15 +1101,19 @@ export class AgentService extends EventEmitter {
         }));
       const result = await rpc.bridge('navigate', { entryId: entry.id, summarize: false, instructions: '' });
       if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+      // Tools from the abandoned branch must not be rendered as unpersisted live work.
+      this.runtime.tools = [];
       return { text, images };
     });
     const session = this.store.session(id);
     if (action === 'regenerate') return this.send(id, restored.text, [], 'steer', restored.images);
     const cut = restored.text.indexOf('\n\n<project_file path=');
     session.draft = cut >= 0 ? restored.text.slice(0, cut) : restored.text;
+    session.draftSnippets = [];
     session.attachments = [];
     session.images = restored.images;
     await this.store.save();
+    this.publish(true);
     this.emit('state', this.store.state);
   }
   async clearQueue() {
@@ -1104,6 +1171,7 @@ export class AgentService extends EventEmitter {
     const options = await this.rpc.bridge('options');
     this.runtime.autoRetry = options.autoRetry;
     this.runtime.approvalMode = options.approvalMode ?? 'auto';
+    this.runtime.approvalGrants = options.approvalGrants;
   }
   private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
     return this.exclusive(async () => {
@@ -1330,7 +1398,7 @@ export class AgentService extends EventEmitter {
   output() {
     return (
       'Pi Desktop 导出：当前会话已接收的工具结果（最多最近 10 MiB）。Pi 自身可能截断长输出，完整日志位置以工具结果为准。\n\n' +
-      (this.fullOutput || this.runtime.tools.map((t) => `[${t.name}]\n${t.output}`).join('\n\n'))
+      stripAnsi(this.fullOutput || this.runtime.tools.map((t) => `[${t.name}]\n${t.output}`).join('\n\n'))
     );
   }
   async history(id: string): Promise<Message[]> {

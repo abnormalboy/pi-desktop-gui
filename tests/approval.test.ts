@@ -52,6 +52,7 @@ test('always-allow grants end when Pi starts a different session', async () => {
   let asked = 0;
   const notifications: string[] = [];
   const ctx = {
+    cwd: process.cwd(),
     ui: {
       notify: (message: string) => notifications.push(message),
       select: async () => {
@@ -65,7 +66,8 @@ test('always-allow grants end when Pi starts a different session', async () => {
   await handlers.get('tool_call')!(event, ctx);
   assert.equal(asked, 1);
   await handlers.get('session_start')?.({}, ctx);
-  assert.deepEqual(notifications, ['__PI_DESKTOP__{"type":"desktop_session_start"}']);
+  assert.ok(notifications.includes('__PI_DESKTOP__{"type":"desktop_session_start"}'));
+  assert.equal(notifications.at(-1), '__PI_DESKTOP__{"type":"desktop_approval_grants","grants":[]}');
   await handlers.get('tool_call')!(event, ctx);
   assert.equal(asked, 2);
 });

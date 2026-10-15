@@ -384,6 +384,22 @@ export function SettingsModal(
                     }}
                   />
                   <label className="field-label">
+                    文件列表高度 <span>{prefs.inspectorSplit}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    aria-label="文件列表高度"
+                    min="15"
+                    max="70"
+                    step="1"
+                    value={prefs.inspectorSplit}
+                    onChange={(e) => {
+                      const inspectorSplit = Number(e.target.value);
+                      setPrefs({ ...prefs, inspectorSplit });
+                      void attempt(() => api.invoke('saveSettings', { inspectorSplit }));
+                    }}
+                  />
+                  <label className="field-label">
                     代码编辑器 <small>留空时在{platform.fileManager}中定位文件</small>
                   </label>
                   <div className="path-field">

@@ -1,6 +1,7 @@
 import { useRuntime } from './useRuntime';
 import { useDraft } from './useDraft';
 import { useShortcuts } from './useShortcuts';
+import { useWorkspace } from './useWorkspace';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { builtinCommands } from '../lib/commands';
 import {
@@ -8,9 +9,6 @@ import {
   messageText,
   type Session,
   type Message,
-  type Changes,
-  type FileDiff,
-  type FilePreview,
   type ToolActivity,
   type Settings,
   type ContentBlock,
@@ -36,14 +34,7 @@ export function useWorkbench() {
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
     [compact, setCompact] = useState(false),
-    [inspector, setInspector] = useState(false),
-    [tab, setTab] = useState<'changes' | 'files' | 'output'>('changes'),
-    [changeMode, setChangeMode] = useState<'all' | 'run'>('all'),
-    [changes, setChanges] = useState<Changes>(),
-    [selectedFile, setSelectedFile] = useState(''),
-    [filePreview, setFilePreview] = useState<FilePreview>(),
-    [fileDiff, setFileDiff] = useState<FileDiff>(),
-    [split, setSplit] = useState(false);
+    [inspector, setInspector] = useState(false);
   const [expanded, setExpanded] = useState<string[]>([]),
     [messageLimit, setMessageLimit] = useState(80),
     [newContent, setNewContent] = useState(false);
@@ -64,7 +55,6 @@ export function useWorkbench() {
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
     autoScroll = useRef(true),
-    previewGeneration = useRef(0),
     selectedRef = useRef<string | undefined>(undefined),
     stateRef = useRef(state),
     runtimeRef = useRef(runtime);
@@ -79,6 +69,19 @@ export function useWorkbench() {
   const ownRuntime = runtime.sessionId === selected?.id,
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
+  const draftState = useDraft({
+    state,
+    stateRef,
+    selected,
+    project,
+    runtime,
+    compact,
+    inspector,
+    setInspector,
+    attempt,
+    setError,
+    setNotice,
+  });
   const {
     draft,
     attachments,
@@ -104,19 +107,25 @@ export function useWorkbench() {
     addAttachment,
     acceptImages,
     acceptDrop,
-  } = useDraft({
+    composeDraft,
+    snippets,
+  } = draftState;
+  const workspace = useWorkspace({
     state,
-    stateRef,
     selected,
     project,
     runtime,
-    compact,
-    inspector,
+    ownRunning,
     setInspector,
     attempt,
-    setError,
+    action,
     setNotice,
   });
+  const { tab, setTab, inspectFile, checkpoints, openCheckpoint } = workspace;
+  const [checkpointRevision, setCheckpointRevision] = useState(0);
+  useEffect(() => {
+    setCheckpointRevision((value) => value + 1);
+  }, [checkpoints]);
   const messages = ownRuntime ? runtime.messages : history;
   const approvals = runtime.dialogs.filter((d) => d.approval);
   const prompts = runtime.dialogs.filter((d) => !d.approval);
@@ -132,13 +141,6 @@ export function useWorkbench() {
     })
     .filter((t, i, all) => t && t !== all[i - 1]);
 
-  const patchLines = fileDiff?.patch.split('\n') ?? [];
-  const diffLines = patchLines.slice(
-    Math.max(
-      0,
-      patchLines.findIndex((line) => line.startsWith('@@')),
-    ),
-  );
   useFocusScope(inspectorPanel, inspector && compact, () => setInspector(false));
   async function attempt<T>(fn: () => Promise<T>): Promise<T | undefined> {
     try {
@@ -187,9 +189,6 @@ export function useWorkbench() {
     setFileQuery(null);
     setFileResults([]);
     if (!selected.projectId) setInspector(false);
-    setSelectedFile('');
-    setFilePreview(undefined);
-    setFileDiff(undefined);
     setMessageLimit(80);
     setExpanded(selected.expandedTools ?? []);
     autoScroll.current = !(selected.scrollTop && selected.scrollTop > 0);
@@ -217,33 +216,6 @@ export function useWorkbench() {
     );
     return () => clearInterval(timer);
   }, [runtime.startedAt]);
-
-  useEffect(() => {
-    if (!project) {
-      setChanges(undefined);
-      return;
-    }
-    let alive = true,
-      busyPoll = false;
-    const load = async () => {
-      if (busyPoll) return;
-      busyPoll = true;
-      try {
-        const v = await api.invoke('changes', project.id, changeMode);
-        if (alive) setChanges(v);
-      } catch (e) {
-        if (alive) setError(readableError(e));
-      } finally {
-        busyPoll = false;
-      }
-    };
-    void load();
-    const timer = setInterval(load, ownRunning ? 2500 : 7000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [project?.id, changeMode, ownRunning, runtime.status]);
 
   useEffect(() => {
     if (notice) {
@@ -297,10 +269,10 @@ export function useWorkbench() {
       setError(storage.problem ?? '本地数据不可写，请检查目录权限后重新启动');
       return;
     }
-    if (!selected || (!draft.trim() && !images.length) || pending) return;
+    const sent = composeDraft();
+    if (!selected || (!sent.trim() && !images.length) || pending) return;
     setError('');
     setPending(true);
-    const sent = draft;
     await attempt(async () => {
       if (await handleBuiltin(sent)) {
         await api.invoke('consumeDraft', selected.id, sent);
@@ -320,7 +292,10 @@ export function useWorkbench() {
     if (images.length || attachments.length) throw new Error('桌面命令不能附带附件，请先移除附件');
     const [_, cmd, arg = ''] = match;
     if (['tree', 'fork'].includes(cmd)) setFeatureTab('tree');
-    else if (cmd === 'new') await createSession(selected.projectId);
+    else if (cmd === 'find') {
+      if (compact) setInspector(false);
+      window.dispatchEvent(new CustomEvent('pi:find'));
+    } else if (cmd === 'new') await createSession(selected.projectId);
     else if (cmd === 'resume') setSearchOpen(true);
     else if (cmd === 'name') {
       if (arg) await api.invoke('renameSession', selected.id, arg);
@@ -432,16 +407,22 @@ export function useWorkbench() {
     await attempt(() => api.invoke('copy', value));
     setNotice(label);
   }
-  async function revert(only: string[] | null) {
-    if (!project) return;
-    await action(async () => {
-      const reverted = await api.invoke('revertChanges', project.id, only);
-      if (!reverted.length) return;
-      setNotice(`已撤销 ${reverted.length} 个文件的修改`);
-      setChanges(await api.invoke('changes', project.id, changeMode));
-      setSelectedFile('');
-      setFileDiff(undefined);
-    });
+  async function rerunCommand(command: string, includeContext: boolean) {
+    if (!selected || pending || busy(runtimeRef.current.status) || !sessionEnabled) return;
+    if ((ownRuntime ? runtime.approvalMode : selected.approvalMode) === 'readonly') {
+      setError('只读模式不能执行命令，请先切换审批模式。');
+      return;
+    }
+    await action(() =>
+      api.invoke('send', selected.id, (includeContext ? '!' : '!!') + command, [], 'steer', []),
+    );
+  }
+  function askHunk(attachment: string | undefined, prompt: string) {
+    persistDraft(
+      draft + (draft ? '\n' : '') + prompt,
+      attachment ? [...new Set([...attachments, attachment])] : attachments,
+    );
+    focusComposer();
   }
   async function messageAction(m: Message, kind: MessageAction) {
     if (!selected || !m.timestamp) return;
@@ -455,74 +436,95 @@ export function useWorkbench() {
     });
     autoScroll.current = true;
   }
-  async function inspectFile(name: string, mode: typeof tab = tab) {
-    if (!project) return;
-    const token = ++previewGeneration.current;
-    const relative = name.replaceAll('\\', '/').replace(project.path.replaceAll('\\', '/') + '/', '');
-    setInspector(true);
-    setSelectedFile(relative);
-    setTab(mode);
-    setFileDiff(undefined);
-    setFilePreview(undefined);
-    if (mode === 'changes') {
-      const diff = await attempt(() => api.invoke('diff', project.id, relative, changeMode));
-      if (token === previewGeneration.current && diff) setFileDiff(diff);
-    } else {
-      const preview = await attempt(() => api.invoke('preview', project.id, relative));
-      if (token === previewGeneration.current && preview) setFilePreview(preview);
-    }
-  }
   const toggleTool = (id: string, open: boolean) => {
     setExpanded((v) => {
+      if (v.includes(id) === open) return v;
       const next = open ? [...new Set([...v, id])] : v.filter((x) => x !== id);
       if (storage.writable && selected)
         void attempt(() => api.invoke('saveView', selected.id, thread.current?.scrollTop ?? 0, next));
       return next;
     });
   };
-  const latest = useRef({ toggleTool, inspectFile, copy, messageAction });
-  latest.current = { toggleTool, inspectFile, copy, messageAction };
+  const checkpointFor = (message: Message) => {
+    const checkpoint = checkpoints.find((item) => item.timestamp === message.timestamp);
+    return checkpoint
+      ? { turn: checkpoint.turn, disabledReason: checkpoint.available ? undefined : checkpoint.invalidReason }
+      : undefined;
+  };
+  const latest = useRef({
+    toggleTool,
+    inspectFile,
+    copy,
+    messageAction,
+    rerunCommand,
+    askHunk,
+    checkpointFor,
+    openCheckpoint,
+  });
+  latest.current = {
+    toggleTool,
+    inspectFile,
+    copy,
+    messageAction,
+    rerunCommand,
+    askHunk,
+    checkpointFor,
+    openCheckpoint,
+  };
   const stableHandlers = useMemo(
     () => ({
       toggleTool: (id: string, open: boolean) => latest.current.toggleTool(id, open),
       openFile: (p: string) => void latest.current.inspectFile(p, 'files'),
       copy: (text: string) => void latest.current.copy(text, '消息已复制'),
       act: (m: Message, kind: MessageAction) => void latest.current.messageAction(m, kind),
+      rerun: (command: string, includeContext: boolean) =>
+        void latest.current.rerunCommand(command, includeContext),
+      askHunk: (attachment: string | undefined, prompt: string) => latest.current.askHunk(attachment, prompt),
+      checkpointFor: (message: Message) => latest.current.checkpointFor(message),
+      undo: (message: Message) => {
+        if (message.timestamp) void latest.current.openCheckpoint(message.timestamp);
+      },
     }),
     [],
   );
   const liveTools = ownRuntime ? runtime.tools : noTools;
   const liveToolIdKey = JSON.stringify(liveTools.map((t) => t.id));
   const liveToolIds = useMemo(() => new Set<string>(JSON.parse(liveToolIdKey)), [liveToolIdKey]);
+  const historyTools = useRef(new WeakMap<Message, { call: ContentBlock | undefined; tool: ToolActivity }>());
   const toolLookup = useMemo(() => {
     const byId = new Map(liveTools.map((t) => [t.id, t]));
     const calls = new Map<string, ContentBlock>();
     for (const m of messages)
       if (Array.isArray(m.content))
         for (const b of m.content) if (b.type === 'toolCall' && b.id) calls.set(String(b.id), b);
-    const cache = new WeakMap<Message, ToolActivity>();
     return (message: Message): ToolActivity => {
       const observed = byId.get(message.toolCallId ?? '');
       if (observed) return observed;
-      let t = cache.get(message);
-      if (!t) {
-        const call = calls.get(message.toolCallId ?? '');
+      const call = calls.get(message.toolCallId ?? '');
+      const cached = historyTools.current.get(message);
+      let t = cached?.tool;
+      if (!t || cached?.call !== call) {
+        const details = message.details;
         t = {
           id: message.toolCallId ?? '',
           name: message.toolName ?? call?.name ?? 'tool',
           args: call?.arguments ?? {},
           status: message.isError ? 'error' : 'done',
-          output: messageText(message).split('\n').slice(-200).join('\n'),
+          output: messageText(message),
           startedAt: message.timestamp ?? 0,
           durationMs: typeof message.durationMs === 'number' ? message.durationMs : undefined,
           patch:
-            typeof (message.details as any)?.patch === 'string' ? (message.details as any).patch : undefined,
+            details && typeof details === 'object' && 'patch' in details && typeof details.patch === 'string'
+              ? details.patch
+              : undefined,
         };
-        cache.set(message, t);
+        historyTools.current.set(message, { call, tool: t });
       }
       return t;
     };
   }, [liveTools, messages]);
+  const canRerun =
+    !actionsLocked && (ownRuntime ? runtime.approvalMode : selected?.approvalMode) !== 'readonly';
   const messageContext: MessageContext = useMemo(
     () => ({
       running: ownRunning,
@@ -530,9 +532,20 @@ export function useWorkbench() {
       expanded,
       liveToolIds,
       toolFor: toolLookup,
+      canRerun,
+      checkpointRevision,
       ...stableHandlers,
     }),
-    [ownRunning, actionsLocked, expanded, liveToolIds, toolLookup, stableHandlers],
+    [
+      ownRunning,
+      actionsLocked,
+      expanded,
+      liveToolIds,
+      toolLookup,
+      stableHandlers,
+      canRerun,
+      checkpointRevision,
+    ],
   );
   const stopArmed = useShortcuts({
     state,
@@ -549,8 +562,13 @@ export function useWorkbench() {
     setSidebar,
     setShortcutsOpen,
     setInspector,
+    setTab,
   });
   return {
+    ...workspace,
+    ...draftState,
+    askHunk,
+    rerunCommand,
     update,
     state,
     storage,
@@ -567,7 +585,6 @@ export function useWorkbench() {
     newContent,
     setNewContent,
     thread,
-    input,
     autoScroll,
     selected,
     project,
@@ -579,45 +596,22 @@ export function useWorkbench() {
     lastAssistant,
     visibleMessages,
     attempt,
-    persistDraft,
-    focusComposer,
     selectSession,
     openSettings,
     connect,
-    inspectFile,
     toggleTool,
     messageContext,
     error,
     setError,
     setNotice,
-    draft,
-    attachments,
-    sendMode,
-    setSendMode,
-    images,
-    commandIndex,
-    setCommandIndex,
-    setHideCommands,
-    fileQuery,
-    setFileQuery,
-    fileResults,
     elapsed,
     setShortcutsOpen,
     stopArmed,
     dragging,
     setDragging,
-    recall,
-    commandList,
     ownRunning,
     sentPrompts,
-    commandOptions,
-    activeCommand,
-    completeCommand,
-    onDraft,
-    addAttachment,
     send,
-    acceptImages,
-    acceptDrop,
     setModel,
     setThinking,
     sidebar,
@@ -629,24 +623,8 @@ export function useWorkbench() {
     createSession,
     setSidebar,
     setInspector,
-    changes,
-    tab,
-    setTab,
-    changeMode,
-    setChangeMode,
-    setChanges,
-    selectedFile,
-    setSelectedFile,
-    filePreview,
-    setFilePreview,
-    fileDiff,
-    setFileDiff,
-    split,
-    setSplit,
     inspectorPanel,
-    diffLines,
     copy,
-    revert,
     notice,
     setDismissed,
     toasts,

@@ -57,10 +57,10 @@ try {
   assert.match(service.runtime.tools[2].output, /PI_TOOL_TEST_PASS/);
   assert.match(messageText(service.runtime.messages.find((m) => m.role === 'user')!), /project_file/);
   console.log('PASS actual Pi read, write and shell tools');
-  const changes = await workspace.changes(store.project(projectId));
+  const changes = await workspace.changes(store.project(projectId), 'all', { sessionId });
   assert.ok(changes.files.find((f) => f.path === '已有修改.txt')?.existedBeforeRun);
   assert.equal(
-    (await workspace.diff(store.project(projectId), '输出结果.txt', 'run')).after,
+    (await workspace.diff(store.project(projectId), '输出结果.txt', 'run', { sessionId })).after,
     '真实 Pi 工具执行成功\n',
   );
   const file = store.session(sessionId).file;

@@ -1,0 +1,436 @@
+:root {
+  --syntax-keyword: #8f4b9c;
+  --syntax-string: #29764f;
+  --syntax-comment: #7c848b;
+  --syntax-number: #a36228;
+  --syntax-function: #286d9a;
+  --ansi-red: #c54242;
+  --ansi-green: #2a8852;
+  --ansi-yellow: #a47216;
+  --ansi-blue: #377eb5;
+  --ansi-magenta: #9c52ac;
+  --ansi-cyan: #28828d;
+}
+[data-theme='dark'] {
+  --syntax-keyword: #c99cdf;
+  --syntax-string: #91c6a2;
+  --syntax-comment: #929ca5;
+  --syntax-number: #e4b47c;
+  --syntax-function: #85badd;
+  --ansi-red: #ef8a86;
+  --ansi-green: #91c6a2;
+  --ansi-yellow: #e8bf77;
+  --ansi-blue: #85badd;
+  --ansi-magenta: #c99cdf;
+  --ansi-cyan: #84c9d1;
+}
+.syntax-keyword {
+  color: var(--syntax-keyword);
+}
+.syntax-string {
+  color: var(--syntax-string);
+}
+.syntax-comment {
+  color: var(--syntax-comment);
+}
+.syntax-number {
+  color: var(--syntax-number);
+}
+.syntax-function {
+  color: var(--syntax-function);
+}
+.syntax-added {
+  color: var(--ansi-green);
+}
+.syntax-removed {
+  color: var(--ansi-red);
+}
+.ansi-red {
+  color: var(--ansi-red);
+}
+.ansi-green {
+  color: var(--ansi-green);
+}
+.ansi-yellow {
+  color: var(--ansi-yellow);
+}
+.ansi-blue {
+  color: var(--ansi-blue);
+}
+.ansi-magenta {
+  color: var(--ansi-magenta);
+}
+.ansi-cyan {
+  color: var(--ansi-cyan);
+}
+.ansi-gray {
+  color: var(--muted);
+}
+.ansi-bold {
+  font-weight: 700;
+}
+.code-block .code-header {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.code-header > div {
+  display: flex;
+  gap: 5px;
+}
+.code-header button,
+.code-header .code-copy {
+  position: static;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 5px;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+}
+.code-header button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--hover);
+}
+.code-block > pre {
+  padding: 12px 14px;
+  margin: 0;
+  white-space: pre;
+}
+.code-block.code-wrap > pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.session-find {
+  position: absolute;
+  right: 24px;
+  top: 8px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 4px 18px #0002;
+  max-width: calc(100% - 30px);
+}
+.session-find input {
+  width: 190px;
+  min-width: 80px;
+  border: 0;
+  padding: 4px;
+  background: transparent;
+}
+.session-find span {
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.session-find button {
+  padding: 3px;
+  display: flex;
+  border: 0;
+  background: transparent;
+}
+.search-active {
+  outline: 2px solid color-mix(in srgb, var(--signal) 75%, transparent);
+  outline-offset: 3px;
+  border-radius: 8px;
+  scroll-margin-top: 60px;
+}
+.search-snippet {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--rail);
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+mark,
+::highlight(session-find) {
+  background: #f1c75e88;
+  color: inherit;
+}
+.search-current {
+  outline: 1px solid var(--signal);
+}
+.tool-group {
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.tool-group > summary {
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tool-group > summary small {
+  float: right;
+  font-variant-numeric: tabular-nums;
+}
+.tool-group-content {
+  padding: 0 8px 6px;
+}
+.tool-rerun {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.tool-rerun button {
+  font-size: 10px;
+  padding: 3px 5px;
+  white-space: nowrap;
+}
+.turn-outline {
+  position: absolute;
+  top: 64px;
+  right: 3px;
+  max-height: 45%;
+  overflow: auto;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  padding: 7px 4px;
+  border-radius: 8px;
+}
+.turn-outline button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  min-height: 14px;
+  padding: 4px 2px;
+  font-size: 11px;
+  text-align: left;
+}
+.turn-outline button > i {
+  display: block;
+  height: 3px;
+  width: 9px;
+  border-radius: 2px;
+  background: var(--muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.turn-outline .modified > i {
+  background: var(--accent);
+}
+.turn-outline .failed > i {
+  background: var(--red);
+}
+.turn-outline .current > i {
+  width: 16px;
+  opacity: 1;
+}
+.turn-outline button > span {
+  display: none;
+  max-width: 280px;
+}
+.turn-outline small {
+  margin-left: 8px;
+  color: var(--muted);
+}
+.turn-outline:hover,
+.turn-outline:focus-within {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px #0002;
+}
+.turn-outline:hover button > span,
+.turn-outline:focus-within button > span {
+  display: block;
+}
+.composer-resize {
+  height: 7px;
+  margin: -4px 15px 0;
+  cursor: ns-resize;
+  touch-action: none;
+  border-radius: 8px;
+}
+.conversation .composer-wrap {
+  /* Reserve room for the 55vh editor plus attachments, toolbar and status line. */
+  max-height: calc(55vh + 180px);
+}
+.composer-resize:hover,
+.composer-resize:focus {
+  background: var(--hover);
+}
+.file-picker > button[aria-selected='true'] {
+  background: var(--hover);
+  color: var(--accent);
+}
+.image-attachments .draft-image-preview {
+  position: static;
+  border: 0;
+  padding: 0;
+  width: auto;
+  height: auto;
+  background: transparent;
+  border-radius: 6px;
+}
+.draft-image-preview img {
+  display: block;
+}
+.pasted-snippets {
+  padding-top: 8px;
+}
+.pasted-snippets button {
+  font-size: 11px;
+}
+.snippet-preview pre {
+  max-height: 55vh;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.attachment-capacity {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+}
+.attachment-capacity.warning,
+.context-meter.mid {
+  color: var(--signal);
+}
+.attachment-capacity.over {
+  color: var(--red);
+}
+.attachment-capacity small {
+  display: block;
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+.prompt-arguments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px 2px;
+}
+.prompt-arguments label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 100px;
+  flex: 1;
+}
+.prompt-arguments label > span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.prompt-arguments input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.context-actions {
+  position: relative;
+  display: inline-flex;
+}
+.context-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: 250px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 4px 20px #0003;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 30;
+  text-align: left;
+}
+.context-popover > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.context-popover button {
+  text-align: left;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: #0a0e14e8;
+  color: #f4f5f6;
+  display: flex;
+  flex-direction: column;
+}
+.lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  z-index: 2;
+  background: #141b25dc;
+}
+.lightbox-toolbar > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lightbox button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid #ffffff25;
+  background: #ffffff12;
+  color: #f4f5f6;
+  padding: 7px;
+}
+.lightbox-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-canvas img {
+  max-width: none;
+  max-height: none;
+  flex-shrink: 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.lightbox-canvas img:active {
+  cursor: grabbing;
+}
+.lightbox-help {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #c0c6cf;
+}
+.lightbox-prev,
+.lightbox-next {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+}
+.lightbox-prev {
+  left: 16px;
+}
+.lightbox-next {
+  right: 16px;
+}

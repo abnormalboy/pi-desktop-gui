@@ -1,9 +1,12 @@
 import { Copy, Download, Share2, Terminal, FolderOpen } from 'lucide-react';
+import { useState } from 'react';
+import '../styles/management.css';
 const api = window.desktop;
 import type { FeatureModel } from './usePiFeatures';
 export function SessionTab({
   session,
   runtime,
+  usage,
   close,
   setNotice,
   instructions,
@@ -15,6 +18,7 @@ export function SessionTab({
   FeatureModel,
   | 'session'
   | 'runtime'
+  | 'usage'
   | 'close'
   | 'setNotice'
   | 'instructions'
@@ -23,6 +27,8 @@ export function SessionTab({
   | 'run'
   | 'exportFile'
 >) {
+  const [usagePeriod, setUsagePeriod] = useState<'today' | 'week' | 'all'>('all');
+  const currentUsage = usage?.[usagePeriod];
   return (
     <>
       <h3>当前会话</h3>
@@ -63,6 +69,60 @@ export function SessionTab({
           上下文占用 <strong>{runtime.stats?.contextPercent?.toFixed(1) ?? '—'}%</strong>
         </span>
       </div>
+      <section className="usage-summary" aria-label="本地用量汇总">
+        <h3>本地用量汇总</h3>
+        <p className="settings-copy">
+          按会话最后更新时间筛选，累计该会话全部用量；今日和近 7 天并非逐日账单。费用为 Pi 返回的估算。
+        </p>
+        <div className="usage-periods" role="group" aria-label="用量时间范围">
+          {(
+            [
+              ['today', '今日'],
+              ['week', '近 7 天'],
+              ['all', '全部历史'],
+            ] as const
+          ).map(([key, label]) => (
+            <button key={key} aria-pressed={usagePeriod === key} onClick={() => setUsagePeriod(key)}>
+              <span>{label}</span>
+              <strong>{usage?.[key].tokens.toLocaleString() ?? '—'} tokens</strong>
+              <small>${usage?.[key].cost.toFixed(4) ?? '—'}</small>
+            </button>
+          ))}
+        </div>
+        {currentUsage && (
+          <>
+            {(currentUsage.missingTokens > 0 || currentUsage.missingCost > 0) && (
+              <p className="settings-copy">
+                {currentUsage.missingTokens} 个会话尚无用量数据，{currentUsage.missingCost}{' '}
+                个会话尚无费用数据；仅汇总已知数据。
+              </p>
+            )}
+            <table className="usage-projects">
+              <thead>
+                <tr>
+                  <th>项目</th>
+                  <th>会话</th>
+                  <th>Token</th>
+                  <th>估算费用</th>
+                  <th>费用占比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentUsage.projects.map((group) => (
+                  <tr key={group.projectId ?? 'standalone'}>
+                    <th>{group.name}</th>
+                    <td>{group.sessions}</td>
+                    <td>{group.tokens.toLocaleString()}</td>
+                    <td>${group.cost.toFixed(4)}</td>
+                    <td>{(group.costShare * 100).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!currentUsage.projects.length && <p className="settings-copy">这个时间范围内还没有会话。</p>}
+          </>
+        )}
+      </section>
       <h3>上下文与队列</h3>
       {[
         ['autoCompaction', '自动压缩上下文'],

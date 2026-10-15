@@ -52,9 +52,9 @@ async function crash(queue = false) {
     false,
   );
   assert.ok(
-    (await service.workspace.changes(f.store.project(f.projectId), 'run')).files.some(
-      (file) => file.path === 'crash-partial.txt',
-    ),
+    (
+      await service.workspace.changes(f.store.project(f.projectId), 'run', { sessionId: f.sessionId })
+    ).files.some((file) => file.path === 'crash-partial.txt'),
   );
   assert.equal(provider.requests.length, requests, 'a crash must never resend a prompt');
   return requests;

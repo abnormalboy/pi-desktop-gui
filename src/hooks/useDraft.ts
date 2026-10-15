@@ -11,6 +11,8 @@ import {
 import { builtinCommands } from '../lib/commands';
 import { commandOrder } from '../lib/commands';
 import { readableError } from '../lib/format';
+import { composeDraftText, moveSnippetOffsets, textBytes, type DraftSnippet } from '../lib/draft-snippets';
+import { formatAttachmentSpec, parseAttachmentSpec, type AttachmentInfo } from '../../shared/attachments';
 const api = window.desktop;
 interface DraftOptions {
   state: AppState | undefined;
@@ -47,10 +49,17 @@ export function useDraft({
     [hideCommands, setHideCommands] = useState(false);
   const [fileQuery, setFileQuery] = useState<string | null>(null),
     [fileResults, setFileResults] = useState<string[]>([]);
+  const [fileIndex, setFileIndex] = useState(0),
+    [snippets, setSnippets] = useState<DraftSnippet[]>([]);
+  const [attachmentInfo, setAttachmentInfo] = useState<AttachmentInfo[]>([]);
+  const [inputMaxHeight, setInputMaxHeight] = useState(() =>
+    Math.max(20, Math.min(55, Number(localStorage.getItem('pi.composerMaxHeight')) || 20)),
+  );
   const recall = useRef(-1);
-  const composerDraft = useRef({ draft, attachments, images });
+  const composerDraft = useRef({ draft, attachments, images, snippets });
   const input = useRef<HTMLTextAreaElement>(null),
-    commandList = useRef<HTMLDivElement>(null);
+    commandList = useRef<HTMLDivElement>(null),
+    fileList = useRef<HTMLDivElement>(null);
   const commandMatch = /^(\/\/?)([^\s]*)$/.exec(draft);
   const commandQuery = commandMatch?.[2].toLowerCase();
   const piOnly = commandMatch?.[1] === '//';
@@ -77,23 +86,64 @@ export function useDraft({
           )
           .slice(0, 40)
       : [];
-  const typedCommand = /^(\/\/?)(\S+)\s/.exec(draft);
-  const activeCommand =
-    typedCommand && !commandOptions.length
-      ? allCommands.find((c) => c.prefix === typedCommand[1] && c.name === typedCommand[2])
-      : undefined;
+  const typedCommand = /^(\/\/?)(\S+)(?:\s|$)/.exec(draft);
+  const activeCommand = typedCommand
+    ? allCommands.find((c) => c.prefix === typedCommand[1] && c.name === typedCommand[2])
+    : undefined;
   const completeCommand = (c: PiCommand & { prefix: string }) => {
     persistDraft(c.prefix + c.name + ' ');
     setHideCommands(true);
     input.current?.focus();
   };
-  const persistDraft = (value: string, files = attachments, pictures = images) => {
+  const persistDraft = (
+    value: string,
+    files = attachments,
+    pictures = images,
+    pieces = moveSnippetOffsets(composerDraft.current.draft, value, composerDraft.current.snippets),
+  ) => {
     if (!selected || stateRef.current?.selectedSessionId !== selected.id) return;
-    composerDraft.current = { draft: value, attachments: files, images: pictures };
+    composerDraft.current = { draft: value, attachments: files, images: pictures, snippets: pieces };
     setDraft(value);
     setAttachments(files);
     setImages(pictures);
-    if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files, pictures));
+    setSnippets(pieces);
+    if (selected) void attempt(() => api.invoke('saveDraft', selected.id, value, files, pictures, pieces));
+  };
+  const composeDraft = () => composeDraftText(composerDraft.current.draft, composerDraft.current.snippets);
+  const pasteText = (
+    text: string,
+    start = input.current?.selectionStart ?? draft.length,
+    end = input.current?.selectionEnd ?? start,
+  ) => {
+    const value = draft.slice(0, start) + draft.slice(end);
+    const pieces = moveSnippetOffsets(draft, value, snippets);
+    // Stable array order preserves repeated pastes at the same caret position.
+    persistDraft(value, attachments, images, [...pieces, { id: crypto.randomUUID(), text, offset: start }]);
+    requestAnimationFrame(() => input.current?.setSelectionRange(start, start));
+  };
+  const removeSnippet = (id: string) =>
+    persistDraft(
+      draft,
+      attachments,
+      images,
+      snippets.filter((snippet) => snippet.id !== id),
+    );
+  const expandSnippet = (id: string) => {
+    const snippet = snippets.find((item) => item.id === id);
+    if (!snippet) return;
+    const value = draft.slice(0, snippet.offset) + snippet.text + draft.slice(snippet.offset);
+    const index = snippets.indexOf(snippet);
+    const pieces = snippets
+      .filter((item) => item.id !== id)
+      .map((item) => ({
+        ...item,
+        offset:
+          item.offset > snippet.offset || (item.offset === snippet.offset && snippets.indexOf(item) > index)
+            ? item.offset + snippet.text.length
+            : item.offset,
+      }));
+    persistDraft(value, attachments, images, pieces);
+    focusComposer();
   };
   const mergeDraftAttachments = (id: string, files: string[], pictures: ImageAttachment[]) => {
     if (stateRef.current?.selectedSessionId !== id) return false;
@@ -111,6 +161,7 @@ export function useDraft({
     persistDraft(value);
     setHideCommands(false);
     setCommandIndex(0);
+    setFileIndex(0);
     if (value === '/' && selected && !runtime.connected && !running)
       void attempt(() => api.invoke('connect', selected.id));
     const match = value.match(/(?:^|\s)@([^\s@]*)$/);
@@ -121,15 +172,23 @@ export function useDraft({
     requestAnimationFrame(() => input.current?.focus());
   };
   async function addAttachment(name: string) {
-    if (!project) return;
-    const f = await attempt(() => api.invoke('preview', project.id, name));
-    if (!f) return;
-    if (f.binary || f.size > 256 * 1024) {
-      setError('只能引用不超过 256 KiB 的文本文件');
-      return;
-    }
-    const next = [...new Set([...attachments, name])];
-    persistDraft(draft.replace(/(^|\s)@[^\s@]*$/, '$1'), next);
+    if (!project || !selected) return;
+    const id = selected.id;
+    const normalized = await attempt(async () => {
+      const typed = fileQuery ? parseAttachmentSpec(fileQuery) : undefined;
+      const spec = parseAttachmentSpec(name);
+      const value = formatAttachmentSpec(
+        typed?.startLine !== undefined && spec.startLine === undefined
+          ? { path: spec.path, startLine: typed.startLine, endLine: typed.endLine }
+          : spec,
+      );
+      await api.invoke('attachmentInfo', project.id, [value]);
+      return value;
+    });
+    if (!normalized || stateRef.current?.selectedSessionId !== id) return;
+    const latest = composerDraft.current;
+    const next = [...new Set([...latest.attachments, normalized])];
+    persistDraft(latest.draft.replace(/(^|\s)@[^\s@]*$/, '$1'), next, latest.images);
     setFileQuery(null);
     focusComposer();
   }
@@ -187,38 +246,52 @@ export function useDraft({
       await attempt(async () => mergeDraftAttachments(selected.id, nextFiles, nextImages ?? []));
     focusComposer();
   }
-  composerDraft.current = { draft, attachments, images };
+  composerDraft.current = { draft, attachments, images, snippets };
   useEffect(() => {
     const textarea = input.current;
     if (!textarea) return;
     const resize = () => {
       textarea.style.height = '0px';
-      textarea.style.height = Math.min(textarea.scrollHeight, window.innerHeight * 0.2) + 'px';
+      textarea.style.height =
+        Math.min(textarea.scrollHeight, (window.innerHeight * inputMaxHeight) / 100) + 'px';
+      textarea.style.maxHeight = inputMaxHeight + 'vh';
     };
     resize();
     const observer = new ResizeObserver(resize);
     // Observe the container so wrapping changes also resize the input.
     observer.observe(textarea.parentElement!);
     return () => observer.disconnect();
-  }, [draft, state?.settings.fontScale, Boolean(state)]);
+  }, [draft, inputMaxHeight, state?.settings.fontScale, Boolean(state)]);
+  useEffect(() => {
+    localStorage.setItem('pi.composerMaxHeight', String(inputMaxHeight));
+  }, [inputMaxHeight]);
   useEffect(() => {
     if (!selected) return;
     setDraft(selected.draft);
     setAttachments(selected.attachments);
     setImages(selected.images ?? []);
+    setSnippets(selected.draftSnippets ?? []);
   }, [
     selected?.id,
     selected?.draft,
     selected?.attachments.join('|'),
     selected?.images?.map((i) => i.id).join('|'),
+    selected?.draftSnippets,
   ]);
   useEffect(() => {
+    setFileResults([]);
+    setFileIndex(0);
     if (!project || fileQuery === null) return;
     let alive = true;
     const timer = setTimeout(() => {
       api
-        .invoke('searchFiles', project.id, fileQuery)
-        .then((v) => alive && setFileResults(v))
+        .invoke('searchFiles', project.id, fileQuery.replace(/(?:#L|:)\d.*$/, ''))
+        .then((v) => {
+          if (alive) {
+            setFileResults(v);
+            setFileIndex(0);
+          }
+        })
         .catch((e) => setError(readableError(e)));
     }, 120);
     return () => {
@@ -227,8 +300,27 @@ export function useDraft({
     };
   }, [project?.id, fileQuery]);
   useEffect(() => {
+    let alive = true;
+    setAttachmentInfo([]);
+    if (!project || !attachments.length) return;
+    void api
+      .invoke('attachmentInfo', project.id, attachments)
+      .then((info) => {
+        if (alive) setAttachmentInfo(info);
+      })
+      .catch((error) => {
+        if (alive) setError(readableError(error));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [project?.id, attachments.join('|')]);
+  useEffect(() => {
     commandList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [commandIndex]);
+  useEffect(() => {
+    fileList.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [fileIndex]);
   return {
     draft,
     attachments,
@@ -238,6 +330,20 @@ export function useDraft({
     fileQuery,
     setFileQuery,
     fileResults,
+    fileIndex,
+    setFileIndex,
+    fileList,
+    snippets,
+    pasteText,
+    expandSnippet,
+    removeSnippet,
+    composeDraft,
+    attachmentInfo,
+    attachmentBytes:
+      textBytes(composeDraftText(draft, snippets)) +
+      attachmentInfo.reduce((total, info) => total + info.bytes, 0),
+    inputMaxHeight,
+    setInputMaxHeight,
     setFileResults,
     commandIndex,
     setCommandIndex,

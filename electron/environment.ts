@@ -5,13 +5,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Environment, Settings } from '../shared/types';
 import type { CommandSpec } from './rpc';
-import {
-  COMPATIBLE,
-  PI_INSTALL_COMMAND,
-  classifyPiVersion,
-  compatibilityMessage,
-} from '../shared/pi-version';
-export { VERIFIED, COMPATIBLE, classifyPiVersion } from '../shared/pi-version';
+import { PI_INSTALL_COMMAND, classifyPiVersion, compatibilityMessage } from '../shared/pi-version';
+export { VERIFIED, classifyPiVersion } from '../shared/pi-version';
 import { isWindows, locateExecutable, shellCandidates, nodeExecutableName } from './platform';
 const exec = promisify(execFile);
 export async function exists(p: string) {
@@ -41,8 +36,7 @@ export async function resolvePi(
     );
     if (await exists(local)) entry = local;
   }
-  if (!entry || !(await exists(entry)))
-    throw new Error(`未找到 Pi。请安装 Pi ${COMPATIBLE} 系列或在设置中选择入口。`);
+  if (!entry || !(await exists(entry))) throw new Error('未找到 Pi。请安装 Pi 或在设置中选择入口。');
   if (/\.(cmd|ps1|bat)$/i.test(entry) || (!path.extname(entry) && isWindows)) {
     const base = path.dirname(entry);
     const candidates = [
@@ -60,7 +54,7 @@ export async function resolvePi(
     const { stdout } = await exec(node, ['--version'], { windowsHide: true, timeout: 5000 });
     const [major, minor] = stdout.trim().replace(/^v/, '').split('.').map(Number);
     if (major < 22 || (major === 22 && minor < 19))
-      throw new Error(`Pi ${COMPATIBLE} 系列需要 Node.js 22.19 或更高版本。`);
+      throw new Error('运行此 Pi 入口需要 Node.js 22.19 或更高版本。');
     return { entry, node, spec: { command: node, args: [entry] } };
   }
   return { entry, spec: { command: entry, args: [] } };
@@ -103,7 +97,7 @@ export async function detectEnvironment(settings: Settings, developmentRoot?: st
     });
     result.version = stdout.trim().match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?)(?=\s|$)/)?.[1];
     result.compatibility = classifyPiVersion(result.version);
-    result.supported = ['verified', 'compatible'].includes(result.compatibility);
+    result.supported = result.compatibility !== 'unknown';
     if (!result.supported)
       result.errors.push(
         `${compatibilityMessage(result.version, result.compatibility)}\n${PI_INSTALL_COMMAND}`,

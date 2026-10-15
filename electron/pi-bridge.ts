@@ -13,27 +13,63 @@ import type {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { toggleResourceSetting } from './resources-config';
-import { DESKTOP_BRIDGE_COMMAND, DESKTOP_BRIDGE_PROTOCOL } from '../shared/pi-bridge';
+import {
+  DESKTOP_BRIDGE_COMMAND,
+  DESKTOP_BRIDGE_PROTOCOL,
+  DESKTOP_WORKSPACE_PREFIX,
+} from '../shared/pi-bridge';
+import { classifyWriteTarget } from './approval-paths';
 import {
   APPROVAL_ALLOW,
   APPROVAL_ALWAYS,
   APPROVAL_DENY,
   APPROVAL_PREFIX,
-  alwaysKey,
+  grantForRequest,
+  matchesGrant,
   decide,
   describe,
   type ApprovalMode,
+  type ApprovalGrant,
 } from '../shared/approval';
 
 export default function desktopBridge(pi: ExtensionAPI) {
   let authAbort: AbortController | undefined;
   let approvalMode: ApprovalMode =
     (['auto', 'confirm', 'readonly'] as const).find((m) => m === process.env.PI_DESKTOP_APPROVAL) ?? 'auto';
-  const alwaysAllowed = new Set<string>();
+  let approvalGrants: ApprovalGrant[] = [];
+  const checkpointEnabled = process.env.PI_DESKTOP_CHECKPOINTS === '1';
+  async function workspaceRequest(ctx: ExtensionContext, request: object) {
+    if (!checkpointEnabled) return;
+    const reply = await ctx.ui.input(DESKTOP_WORKSPACE_PREFIX + JSON.stringify(request), '', {
+      timeout: 120000,
+    });
+    if (reply === undefined) throw new Error('检查点操作已取消，工具未继续执行');
+    const result: unknown = JSON.parse(reply);
+    if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true)
+      throw new Error(
+        result && typeof result === 'object' && 'error' in result
+          ? String(result.error)
+          : '无法保存检查点，工具未继续执行',
+      );
+  }
+  pi.on('message_start', async (event, ctx) => {
+    if (event.message.role !== 'user') return;
+    try {
+      await workspaceRequest(ctx, { phase: 'turn', timestamp: event.message.timestamp });
+    } catch (error) {
+      ctx.abort();
+      throw error;
+    }
+  });
+  const publishGrants = (ctx: ExtensionContext) =>
+    ctx.ui.notify(
+      '__PI_DESKTOP__' + JSON.stringify({ type: 'desktop_approval_grants', grants: approvalGrants }),
+    );
   pi.on('session_start', (_event, ctx) => {
-    alwaysAllowed.clear();
+    approvalGrants = [];
     // Loaded explicitly before project/global extensions; marks the owner of subsequent UI events.
     ctx.ui.notify('__PI_DESKTOP__' + JSON.stringify({ type: 'desktop_session_start' }));
+    publishGrants(ctx);
   });
   async function approve(toolName: string, input: unknown, ctx: ExtensionContext) {
     const verdict = decide(approvalMode, toolName);
@@ -44,15 +80,19 @@ export default function desktopBridge(pi: ExtensionAPI) {
         reason: `当前为只读模式，桌面端拒绝了 ${toolName}。请只读取和分析，不要修改文件或执行命令。`,
       };
     const request = describe(toolName, input);
-    if (alwaysAllowed.has(alwaysKey(request))) return;
+    if (request.kind === 'write')
+      request.writeTarget = await classifyWriteTarget(ctx.cwd, request.path ?? '');
+    request.grant = grantForRequest(request);
+    if (approvalGrants.some((grant) => matchesGrant(grant, request))) return;
     const choice = await ctx.ui.select(APPROVAL_PREFIX + JSON.stringify(request), [
       APPROVAL_ALLOW,
-      APPROVAL_ALWAYS,
+      ...(request.grant ? [APPROVAL_ALWAYS] : []),
       APPROVAL_DENY,
     ]);
     if (choice === APPROVAL_ALLOW) return;
-    if (choice === APPROVAL_ALWAYS) {
-      alwaysAllowed.add(alwaysKey(request));
+    if (choice === APPROVAL_ALWAYS && request.grant) {
+      if (!approvalGrants.some((grant) => grant.id === request.grant!.id)) approvalGrants.push(request.grant);
+      publishGrants(ctx);
       return;
     }
     const reason = choice?.startsWith(APPROVAL_DENY + '：')
@@ -63,11 +103,54 @@ export default function desktopBridge(pi: ExtensionAPI) {
       reason: `用户拒绝了这次 ${toolName} 调用${reason ? '，原因：' + reason : ''}。请按用户意见调整，不要重复同样的操作。`,
     };
   }
-  pi.on('tool_call', (event, ctx) => approve(event.toolName, event.input, ctx));
+  pi.on('tool_call', async (event, ctx) => {
+    const blocked = await approve(event.toolName, event.input, ctx);
+    if (blocked) return blocked;
+    if (!['edit', 'write', 'bash', 'powershell'].includes(event.toolName)) return;
+    try {
+      await workspaceRequest(ctx, {
+        phase: 'tool-start',
+        toolId: event.toolCallId,
+        toolName: event.toolName,
+        args: {
+          path: 'path' in event.input ? event.input.path : undefined,
+          command: 'command' in event.input ? event.input.command : undefined,
+        },
+      });
+    } catch (error) {
+      return { block: true, reason: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  pi.on('tool_result', async (event, ctx) => {
+    if (!['edit', 'write', 'bash', 'powershell'].includes(event.toolName)) return;
+    try {
+      await workspaceRequest(ctx, { phase: 'tool-end', toolId: event.toolCallId });
+    } catch (error) {
+      ctx.abort();
+      throw error;
+    }
+  });
   pi.on('user_bash', async (event, ctx) => {
     const blocked = await approve('bash', { command: event.command }, ctx);
     if (blocked)
       return { result: { output: blocked.reason, exitCode: 1, cancelled: false, truncated: false } };
+    try {
+      await workspaceRequest(ctx, {
+        phase: 'tool-start',
+        toolId: 'desktop-bash',
+        toolName: 'bash',
+        args: { command: event.command },
+      });
+    } catch (error) {
+      return {
+        result: {
+          output: error instanceof Error ? error.message : String(error),
+          exitCode: 1,
+          cancelled: false,
+          truncated: false,
+        },
+      };
+    }
   });
   async function models(ctx: ExtensionCommandContext) {
     const m = await ModelRuntime.create();
@@ -96,13 +179,21 @@ export default function desktopBridge(pi: ExtensionAPI) {
               protocolVersion: DESKTOP_BRIDGE_PROTOCOL,
               autoRetry: pi.getSettings().retry?.enabled !== false,
               approvalMode,
+              approvalGrants,
             };
             break;
           case 'approval_mode':
             if (!['auto', 'confirm', 'readonly'].includes(p.mode)) throw new Error('审批模式无效');
             approvalMode = p.mode;
-            if (p.mode !== 'confirm') alwaysAllowed.clear();
-            data = { approvalMode };
+            if (p.mode !== 'confirm') approvalGrants = [];
+            publishGrants(ctx);
+            data = { approvalMode, approvalGrants };
+            break;
+          case 'revoke_approval':
+            if (p.id !== undefined && typeof p.id !== 'string') throw new Error('要撤回的授权无效');
+            approvalGrants = p.id === undefined ? [] : approvalGrants.filter((grant) => grant.id !== p.id);
+            publishGrants(ctx);
+            data = { approvalGrants };
             break;
           case 'tree': {
             const active = new Set(ctx.sessionManager.getBranch().map((e) => e.id));

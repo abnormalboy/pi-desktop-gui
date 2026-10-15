@@ -5,6 +5,8 @@ import {
   ipcMain,
   shell,
   clipboard,
+  ClipboardItem,
+  nativeImage,
   Menu,
   Notification,
   screen,
@@ -19,7 +21,22 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
 import { AgentService, redact } from './agent';
-import { Workspace, listDirectory, allFiles, previewFile, safePath } from './workspace';
+import { Workspace, listDirectory, allFiles, previewFile, safePath, attachmentInfo } from './workspace';
+import { WorkspaceWatcher } from './workspace-watch';
+import { projectRules, createAgentRules } from './project-rules';
+import { isEmptySession, fillSessionUsage } from './session-maintenance';
+import { aggregateUsage } from '../shared/usage';
+import { composeDraftText } from '../shared/draft';
+import { validatePromptTemplate } from '../shared/prompts';
+import {
+  readPromptTemplate,
+  savePromptTemplate,
+  deletePromptTemplate,
+  promptEditable,
+  type PromptTemplateContext,
+} from './prompts';
+import type { ResourceCatalog } from '../shared/types';
+import type { CheckpointContext } from '../shared/checkpoints';
 import { detectEnvironment, requireSupportedPi, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
 import { UpdateService, updateInstallation, fetchLatestRelease, fetchReleaseNotes } from './updater';
@@ -44,12 +61,34 @@ let quitting = false;
 let closing = false;
 let sessionEnding = false;
 let activeOperations = 0;
+let activeEngineOperations = 0;
+let workspaceWatcher: WorkspaceWatcher | undefined;
+let watchedProject = '';
+let watcherRevision = 0;
 let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
 const send = (event: AppEvent) => {
   if (window && !window.isDestroyed()) window.webContents.send('desktop:event', event);
+  if (event.type === 'state') void watchSelectedProject();
 };
+async function watchSelectedProject() {
+  if (!store || quitting) return;
+  const selected = store.state.sessions.find((session) => session.id === store.state.selectedSessionId);
+  const project = store.state.projects.find((item) => item.id === selected?.projectId);
+  const key = project ? project.id + ':' + pathKey(project.path) : '';
+  if (key === watchedProject) return;
+  watchedProject = key;
+  const revision = ++watcherRevision;
+  workspaceWatcher?.dispose();
+  workspaceWatcher = undefined;
+  if (!project) return;
+  const watcher = await WorkspaceWatcher.watch(project, (event) => {
+    if (!quitting && revision === watcherRevision) send(event);
+  });
+  if (quitting || revision !== watcherRevision) watcher.dispose();
+  else workspaceWatcher = watcher;
+}
 const save = async () => {
   await store.save();
   send({ type: 'state', state: store.state });
@@ -191,6 +230,24 @@ async function chooseFile(title: string, filters?: Electron.FileFilter[]) {
 let diagnosticPreview = '';
 const exec = promisify(execFile);
 let updatingConfiguration = false;
+function checkpointContext(projectId: string, value: unknown): CheckpointContext | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('检查点范围无效');
+  const context = value as CheckpointContext;
+  text(context.sessionId, 100);
+  if (context.checkpointId !== undefined) text(context.checkpointId, 100);
+  if (store.session(context.sessionId).projectId !== projectId) throw new Error('该检查点不属于当前项目');
+  return { sessionId: context.sessionId, checkpointId: context.checkpointId };
+}
+async function promptContext(id: string): Promise<PromptTemplateContext> {
+  const session = store.session(id);
+  const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+  return {
+    agentDir: agentDirectory(store.state.settings),
+    cwd: session.projectId ? store.project(session.projectId).path : undefined,
+    resources: catalog.resources,
+  };
+}
 const terminalLock = () => path.join(store.dir, 'terminal.lock');
 async function assertTerminalClosed() {
   if (await terminalOpen(terminalLock()))
@@ -423,6 +480,50 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     store.session(id).pinned = pinned === true;
     await save();
   },
+  cleanupEmptySessions: async () => {
+    const candidates = (
+      await Promise.all(
+        store.state.sessions.map(async (session) =>
+          (await isEmptySession(session, service.runtime.sessionId)) ? session.id : undefined,
+        ),
+      )
+    ).filter((id): id is string => !!id);
+    if (!candidates.length) return 0;
+    const result = await dialog.showMessageBox(window!, {
+      type: 'question',
+      message: `清理 ${candidates.length} 个空会话？`,
+      detail:
+        '只移除未置顶、没有消息或未发送内容的会话入口。草稿、附件、图片和已连接会话会保留；磁盘文件不会删除。',
+      buttons: ['取消', '清理空会话'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (result.response !== 1) return 0;
+    const removable = new Set<string>();
+    for (const id of candidates) {
+      const session = store.state.sessions.find((item) => item.id === id);
+      if (session && (await isEmptySession(session, service.runtime.sessionId))) removable.add(id);
+    }
+    // Draft saves can arrive while the file checks above await I/O; inspect current fields once more.
+    const before = store.state.sessions.length;
+    store.state.sessions = store.state.sessions.filter(
+      (session) =>
+        !removable.has(session.id) ||
+        session.id === service.runtime.sessionId ||
+        session.pinned ||
+        session.draft ||
+        session.attachments.length ||
+        session.images?.length ||
+        session.draftSnippets?.length,
+    );
+    const removed = before - store.state.sessions.length;
+    if (!store.state.sessions.some((session) => session.id === store.state.selectedSessionId)) {
+      const next = store.state.sessions[0] ?? store.createSession();
+      store.selectSession(next.id);
+    }
+    await save();
+    return removed;
+  },
   searchSessions: async (query) => {
     text(query, 200);
     return searchSessionContents(store.state.sessions, query);
@@ -464,24 +565,61 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (mode !== 'auto' && mode !== 'confirm' && mode !== 'readonly') throw new Error('审批模式无效');
     await service.setApprovalMode(id, mode);
   },
+  revokeApproval: async (id, grantId) => {
+    text(id, 100);
+    if (grantId !== undefined) text(grantId);
+    await service.revokeApproval(id, grantId);
+  },
+  checkpoints: async (id) => {
+    text(id, 100);
+    const session = store.session(id);
+    return session.projectId ? workspace.listCheckpoints(store.project(session.projectId), id) : [];
+  },
+  checkpointPreview: async (id, checkpointId) => {
+    text(id, 100);
+    text(checkpointId, 100);
+    const session = store.session(id);
+    if (!session.projectId) throw new Error('独立对话没有项目检查点');
+    return workspace.checkpointPreview(store.project(session.projectId), id, checkpointId);
+  },
+  revertCheckpoint: async (id, checkpointId, files, revision) => {
+    text(id, 100);
+    text(checkpointId, 100);
+    strings(files);
+    text(revision, 200);
+    if (!files.length || !revision) throw new Error('请重新查看检查点并选择要撤销的文件');
+    service.assertCommandsStopped();
+    if (service.hasPendingWork) throw new Error('请等待当前任务或会话操作完成后再撤销');
+    const session = store.session(id);
+    if (!session.projectId) throw new Error('独立对话没有项目检查点');
+    const result = await workspace.revert(
+      store.project(session.projectId),
+      files,
+      (file) => shell.trashItem(file),
+      { sessionId: id, checkpointId, revision },
+    );
+    send({ type: 'workspaceChanged', projectId: session.projectId, changedPaths: result });
+    return result;
+  },
   setEntryLabel: async (id, entryId, label) => {
     text(id, 100);
     text(entryId, 100);
     text(label, 200);
     await service.admin(id, 'set_label', { entryId, label });
   },
-  revertChanges: async (projectId, only) => {
+  revertChanges: async (projectId, only, rawContext) => {
     service.assertCommandsStopped();
     text(projectId, 100);
     if (only !== null) strings(only);
     const project = store.project(projectId);
+    const context = checkpointContext(projectId, rawContext);
     if (
       busy(service.runtime.status) &&
       service.runtime.sessionId &&
       store.session(service.runtime.sessionId).projectId === projectId
     )
       throw new Error('请等待当前任务结束后再撤销');
-    const pending = (await workspace.changes(project, 'run')).files.filter(
+    const pending = (await workspace.changes(project, 'run', context)).files.filter(
       (f) => !only || only.includes(f.path),
     );
     if (!pending.length) return [];
@@ -501,29 +639,41 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (result.response !== 1) return [];
     service.assertCommandsStopped();
     if (busy(service.runtime.status)) throw new Error('任务正在执行，请停止后再撤销');
-    return workspace.revert(project, only, (file) => shell.trashItem(file));
+    return workspace.revert(project, only, (file) => shell.trashItem(file), context);
   },
-  saveDraft: async (id, draft, attachments, images) => {
+  saveDraft: async (id, draft, attachments, images, snippets) => {
     text(id, 100);
     text(draft);
     strings(attachments);
+    if (snippets !== undefined) {
+      if (!Array.isArray(snippets) || snippets.length > 1000) throw new Error('粘贴片段格式无效');
+      const ids = new Set<string>();
+      for (const snippet of snippets) {
+        text(snippet?.id, 100);
+        text(snippet?.text);
+        if (!snippet.id || ids.has(snippet.id)) throw new Error('粘贴片段标识重复，请展开后重新编辑');
+        ids.add(snippet.id);
+        if (!Number.isSafeInteger(snippet.offset) || snippet.offset < 0 || snippet.offset > draft.length)
+          throw new Error('粘贴片段的位置无效，请展开后重新编辑');
+      }
+    }
+    if (images !== undefined) validateImages(images);
     const s = store.session(id);
     s.draft = draft;
     s.attachments = attachments;
-    if (images !== undefined) {
-      validateImages(images);
-      s.images = images;
-    }
+    if (snippets !== undefined) s.draftSnippets = snippets;
+    if (images !== undefined) s.images = images;
     await save();
   },
   consumeDraft: async (id, expected) => {
     text(id, 100);
     text(expected);
     const s = store.session(id);
-    if (s.draft === expected) {
+    if (composeDraftText(s.draft, s.draftSnippets ?? []) === expected) {
       s.draft = '';
       s.attachments = [];
       s.images = [];
+      s.draftSnippets = [];
       await save();
     }
   },
@@ -592,6 +742,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       ['fontScale', 1, 2],
       ['sidebarWidth', 180, 360],
       ['inspectorWidth', 300, 720],
+      ['inspectorSplit', 15, 70],
     ] as const)
       if (value[key] !== undefined) {
         if (!Number.isFinite(value[key])) throw new Error('尺寸无效');
@@ -706,7 +857,49 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   resources: async (id) => {
     text(id, 100);
-    return service.admin(id, 'resources');
+    const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+    const session = store.session(id);
+    const context: PromptTemplateContext = {
+      agentDir: agentDirectory(store.state.settings),
+      cwd: session.projectId ? store.project(session.projectId).path : undefined,
+      resources: catalog.resources,
+    };
+    return {
+      ...catalog,
+      resources: await Promise.all(
+        catalog.resources.map(async (resource) => ({
+          ...resource,
+          promptEditable: await promptEditable(context, resource),
+        })),
+      ),
+    };
+  },
+  promptRead: async (id, file) => {
+    text(id, 100);
+    text(file, 4096);
+    return readPromptTemplate(await promptContext(id), file);
+  },
+  promptSave: async (id, input, original) => {
+    text(id, 100);
+    validatePromptTemplate(input);
+    if (original !== undefined) {
+      text(original?.path, 4096);
+      text(original?.revision, 100);
+    }
+    const document = await savePromptTemplate(await promptContext(id), input, original);
+    await service.admin(id, 'reload');
+    return document;
+  },
+  promptDelete: async (id, file, revision) => {
+    text(id, 100);
+    text(file, 4096);
+    text(revision, 100);
+    await deletePromptTemplate(await promptContext(id), file, revision);
+    await service.admin(id, 'reload');
+  },
+  usageSummary: async () => {
+    await fillSessionUsage(store);
+    return aggregateUsage(store.state.sessions, store.state.projects);
   },
   toggleResource: async (id, resource, enabled) => {
     text(id, 100);
@@ -796,8 +989,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   editDraft: async (id) => {
     text(id, 100);
     const s = store.session(id);
+    const original = JSON.stringify([s.draft, s.draftSnippets ?? []]);
     const file = path.join(store.dir, 'draft-' + encodeURIComponent(id) + '.txt');
-    await fs.writeFile(file, s.draft, 'utf8');
+    await fs.writeFile(file, composeDraftText(s.draft, s.draftSnippets ?? []), 'utf8');
     await openTextEditor(file, store.state.settings.editorPath || undefined);
     const result = await dialog.showMessageBox(window!, {
       type: 'info',
@@ -808,7 +1002,13 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return;
-    s.draft = await fs.readFile(file, 'utf8');
+    const content = await fs.readFile(file, 'utf8');
+    text(content);
+    const current = store.session(id);
+    if (JSON.stringify([current.draft, current.draftSnippets ?? []]) !== original)
+      throw new Error('草稿在外部编辑期间已变化，未覆盖当前内容。外部编辑结果仍保存在：' + file);
+    current.draft = content;
+    current.draftSnippets = [];
     await save();
   },
   stop: () => service.stop(),
@@ -853,16 +1053,47 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(relative, 4096);
     return previewFile(store.project(id), relative);
   },
-  changes: async (id, mode = 'all') => {
+  attachmentInfo: async (id, specs) => {
+    text(id, 100);
+    strings(specs);
+    return attachmentInfo(store.project(id), specs);
+  },
+  projectRules: async (id) => {
+    text(id, 100);
+    return projectRules(store.project(id));
+  },
+  editProjectRules: async (id) => {
+    text(id, 100);
+    const project = store.project(id);
+    const rules = await projectRules(project);
+    if (!rules) throw new Error('项目规则文件已不存在，请刷新后重新生成');
+    await openTextEditor(
+      await safePath(project.path, rules.relativePath),
+      store.state.settings.editorPath || undefined,
+    );
+  },
+  createAgentRules: async (id) => {
+    text(id, 100);
+    if (service.hasPendingWork) throw new Error('请等待当前任务完成后再生成项目规则');
+    const project = store.project(id);
+    const file = await createAgentRules(project);
+    send({ type: 'workspaceChanged', projectId: id, changedPaths: [file.relativePath] });
+    await openTextEditor(
+      await safePath(project.path, file.relativePath),
+      store.state.settings.editorPath || undefined,
+    );
+    return file;
+  },
+  changes: async (id, mode = 'all', context) => {
     text(id, 100);
     if (!['all', 'run'].includes(mode)) throw new Error('差异模式无效');
-    return workspace.changes(store.project(id), mode);
+    return workspace.changes(store.project(id), mode, checkpointContext(id, context));
   },
-  diff: async (id, relative, mode) => {
+  diff: async (id, relative, mode, context) => {
     text(id, 100);
     text(relative, 4096);
     if (!['all', 'run'].includes(mode)) throw new Error('差异模式无效');
-    return workspace.diff(store.project(id), relative, mode);
+    return workspace.diff(store.project(id), relative, mode, checkpointContext(id, context));
   },
   openFile: async (id, relative) => {
     text(id, 100);
@@ -900,7 +1131,17 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   copy: async (value) => {
     text(value, 10 * 1024 * 1024);
-    clipboard.writeText(value);
+    await clipboard.writeText(value);
+  },
+  copyImage: async (value) => {
+    text(value, 24 * 1024 * 1024);
+    if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value))
+      throw new Error('无法复制此图片，请使用 PNG、JPEG、WebP 或 GIF 图片');
+    const image = nativeImage.createFromDataURL(value);
+    if (image.isEmpty()) throw new Error('图片内容无效，无法复制');
+    await clipboard.write([
+      new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) }),
+    ]);
   },
   exportOutput: () => saveText('保存工具输出', service.output(), 'pi-output.txt'),
   diagnostics: () => diagnostics(),
@@ -984,6 +1225,7 @@ async function createWindow() {
           }
         }
         quitting = true;
+        workspaceWatcher?.dispose();
         clearTimeout(windowTimer);
         windowTimer = undefined;
         await writeWindowState();
@@ -1027,6 +1269,7 @@ else {
       workspace = new Workspace(store.dir);
       if (store.storage.writable) await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
+      await watchSelectedProject();
       service.on('runtimePatch', (patch) => {
         send({ type: 'runtimePatch', patch });
         notifyAttention(service.runtime);
@@ -1057,6 +1300,7 @@ else {
           windowTimer = undefined;
           await writeWindowState();
           quitting = true;
+          workspaceWatcher?.dispose();
         },
         installFailed: () => {
           quitting = false;
@@ -1081,6 +1325,8 @@ else {
         )
           throw new Error('无效请求');
         let trackedOperation = false;
+        let trackedEngineOperation = false;
+        let configurationLocked = false;
         try {
           // Late layout cleanup must not create writes after the update's persistence barrier.
           if (updates.state.installing && method === 'saveView') return;
@@ -1100,10 +1346,17 @@ else {
             'files',
             'searchFiles',
             'preview',
+            'attachmentInfo',
+            'projectRules',
+            'editProjectRules',
+            'checkpoints',
+            'checkpointPreview',
+            'usageSummary',
             'diff',
             'changes',
             'configRead',
             'copy',
+            'copyImage',
             'diagnostics',
             'exportDiagnostics',
             'exportOutput',
@@ -1116,51 +1369,89 @@ else {
           ];
           if (!store.storage.writable && !readOnlyMethods.includes(method as keyof ApiMap))
             store.assertWritable();
-          const engineOperation = [
-            'connect',
-            'recover',
-            'send',
-            'selectSession',
-            'sessionTree',
-            'branchSession',
-            'compact',
-            'piOption',
-            'exportSession',
-            'shareSession',
-            'reloadPi',
-            'resources',
-            'toggleResource',
-            'packageAction',
-            'providers',
-            'login',
-            'logout',
-            'configSave',
-            'openPiTerminal',
-            'deleteSession',
-            'openPiSession',
-            'setSessionModel',
-            'setSessionThinking',
-            'messageAction',
-            'setEntryLabel',
-          ].includes(method);
+          const settingPatch =
+            method === 'saveSettings' && args[0] && typeof args[0] === 'object'
+              ? (args[0] as Record<string, unknown>)
+              : undefined;
+          const changesEngineSettings =
+            !!settingPatch &&
+            ['piPath', 'nodePath', 'agentDir', 'provider', 'modelId', 'thinking'].some(
+              (key) =>
+                key in settingPatch &&
+                settingPatch[key] !== store.state.settings[key as keyof typeof store.state.settings],
+            );
+          const engineOperation =
+            changesEngineSettings ||
+            [
+              'connect',
+              'recover',
+              'send',
+              'selectSession',
+              'sessionTree',
+              'branchSession',
+              'compact',
+              'piOption',
+              'exportSession',
+              'shareSession',
+              'reloadPi',
+              'resources',
+              'promptRead',
+              'promptSave',
+              'promptDelete',
+              'toggleResource',
+              'packageAction',
+              'providers',
+              'login',
+              'logout',
+              'configSave',
+              'openPiTerminal',
+              'deleteSession',
+              'openPiSession',
+              'setSessionModel',
+              'setSessionThinking',
+              'messageAction',
+              'setEntryLabel',
+              'cleanupEmptySessions',
+              'revertChanges',
+              'revertCheckpoint',
+              'createAgentRules',
+              'testConnection',
+            ].includes(method);
+          const configOperation =
+            changesEngineSettings ||
+            [
+              'configSave',
+              'packageAction',
+              'promptSave',
+              'promptDelete',
+              'toggleResource',
+              'reloadPi',
+            ].includes(method);
+          const exclusiveOperation =
+            configOperation || ['revertChanges', 'revertCheckpoint', 'createAgentRules'].includes(method);
+          if (engineOperation && updatingConfiguration) throw new Error('正在保存配置或修改工作区，请稍候');
+          if (exclusiveOperation) {
+            service.assertCommandsStopped();
+            if (activeEngineOperations > 0 || service.hasPendingWork)
+              throw new Error('请等待当前任务或会话操作完成后再保存配置或修改工作区');
+            updatingConfiguration = true;
+            configurationLocked = true;
+          }
           trackedOperation = engineOperation || !readOnlyMethods.includes(method as keyof ApiMap);
           if (trackedOperation) activeOperations++;
           if (engineOperation) {
+            activeEngineOperations++;
+            trackedEngineOperation = true;
             service.assertCommandsStopped();
-            if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');
             await assertTerminalClosed();
           }
-          const configOperation = ['configSave', 'packageAction'].includes(method);
-          if (configOperation) updatingConfiguration = true;
-          try {
-            return await handlers[method as keyof ApiMap](...args);
-          } finally {
-            if (configOperation) updatingConfiguration = false;
-          }
+          return await handlers[method as keyof ApiMap](...args);
         } catch (e) {
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
         } finally {
           if (trackedOperation) activeOperations--;
+          if (trackedEngineOperation) activeEngineOperations--;
+          if (configurationLocked) updatingConfiguration = false;
         }
       });
       Menu.setApplicationMenu(

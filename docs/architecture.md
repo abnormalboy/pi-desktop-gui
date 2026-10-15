@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-  UI[App 布局与 components] --> Hooks[useWorkbench / useDraft / useRuntime]
+  UI[App 布局与 components] --> Hooks[useWorkbench / useWorkspace / useDraft / useRuntime]
   Hooks --> IPC[preload + shared ApiMap]
   IPC --> Main[main 参数校验与入口限制]
   Main --> Agent[AgentService 会话与任务生命周期]
@@ -12,7 +12,11 @@ flowchart LR
   Main --> Updates[UpdateService 更新策略]
   Updates --> Driver[update-driver 原生更新适配]
   Driver --> Native[electron-updater]
-  Main --> Workspace[Workspace / Snapshot 文件快照]
+  Main --> Workspace[Workspace / Checkpoints / Snapshot 文件快照]
+  Main --> Watch[WorkspaceWatcher 文件变化事件]
+  Watch --> Hooks
+  Agent --> Recorder[CheckpointRecorder 轮次和工具边界]
+  Recorder --> Workspace
   Agent --> RPC[PiRpc JSONL 请求与响应]
   RPC --> Protocol[pi/protocol 协议校验]
   RPC --> Pi[本机 Pi CLI]
@@ -22,20 +26,21 @@ flowchart LR
 ## 界面
 
 - `src/App.tsx` 只组合侧栏、对话、输入框、工作区、设置及恢复提示。
-- `src/hooks/useRuntime.ts` 接收 IPC 状态并应用增量更新；`useDraft.ts` 负责草稿、引用、图片与命令选择；`useShortcuts.ts` 负责键盘入口。`useWorkbench.ts` 连接各面板的操作与选中状态。
+- `src/hooks/useRuntime.ts` 接收 IPC 状态并应用增量更新；`useDraft.ts` 负责草稿、引用、图片、长文本片段与命令选择；`useShortcuts.ts` 负责键盘入口。`useWorkbench.ts` 连接各面板的操作与选中状态，`useWorkspace.ts` 负责文件预览、变更刷新、检查点选择及恢复对话框。
 - `src/components/conversation/` 保留消息和 Markdown 的缓存边界，避免把流式更新变成整段历史的重复解析。
 - `src/features/` 按 Pi 管理页签组织；纯展示函数放在 `src/lib/`。样式拆为 `src/styles/`，入口保持原有加载顺序。
+- 搜索索引、工具分组、语法标记与参数填写是独立纯函数；`DiffView` 统一工具卡片和文件面板的差异展示。历史工具对象的 WeakMap 跨流式更新保留，避免每次更新重新生成全部卡片。
 - 新面板不要直接复制整个工作台状态；声明它实际需要的属性，组合子面板时使用 `children` 或明确的内容属性。
 
 ## Pi 升级
 
-1. `shared/pi-version.ts` 是版本策略的唯一来源。`VERIFIED` 为回归使用的版本，`COMPATIBLE` 为准许连接的主、次版本线；允许同线补丁版和预发布版，不推测其他版本线兼容。
+1. `shared/pi-version.ts` 是版本提示的唯一来源。`VERIFIED` 为回归使用的版本，不限制可运行的主、次版本线；其他可识别版本（含预发布版）显示“未验证”并允许使用，不宣称已经兼容。
 2. `electron/environment.ts` 发现入口、验证 Node 并读取 `--version`。平台路径、Shell 和终端、进程树操作集中在 `electron/platform.ts`。
 3. `electron/rpc.ts` 只处理进程、JSONL、请求关联、超时和桌面扩展调用。`electron/pi/protocol.ts` 校验桌面依赖的核心响应字段并转换统计数据。允许新增字段，不猜测字段别名；字段改变时返回明确的不兼容错误。
 4. `electron/pi-bridge.ts` 通过 Pi 的公开扩展 API 提供桌面所需操作。桥接命令与协议版本定义在 `shared/pi-bridge.ts`。调用前检查命令确实注册，连接时核对桥接版本，避免扩展加载失败后把内部命令发送给模型。
-5. 开发依赖锁定已验证版本，以便重复测试；每周工作流单独安装最新 `@1.1`，使用真实 Pi 和本地模型接口运行集成与功能测试。通过该测试只说明覆盖到的行为兼容，不代表任意扩展都兼容。
+5. 开发依赖锁定已验证版本，以便重复测试；每周工作流单独安装 `@latest`，使用真实 Pi 和本地模型接口运行集成与功能测试。开发依赖版本不限制用户运行的 Pi。通过该测试只说明覆盖到的行为兼容，不代表任意扩展都兼容。
 
-升级支持范围时，先改协议适配和契约测试，再用真实 Pi 验证。不要为了让新版本通过而在界面或 AgentService 中添加猜测字段。
+版本号不作为拒绝运行的依据；入口无效、版本无法识别或实际协议不兼容时仍报错。遇到协议变化时，先改协议适配和契约测试，再用真实 Pi 验证，不在界面或 AgentService 中添加猜测字段。
 
 ## 索引与崩溃恢复
 
@@ -49,10 +54,26 @@ flowchart LR
 ## 会话切换与模型错误
 
 - `AgentService.ensureConnected()` 决定复用或重启；`installRpcHandlers()` 只安装进程监听；`rebindSession()` 为两条路径统一恢复会话状态。同目录复用，跨目录重新启动，避免项目扩展读到旧的进程工作目录。
-- 桌面桥接协议第 2 版增加 `desktop_session_start` 事件，用于划分退出钩子和目标启动事件的归属。事件缺失时停止复用并重新启动；不能凭延时猜测会话已切换。
+- 桌面桥接协议第 2 版增加 `desktop_session_start` 事件，用于划分退出钩子和目标启动事件的归属；第 3 版加入结构化审批授权列表。事件缺失时停止复用并重新启动；不能凭延时猜测会话已切换。
 - 异步刷新同时检查进程和运行时对象，防止复用同一进程后旧结果覆盖目标会话。会话切换清空审批临时授权，断开操作与受理中的会话操作互斥。
 - `shared/errors.ts` 提供纯分类和脱敏函数；Agent 仅对模型请求错误分类并计数，`ModelErrorCard.tsx` 展示描述和动作。设置、存储、进程错误不进入模型分类器。操作仍通过既有 IPC 执行。
 - 诊断记录最近一次复用/重启及原因、后端耗时和最近五次模型错误的类别/时间。端到端切换耗时由真实界面测试单独记录。
+
+## 轮次检查点与工作区
+
+- `CheckpointRecorder` 把 Pi 公开扩展事件转换成桌面检查点操作。普通提问发送前准备检查点；真正到达用户消息的 `message_start` 时绑定时间戳。排队消息等前一轮工具结束后才捕获。Pi 会等待扩展返回，失败时停止这一轮，不依赖事后收到的渲染事件补拍快照。
+- `electron/checkpoints.ts` 管理每个会话的轮次序号、保留期限、增量清单和共享 Git 对象；`snapshot.ts` 负责原始文件内容保存。私有对象和索引存放在应用数据目录，项目 Git 历史与索引保持原样。
+- 写入和命令执行前后记录文件状态，区分 Pi 修改与手动修改。恢复预览包含当前文件状态的 revision；确认前再次验证，文件已变化则拒绝本次恢复。恢复选中文件与回到历史消息是两次明确操作。
+- `WorkspaceWatcher` 只监听选中项目，过滤构建目录并合并文件事件。界面收到事件后刷新变更；已打开的代码只提示过期，由用户刷新并保留滚动位置。空闲时不再每几秒启动 Git。
+- `shared/attachments.ts` 定义路径和行范围；后端统一验证路径、敏感文件、源文件及片段大小。文件选择器、Markdown 行链接和差异片段使用同一格式。
+
+## 授权、模板与本地用量
+
+- `shared/approval.ts` 只识别明确的安全命令前缀；有重定向、管道、变量或复合语法时只授权完整命令。`approval-paths.ts` 解析真实路径和敏感目标，使用 `pi/tool-path.ts` 对齐已验证 Pi 的路径规则。授权只存在当前 Pi 会话内，切换与撤销时清空或删除。
+- `electron/prompts.ts` 直接维护 Pi 原生 Markdown 模板和 YAML frontmatter，不建立另一套模板数据库。可编辑范围由实际资源目录、来源与真实路径共同确定；更新和删除验证 revision，包资源保持只读。
+- `shared/draft.ts` 记录长文本片段在草稿中的位置。发送、外部编辑和退出保存均保留片段；片段不是丢弃正文的视觉占位符。
+- `pi/session-usage.ts` 读取 Pi 的实际 usage 记录，包含历史分支、压缩及嵌套工具开销；缺失的 token 或价格不猜测。`shared/usage.ts` 按最后活动时间选择今日/七天会话后汇总整份会话费用，这不是供应商账单的逐日消费统计。
+- 清理空会话先展示原生确认框，确认后重新检查。活动连接、置顶、草稿、文本片段、附件、图片和非空历史文件都会保留；只移除可清理的桌面索引记录。
 
 ## 桌面应用更新
 

@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { FileText, Check, Terminal, ShieldCheck, Eye, Zap } from 'lucide-react';
-import { APPROVAL_ALLOW, APPROVAL_ALWAYS, APPROVAL_DENY } from '../../shared/approval';
+import { FileText, Check, Terminal, ShieldCheck, Eye, Zap, X, AlertTriangle } from 'lucide-react';
+import {
+  APPROVAL_ALLOW,
+  APPROVAL_ALWAYS,
+  APPROVAL_DENY,
+  grantLabel,
+  grantActionLabel,
+  type ApprovalGrant,
+} from '../../shared/approval';
 import { type ExtensionDialog, type ApprovalMode } from '../../shared/types';
+import '../styles/management.css';
 
 export const approvalModes: [ApprovalMode, string, string][] = [
   ['auto', '全自动', 'Pi 直接修改文件、执行命令'],
@@ -12,10 +20,14 @@ export function ApprovalSwitch({
   mode,
   disabled,
   change,
+  grants = [],
+  revoke,
 }: {
   mode: ApprovalMode;
   disabled: boolean;
   change: (mode: ApprovalMode) => void;
+  grants?: ApprovalGrant[];
+  revoke?: (id?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -73,6 +85,28 @@ export function ApprovalSwitch({
               </button>
             );
           })}
+          {mode === 'confirm' && grants.length > 0 && (
+            <div className="approval-grants">
+              <div className="approval-grants-heading">
+                <strong>本会话已放行（{grants.length}）</strong>
+                <button disabled={!revoke} onClick={() => revoke?.()}>
+                  全部清空
+                </button>
+              </div>
+              {grants.map((grant) => (
+                <div className="approval-grant" key={grant.id}>
+                  <span title={grantLabel(grant)}>{grantLabel(grant)}</span>
+                  <button
+                    disabled={!revoke}
+                    aria-label={`撤回 ${grantLabel(grant)}`}
+                    onClick={() => revoke?.(grant.id)}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -95,7 +129,12 @@ export function ApprovalCard({
   }, [first]);
   const lines = a.detail?.split('\n') ?? [];
   return (
-    <section className={'approval-card ' + a.kind} aria-label={`等待批准：${a.toolName}`}>
+    <section
+      className={
+        'approval-card ' + a.kind + (a.writeTarget && a.writeTarget !== 'project' ? ' approval-warning' : '')
+      }
+      aria-label={`等待批准：${a.toolName}`}
+    >
       <header>
         {a.kind === 'shell' ? <Terminal size={15} /> : <FileText size={15} />}
         <strong>
@@ -107,6 +146,14 @@ export function ApprovalCard({
         </strong>
         {a.path && <code>{a.path}</code>}
       </header>
+      {a.writeTarget && a.writeTarget !== 'project' && (
+        <p className="approval-path-warning">
+          <AlertTriangle size={15} />
+          {a.writeTarget === 'sensitive'
+            ? '敏感文件：本次需要单独确认'
+            : '项目外路径或无法确认的路径：本次需要单独确认'}
+        </p>
+      )}
       {a.kind === 'shell' ? (
         <pre className="approval-command">{a.summary}</pre>
       ) : a.detail ? (
@@ -131,12 +178,11 @@ export function ApprovalCard({
             <Check size={14} />
             允许
           </button>
-          <button
-            onClick={() => respond(APPROVAL_ALWAYS)}
-            title={a.kind === 'shell' ? '仅对完全相同的命令生效' : `本会话内不再询问 ${a.toolName}`}
-          >
-            {a.kind === 'shell' ? '本会话总是允许此命令' : `本会话总是允许 ${a.toolName}`}
-          </button>
+          {a.grant && (
+            <button onClick={() => respond(APPROVAL_ALWAYS)} title={grantLabel(a.grant)}>
+              {grantActionLabel(a.grant)}
+            </button>
+          )}
           <button className="deny" onClick={() => setReason('')}>
             拒绝…
           </button>

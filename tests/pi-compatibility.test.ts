@@ -12,18 +12,19 @@ import { AgentService } from '../electron/agent';
 import { Store } from '../electron/store';
 import { Workspace } from '../electron/workspace';
 
-test('version policy compares numeric major/minor and allows patches and prereleases in the same line', () => {
+test('version policy allows every recognized version without claiming it has been verified', () => {
   for (const [version, expected] of [
     ['1.1.0', 'verified'],
-    ['1.1.1', 'compatible'],
-    ['1.1.10', 'compatible'],
-    ['1.1.0-rc.1', 'compatible'],
-    ['1.1.2+build.1', 'compatible'],
-    ['1.0.99', 'tooOld'],
-    ['0.99.999', 'tooOld'],
-    ['1.2.0', 'tooNew'],
-    ['1.10.0', 'tooNew'],
-    ['2.0.0', 'tooNew'],
+    ['1.1.1', 'unverified'],
+    ['1.1.10', 'unverified'],
+    ['1.1.0-rc.1', 'unverified'],
+    ['1.1.2+build.1', 'unverified'],
+    ['1.0.99', 'unverified'],
+    ['0.99.999', 'unverified'],
+    ['1.2.0', 'unverified'],
+    ['1.10.0', 'unverified'],
+    ['2.0.0', 'unverified'],
+    ['2.0.0-rc.1', 'unverified'],
     ['', 'unknown'],
     ['banana', 'unknown'],
     ['1.1', 'unknown'],
@@ -37,8 +38,11 @@ test('versioned CLI entry is admitted or rejected by environment detection', asy
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-version-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [version, supported, compatibility] of [
-    ['1.1.1', true, 'compatible'],
-    ['1.2.0', false, 'tooNew'],
+    ['1.1.0', true, 'verified'],
+    ['1.1.1', true, 'unverified'],
+    ['1.2.0', true, 'unverified'],
+    ['2.0.0', true, 'unverified'],
+    ['0.99.999', true, 'unverified'],
     ['no version', false, 'unknown'],
   ] as const) {
     await fs.writeFile(path.join(dir, 'fixture-version.txt'), version);
@@ -108,7 +112,7 @@ test('a missing desktop extension never sends its internal slash command to the 
   );
 });
 
-test('model connection probes apply the same version policy as regular conversations', async (t) => {
+test('regular connections and model probes allow unverified Pi but reject an unrecognized entry', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-probe-version-'));
   const store = new Store(dir);
   await store.load();
@@ -127,8 +131,17 @@ test('model connection probes apply the same version policy as regular conversat
     await service.dispose();
     await fs.rm(dir, { recursive: true, force: true });
   });
-  await assert.rejects(service.testConnection(session.id), /尚未适配/);
-  await assert.rejects(fs.access(path.join(dir, 'commands.jsonl')));
+  await service.connect(session.id);
+  assert.equal(service.runtime.connected, true);
+  await service.disconnect();
+  const result = await service.testConnection(session.id);
+  assert.match(result.text, /完成/);
+  const commands = await fs.readFile(path.join(dir, 'commands.jsonl'), 'utf8');
+  assert.ok(commands.split('\n').some((line) => line && JSON.parse(line).message === 'Reply with only OK.'));
+  await fs.writeFile(path.join(dir, 'fixture-version.txt'), 'no version');
+  await assert.rejects(service.connect(session.id), /未检测到可识别的 Pi 版本/);
+  await assert.rejects(service.testConnection(session.id), /未检测到可识别的 Pi 版本/);
+  assert.equal(await fs.readFile(path.join(dir, 'commands.jsonl'), 'utf8'), commands);
 });
 
 test('a process exit during optional session statistics cannot become a successful connection', async (t) => {

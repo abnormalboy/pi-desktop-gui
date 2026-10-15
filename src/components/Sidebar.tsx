@@ -15,6 +15,9 @@ import {
   PinOff,
 } from 'lucide-react';
 import { type Session } from '../../shared/types';
+import { useEffect, useRef, useState } from 'react';
+import { isOlderSession } from '../../shared/usage';
+import '../styles/management.css';
 import { platform, shortcut } from '../lib/platform';
 import { IconButton } from './IconButton';
 const api = window.desktop;
@@ -67,6 +70,53 @@ export function Sidebar(
     createSession,
     openSettings,
   } = props;
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('pi-desktop-expanded-projects') ?? 'null');
+      if (Array.isArray(saved)) return new Set(saved.filter((id): id is string => typeof id === 'string'));
+    } catch {
+      /* An unavailable browser preference does not prevent navigation. */
+    }
+    return new Set(project ? [project.id] : []);
+  });
+  const [olderOpen, setOlderOpen] = useState<Set<string>>(new Set());
+  const previousProject = useRef(project?.id);
+  useEffect(() => {
+    try {
+      localStorage.setItem('pi-desktop-expanded-projects', JSON.stringify([...expandedProjects]));
+    } catch {
+      /* Browser preference only. */
+    }
+  }, [expandedProjects]);
+  useEffect(() => {
+    if (project?.id && project.id !== previousProject.current)
+      setExpandedProjects((current) => new Set([...current, project.id]));
+    previousProject.current = project?.id;
+    if (selected && isOlderSession(selected))
+      setOlderOpen((current) => new Set([...current, selected.projectId ?? 'standalone']));
+  }, [project?.id, selected?.id]);
+  const toggleProject = (id: string) =>
+    setExpandedProjects((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const projectStatus = (projectId: string) => {
+    const sessions = state.sessions.filter((session) => session.projectId === projectId);
+    const active = sessions.some((session) => session.id === runtime.sessionId);
+    if (active && runtime.dialogs.length)
+      return (
+        <em className="project-waiting" aria-label={`待确认 ${runtime.dialogs.length} 项`}>
+          待确认 {runtime.dialogs.length}
+        </em>
+      );
+    if (active && running)
+      return <LoaderCircle size={13} className="spin project-running" aria-label="正在运行" />;
+    if (sessions.some((session) => session.unread))
+      return <i className="unread" aria-label="有未读完成会话" />;
+    return null;
+  };
   const renderSession = (s: Session) => (
     <div
       className={
@@ -150,6 +200,37 @@ export function Sidebar(
   );
   const bySidebarOrder = (a: Session, b: Session) =>
     Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt;
+  const renderSessionList = (projectId?: string) => {
+    const sessions = state.sessions.filter((session) => session.projectId === projectId).sort(bySidebarOrder);
+    const now = Date.now();
+    const old = sessions.filter((session) => isOlderSession(session, now));
+    const key = projectId ?? 'standalone';
+    return (
+      <>
+        {sessions.filter((session) => !isOlderSession(session, now)).map(renderSession)}
+        {old.length > 0 && (
+          <div className="older-sessions">
+            <button
+              className="older-sessions-toggle"
+              aria-expanded={olderOpen.has(key)}
+              onClick={() =>
+                setOlderOpen((current) => {
+                  const next = new Set(current);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                })
+              }
+            >
+              <ChevronDown size={13} />
+              更早的会话 ({old.length})
+            </button>
+            {olderOpen.has(key) && old.map(renderSession)}
+          </div>
+        )}
+      </>
+    );
+  };
   return (
     <aside
       className="sidebar"
@@ -172,10 +253,7 @@ export function Sidebar(
       <div className="project-list">
         <div className="section-heading">对话</div>
         <div className="session-list standalone-sessions" aria-label="独立对话">
-          {state.sessions
-            .filter((s) => !s.projectId)
-            .sort(bySidebarOrder)
-            .map(renderSession)}
+          {renderSessionList()}
           {!state.sessions.some((s) => !s.projectId) && (
             <p className="sidebar-empty">随时开始，无需打开项目。</p>
           )}
@@ -190,15 +268,13 @@ export function Sidebar(
           <div className={'project-group ' + (p.id === project?.id ? 'selected' : '')} key={p.id}>
             <button
               className="project-row"
-              onClick={() => {
-                const s = state.sessions.find((s) => s.projectId === p.id);
-                if (s) void selectSession(s);
-                else void attempt(() => api.invoke('newSession', p.id));
-              }}
+              aria-expanded={expandedProjects.has(p.id)}
+              onClick={() => toggleProject(p.id)}
             >
               <FolderOpen size={16} />
               <span title={p.path}>{p.name}</span>
-              <ChevronDown size={13} />
+              {!expandedProjects.has(p.id) && projectStatus(p.id)}
+              <ChevronDown size={13} className="project-chevron" />
             </button>
             <div className="project-actions">
               <IconButton title={`在 ${p.name} 中新建会话`} onClick={() => void createSession(p.id)}>
@@ -244,12 +320,15 @@ export function Sidebar(
                 </button>
               </div>
             )}
-            {p.id === project?.id && (
-              <div className="session-list">
-                {state.sessions
-                  .filter((s) => s.projectId === p.id)
-                  .sort(bySidebarOrder)
-                  .map(renderSession)}
+            {expandedProjects.has(p.id) && (
+              <div className="session-list" aria-label={`${p.name} 的会话`}>
+                {renderSessionList(p.id)}
+                {!state.sessions.some((session) => session.projectId === p.id) && (
+                  <button className="sidebar-project-empty" onClick={() => void createSession(p.id)}>
+                    <Plus size={14} />
+                    新建项目会话
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -257,6 +336,19 @@ export function Sidebar(
         {!state.projects.length && <p className="sidebar-empty">需要处理本地文件时，打开项目。</p>}
       </div>
       <div className="sidebar-footer">
+        <button
+          onClick={() =>
+            void attempt(async () => {
+              const count = await api.invoke('cleanupEmptySessions');
+              setNotice(
+                count ? `已清理 ${count} 个空会话` : '未清理会话；有草稿、附件、图片或运行中的会话会保留。',
+              );
+            })
+          }
+        >
+          <Trash2 size={16} />
+          清理空会话
+        </button>
         <button onClick={addProject}>
           <FolderOpen size={16} />
           打开项目

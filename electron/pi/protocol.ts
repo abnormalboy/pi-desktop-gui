@@ -1,6 +1,6 @@
 import type { Message, Model, PiCommand, Runtime } from '../../shared/types';
-import { COMPATIBLE } from '../../shared/pi-version';
 import { DESKTOP_BRIDGE_PROTOCOL } from '../../shared/pi-bridge';
+import { isApprovalGrant } from '../../shared/approval';
 
 export interface PiState {
   model?: Model;
@@ -29,7 +29,7 @@ const model = (value: unknown) =>
 const numbers = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
 export function incompatible(command: string, detail: string): never {
   throw new Error(
-    `Pi 返回的 ${command} 数据格式与当前桌面端不兼容（${detail}）。请在诊断中记录 Pi 版本，更新 Pi Desktop 或使用 ${COMPATIBLE} 系列。`,
+    `Pi 返回的 ${command} 数据格式与当前桌面端不兼容（${detail}）。请在诊断中记录 Pi 版本及错误信息，更新 Pi Desktop 或 Pi 后重试。`,
   );
 }
 
@@ -90,6 +90,11 @@ export function validateBridgeResult(method: string, value: unknown) {
       !['auto', 'confirm', 'readonly'].includes(value.approvalMode))
   )
     incompatible('桌面适配', '适配扩展未正确加载或协议版本不一致');
+  if (
+    ['options', 'approval_mode', 'revoke_approval'].includes(method) &&
+    (!object(value) || !Array.isArray(value.approvalGrants) || !value.approvalGrants.every(isApprovalGrant))
+  )
+    incompatible('桌面审批', '已授权规则列表无效');
 }
 
 export function sessionStats(value: unknown): Runtime['stats'] {

@@ -1,5 +1,10 @@
 import { ChevronDown, FileText, Check, AlertCircle, LoaderCircle, Copy, Terminal } from 'lucide-react';
 import { type ToolActivity } from '../../../shared/types';
+import { DiffView } from '../DiffView';
+import { AnsiOutput } from '../AnsiOutput';
+import { stripAnsi } from '../../lib/ansi';
+import type { SessionMatch } from '../../lib/session-search';
+import { SearchHighlight } from './SearchHighlight';
 const api = window.desktop;
 
 export const patchLines = (patch: string) => {
@@ -12,11 +17,19 @@ export function ToolCard({
   expanded,
   onToggle,
   openFile,
+  match,
+  askHunk,
+  rerun,
+  canRerun,
 }: {
   tool: ToolActivity;
   expanded: boolean;
   onToggle: (v: boolean) => void;
   openFile: (p: string) => void;
+  match?: SessionMatch;
+  askHunk?: (attachment: string | undefined, prompt: string) => void;
+  rerun?: (command: string, includeContext: boolean) => void;
+  canRerun?: boolean;
 }) {
   const target = String(tool.args.path ?? tool.args.file_path ?? tool.args.command ?? '');
   const shell = tool.name === 'bash' || tool.name === 'powershell';
@@ -33,8 +46,10 @@ export function ToolCard({
   return (
     <details
       className={'tool-card ' + tool.status}
-      open={expanded || tool.status === 'error'}
-      onToggle={(e) => onToggle(e.currentTarget.open)}
+      open={expanded || Boolean(match) || tool.status === 'error' || tool.status === 'running'}
+      onToggle={(e) => {
+        if (!match) onToggle(e.currentTarget.open);
+      }}
     >
       <summary>
         <span className="tool-icon">
@@ -85,28 +100,38 @@ export function ToolCard({
                 : '失败'
               : `${((tool.durationMs ?? 0) / 1000).toFixed(1)}s`}
         </span>
+        {shell && canRerun && rerun && tool.status !== 'running' && (
+          <span className="tool-rerun" onClick={(event) => event.stopPropagation()}>
+            <button
+              title="本地重跑（不发给模型）"
+              onClick={(event) => {
+                event.preventDefault();
+                rerun(String(tool.args.command ?? ''), false);
+              }}
+            >
+              本地重跑
+            </button>
+            <button
+              title="重跑并发给 Pi"
+              onClick={(event) => {
+                event.preventDefault();
+                rerun(String(tool.args.command ?? ''), true);
+              }}
+            >
+              重跑并发给 Pi
+            </button>
+          </span>
+        )}
         <ChevronDown size={13} />
       </summary>
       <div className="tool-body">
         {tool.patch ? (
-          <pre className="diff-lines inline-diff">
-            {lines.map((l, i) => (
-              <div
-                key={i}
-                className={
-                  l.startsWith('+')
-                    ? 'added'
-                    : l.startsWith('-')
-                      ? 'removed'
-                      : l.startsWith('@@')
-                        ? 'hunk'
-                        : ''
-                }
-              >
-                {l || ' '}
-              </div>
-            ))}
-          </pre>
+          <DiffView
+            patch={tool.patch}
+            path={typeof tool.args.path === 'string' ? tool.args.path : undefined}
+            className="inline-diff"
+            onAskHunk={askHunk}
+          />
         ) : (
           <>
             {Object.keys(tool.args).length > 0 && (
@@ -114,7 +139,17 @@ export function ToolCard({
                 {shell ? String(tool.args.command ?? '') : JSON.stringify(tool.args, null, 2)}
               </pre>
             )}
-            <pre>{tool.output || '等待输出…'}</pre>
+            {match ? (
+              <pre>
+                <SearchHighlight
+                  text={stripAnsi(tool.output || '等待输出…')}
+                  query={match.query}
+                  activeStart={match.start - tool.name.length - JSON.stringify(tool.args).length - 2}
+                />
+              </pre>
+            ) : (
+              <AnsiOutput text={tool.output || '等待输出…'} />
+            )}
           </>
         )}
         <div className="tool-actions">
@@ -124,7 +159,7 @@ export function ToolCard({
               查看文件
             </button>
           )}
-          <button onClick={() => void api.invoke('copy', tool.output)}>
+          <button onClick={() => void api.invoke('copy', stripAnsi(tool.output))}>
             <Copy size={13} />
             复制输出
           </button>

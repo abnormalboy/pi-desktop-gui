@@ -146,15 +146,15 @@ try {
   assert.equal(f.store.session(second.id).approvalMode ?? 'auto', 'auto');
   console.log('PASS a stopped session cannot change the next session approval mode');
 
-  const capture = s.workspace.capture.bind(s.workspace);
-  s.workspace.capture = async () => {
+  const capture = s.workspace.captureCheckpoint.bind(s.workspace);
+  s.workspace.captureCheckpoint = async () => {
     throw new Error('snapshot unavailable');
   };
   try {
     await assert.rejects(s.send(second.id, 'Must not start', [], 'steer'), /snapshot unavailable/);
     assert.equal(s.runtime.status, 'error', 'snapshot failure must not leave the task stuck in starting');
   } finally {
-    s.workspace.capture = capture;
+    s.workspace.captureCheckpoint = capture;
   }
   console.log('PASS snapshot failure leaves a recoverable error before any task starts');
 } finally {

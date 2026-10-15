@@ -1,7 +1,14 @@
-import type { ApprovalMode, ApprovalRequest } from './approval';
+import type { ApprovalMode, ApprovalRequest, ApprovalGrant } from './approval';
+import type { AttachmentInfo } from './attachments';
+import type { CheckpointSummary, CheckpointPreview } from './checkpoints';
+import type { AgentRulesFile } from './workspace';
+import type { PromptTemplateInput, PromptTemplateDocument } from './prompts';
+import type { LocalUsageSummary } from './usage';
 import type { PiCompatibility } from './pi-version';
 import type { UpdateState } from './app-update';
 import type { ModelErrorKind } from './errors';
+import type { DraftSnippet } from './draft';
+export type { DraftSnippet } from './draft';
 export type { ApprovalMode, ApprovalRequest } from './approval';
 export type RunStatus =
   | 'idle'
@@ -31,6 +38,8 @@ export interface Session {
   draft: string;
   attachments: string[];
   images?: ImageAttachment[];
+  draftSnippets?: DraftSnippet[];
+  stats?: { tokens?: number; cost?: number };
   cwd?: string;
   updatedAt: number;
   lastStatus: RunStatus;
@@ -54,6 +63,7 @@ export interface Settings {
   fontScale: number;
   sidebarWidth: number;
   inspectorWidth: number;
+  inspectorSplit: number;
   onboardingDone: boolean;
   notifyOnFinish: boolean;
   autoDownloadUpdates: boolean;
@@ -165,6 +175,7 @@ export interface ResourceItem {
   path: string;
   enabled: boolean;
   kind: 'extensions' | 'skills' | 'prompts' | 'themes';
+  promptEditable?: boolean;
   metadata: { source: string; scope: string; origin: string; baseDir?: string };
 }
 export interface ResourceCatalog {
@@ -219,6 +230,7 @@ export interface Runtime {
   autoCompaction?: boolean;
   autoRetry?: boolean;
   approvalMode?: ApprovalMode;
+  approvalGrants?: ApprovalGrant[];
   steeringMode?: string;
   followUpMode?: string;
   crash?: {
@@ -312,6 +324,7 @@ export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
   toolCount: number;
 };
 export type AppEvent =
+  | { type: 'workspaceChanged'; projectId: string; changedPaths?: string[] }
   | { type: 'state'; state: AppState }
   | { type: 'storage'; storage: StorageStatus }
   | { type: 'update'; update: UpdateState }
@@ -363,9 +376,16 @@ export interface ApiMap {
   messageAction: { args: [string, MessageAction, 'user' | 'assistant', number]; result: void };
   abortRetry: { args: []; result: void };
   setApprovalMode: { args: [string, ApprovalMode]; result: void };
-  revertChanges: { args: [string, string[] | null]; result: string[] };
+  revokeApproval: { args: [string, string?]; result: void };
+  checkpoints: { args: [string]; result: CheckpointSummary[] };
+  checkpointPreview: { args: [string, string]; result: CheckpointPreview };
+  revertCheckpoint: { args: [string, string, string[], string]; result: string[] };
+  revertChanges: {
+    args: [string, string[] | null, { sessionId: string; checkpointId?: string }?];
+    result: string[];
+  };
   setEntryLabel: { args: [string, string, string]; result: void };
-  saveDraft: { args: [string, string, string[], ImageAttachment[]?]; result: void };
+  saveDraft: { args: [string, string, string[], ImageAttachment[]?, DraftSnippet[]?]; result: void };
   consumeDraft: { args: [string, string]; result: void };
   saveView: { args: [string, number, string[]]; result: void };
   readHistory: { args: [string]; result: Message[] };
@@ -391,6 +411,14 @@ export interface ApiMap {
   shareSession: { args: [string]; result: string | null };
   reloadPi: { args: [string]; result: void };
   resources: { args: [string]; result: ResourceCatalog };
+  promptRead: { args: [string, string]; result: PromptTemplateDocument };
+  promptSave: {
+    args: [string, PromptTemplateInput, PromptTemplateDocument?];
+    result: PromptTemplateDocument;
+  };
+  promptDelete: { args: [string, string, string]; result: void };
+  usageSummary: { args: []; result: LocalUsageSummary };
+  cleanupEmptySessions: { args: []; result: number };
   toggleResource: { args: [string, ResourceItem, boolean]; result: void };
   packageAction: { args: [string, 'install' | 'remove' | 'update', string, boolean]; result: void };
   providers: { args: [string]; result: ProviderInfo[] };
@@ -409,12 +437,23 @@ export interface ApiMap {
   files: { args: [string, string]; result: FileItem[] };
   searchFiles: { args: [string, string]; result: string[] };
   preview: { args: [string, string]; result: FilePreview };
-  changes: { args: [string, ('all' | 'run')?]; result: Changes };
-  diff: { args: [string, string, 'all' | 'run']; result: FileDiff };
+  attachmentInfo: { args: [string, string[]]; result: AttachmentInfo[] };
+  projectRules: { args: [string]; result: AgentRulesFile | undefined };
+  editProjectRules: { args: [string]; result: void };
+  createAgentRules: { args: [string]; result: AgentRulesFile };
+  changes: {
+    args: [string, ('all' | 'run')?, { sessionId: string; checkpointId?: string }?];
+    result: Changes;
+  };
+  diff: {
+    args: [string, string, 'all' | 'run', { sessionId: string; checkpointId?: string }?];
+    result: FileDiff;
+  };
   openFile: { args: [string, string]; result: void };
   referenceDropped: { args: [string, string[]]; result: { accepted: string[]; rejected: string[] } };
   openLink: { args: [string]; result: void };
   copy: { args: [string]; result: void };
+  copyImage: { args: [string]; result: void };
   exportOutput: { args: []; result: string | null };
   diagnostics: { args: []; result: string };
   exportDiagnostics: { args: []; result: string | null };

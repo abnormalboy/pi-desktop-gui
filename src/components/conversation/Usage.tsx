@@ -1,4 +1,5 @@
 import { type Runtime, type Message } from '../../../shared/types';
+import { useEffect, useRef, useState } from 'react';
 
 export function ReplyMeta({ message }: { message: Message }) {
   const usage = message.usage as
@@ -27,32 +28,100 @@ export function ReplyMeta({ message }: { message: Message }) {
     </span>
   );
 }
-export function ContextMeter({ stats, open }: { stats: NonNullable<Runtime['stats']>; open: () => void }) {
-  const percent = stats.contextPercent;
-  const level = percent === undefined ? '' : percent >= 85 ? 'high' : percent >= 60 ? 'mid' : '';
-  return (
-    <button
-      className={'context-meter ' + level}
-      onClick={open}
-      title={
-        (percent !== undefined && stats.contextTokens && stats.contextWindow
-          ? `上下文 ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} tokens\n`
-          : '') +
-        `累计 ${stats.tokens?.toLocaleString() ?? 0} tokens` +
-        (stats.cost ? ` · $${stats.cost.toFixed(4)}` : '') +
-        '\n点击查看会话与上下文'
+export function ContextMeter({
+  stats,
+  open,
+  compact,
+  branch,
+  disabled,
+}: {
+  stats: NonNullable<Runtime['stats']>;
+  open: () => void;
+  compact?: () => void;
+  branch?: () => void;
+  disabled?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const panel = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!expanded) return;
+    const outside = (event: MouseEvent) => {
+      if (!panel.current?.contains(event.target as Node)) setExpanded(false);
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded(false);
       }
-    >
-      {percent !== undefined && (
-        <>
-          <span className="meter" aria-hidden="true">
-            <i style={{ width: Math.min(100, percent) + '%' }} />
-          </span>
-          <span>上下文 {Math.round(percent)}%</span>
-        </>
+    };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', key, true);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('keydown', key, true);
+    };
+  }, [expanded]);
+  const percent = stats.contextPercent;
+  const level = percent === undefined ? '' : percent >= 90 ? 'high' : percent >= 75 ? 'mid' : '';
+  return (
+    <span className="context-actions" ref={panel}>
+      <button
+        className={'context-meter ' + level}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        title={
+          (percent !== undefined && stats.contextTokens && stats.contextWindow
+            ? `上下文 ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} tokens\n`
+            : '') +
+          `累计 ${stats.tokens?.toLocaleString() ?? 0} tokens` +
+          (stats.cost ? ` · $${stats.cost.toFixed(4)}` : '') +
+          '\n点击查看会话与上下文'
+        }
+      >
+        {percent !== undefined && (
+          <>
+            <span className="meter" aria-hidden="true">
+              <i style={{ width: Math.min(100, percent) + '%' }} />
+            </span>
+            <span>上下文 {Math.round(percent)}%</span>
+          </>
+        )}
+        <span>{(stats.tokens ?? 0).toLocaleString()} tokens</span>
+        {!!stats.cost && <span>${stats.cost < 0.01 ? stats.cost.toFixed(4) : stats.cost.toFixed(2)}</span>}
+      </button>
+      {expanded && (
+        <span className="context-popover">
+          <strong>上下文 {percent === undefined ? '未知' : `${Math.round(percent)}%`}</strong>
+          <span>累计 {(stats.tokens ?? 0).toLocaleString()} tokens</span>
+          <button
+            disabled={disabled || !compact}
+            onClick={() => {
+              setExpanded(false);
+              compact?.();
+            }}
+          >
+            立即压缩上下文
+          </button>
+          <button
+            disabled={disabled || !branch}
+            onClick={() => {
+              setExpanded(false);
+              branch?.();
+            }}
+          >
+            从当前节点分支新会话
+          </button>
+          <button
+            onClick={() => {
+              setExpanded(false);
+              open();
+            }}
+          >
+            查看会话与本地用量
+          </button>
+        </span>
       )}
-      <span>{(stats.tokens ?? 0).toLocaleString()} tokens</span>
-      {!!stats.cost && <span>${stats.cost < 0.01 ? stats.cost.toFixed(4) : stats.cost.toFixed(2)}</span>}
-    </button>
+    </span>
   );
 }

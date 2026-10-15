@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { isWindows } from './platform';
 
 /**
  * Run snapshots stored as Git blobs in a private bare repository under the app data directory.
@@ -43,6 +44,59 @@ export async function createSnapshotRepo(repo: string, projectRoot: string) {
     .toString('utf8')
     .trim();
   await fs.writeFile(path.join(repo, 'objects', 'info', 'alternates'), objects + '\n');
+  // Snapshot index comparisons must use raw bytes, regardless of project/global attributes.
+  await fs.writeFile(
+    path.join(repo, 'info', 'attributes'),
+    '* -text -filter -ident -working-tree-encoding\n',
+  );
+}
+const indexArgs = (repo: string, projectRoot: string) => [
+  '--git-dir',
+  repo,
+  '--work-tree',
+  projectRoot,
+  '-c',
+  'core.autocrlf=false',
+  '-c',
+  'core.symlinks=true',
+  '-c',
+  `core.filemode=${isWindows ? 'false' : 'true'}`,
+];
+
+export async function changedSnapshotFiles(repo: string, projectRoot: string) {
+  return (
+    await git(
+      [...indexArgs(repo, projectRoot), 'diff-files', '--name-only', '-z', '--no-renames'],
+      projectRoot,
+    )
+  )
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean);
+}
+
+/** The index is private to snapshots; the project's index, refs and objects remain untouched. */
+export async function updateSnapshotIndex(
+  repo: string,
+  projectRoot: string,
+  files: { name: string; id: string; mode: number }[],
+  removed: { name: string; id: string }[],
+  reset = false,
+) {
+  if (reset) await git([...indexArgs(repo, projectRoot), 'read-tree', '--empty'], projectRoot);
+  const entries = [
+    ...removed.map((file) => `0 ${file.id}\t${file.name}\0`),
+    ...files.map(
+      (file) => `${!isWindows && file.mode & 0o111 ? '100755' : '100644'} ${file.id}\t${file.name}\0`,
+    ),
+  ];
+  if (entries.length)
+    await git(
+      [...indexArgs(repo, projectRoot), 'update-index', '-z', '--index-info'],
+      projectRoot,
+      entries.join(''),
+    );
+  await git([...indexArgs(repo, projectRoot), 'update-index', '--refresh'], projectRoot);
 }
 // --stdin-paths accepts Git's C-quoted path format, not raw leading quotes or backslashes.
 const quotePath = (name: string) =>

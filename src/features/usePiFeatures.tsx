@@ -10,6 +10,7 @@ import {
   type ProviderInfo,
 } from '../../shared/types';
 import { busy } from '../../shared/types';
+import type { LocalUsageSummary } from '../../shared/usage';
 const api = window.desktop;
 export function usePiFeatures({
   session,
@@ -36,6 +37,7 @@ export function usePiFeatures({
     [source, setSource] = useState(''),
     [local, setLocal] = useState(false);
   const [resourceQuery, setResourceQuery] = useState('');
+  const [usage, setUsage] = useState<LocalUsageSummary>();
   const [imageModel, setImageModel] = useState(false),
     [reasoningModel, setReasoningModel] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]),
@@ -88,7 +90,10 @@ export function usePiFeatures({
     } else if (tab === 'mcp') await read('mcp');
     else if (tab === 'settings') await read();
     else if (tab === 'prefs') return;
-    else await api.invoke('connect', session.id);
+    else {
+      await api.invoke('connect', session.id);
+      if (tab === 'session') setUsage(await api.invoke('usageSummary'));
+    }
   };
   useEffect(() => {
     void run(refresh);
@@ -169,6 +174,7 @@ export function usePiFeatures({
   return {
     session,
     runtime,
+    usage,
     close,
     setNotice,
     instructions,

@@ -13,6 +13,7 @@ export const defaultSettings: Settings = {
   fontScale: 1,
   sidebarWidth: 240,
   inspectorWidth: 380,
+  inspectorSplit: 40,
   onboardingDone: false,
   notifyOnFinish: true,
   autoDownloadUpdates: true,
@@ -95,6 +96,21 @@ export function parseState(value: unknown) {
       !optionalPath(row.file) ||
       !optionalPath(row.cwd) ||
       (row.expandedTools !== undefined && !strings(row.expandedTools)) ||
+      (row.draftSnippets !== undefined &&
+        (!Array.isArray(row.draftSnippets) ||
+          row.draftSnippets.some(
+            (snippet) =>
+              !object(snippet) ||
+              typeof snippet.id !== 'string' ||
+              typeof snippet.text !== 'string' ||
+              !Number.isSafeInteger(snippet.offset) ||
+              Number(snippet.offset) < 0 ||
+              Number(snippet.offset) > String(row.draft ?? '').length,
+          ))) ||
+      (row.stats !== undefined &&
+        (!object(row.stats) ||
+          (row.stats.tokens !== undefined && !timestamp(row.stats.tokens)) ||
+          (row.stats.cost !== undefined && !timestamp(row.stats.cost)))) ||
       (row.scrollTop !== undefined && !timestamp(row.scrollTop)) ||
       (row.model !== undefined &&
         (!object(row.model) || typeof row.model.id !== 'string' || typeof row.model.provider !== 'string')) ||

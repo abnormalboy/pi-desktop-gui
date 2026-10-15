@@ -1,4 +1,4 @@
-import { LoaderCircle, ArrowDown, CircleHelp } from 'lucide-react';
+import { LoaderCircle, ArrowDown, ArrowUp, CircleHelp, Search, X } from 'lucide-react';
 import { ToolCard } from './conversation/ToolCard';
 import { ApprovalCard } from './Approval';
 import { ChatMessage } from './conversation/ChatMessage';
@@ -7,6 +7,12 @@ const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
 import type { AppState } from '../../shared/types';
 import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { limitForMessage, searchSession } from '../lib/session-search';
+import { conversationTurns, groupConversation } from '../lib/conversation-layout';
+import { ToolGroupCard } from './conversation/ToolGroupCard';
+import { SearchHighlight } from './conversation/SearchHighlight';
+import '../styles/conversation-v014.css';
 export function Conversation(
   props: Pick<
     Workbench,
@@ -82,9 +88,186 @@ export function Conversation(
     toggleTool,
     messageContext,
   } = props;
+  const [findOpen, setFindOpen] = useState(false),
+    [query, setQuery] = useState(''),
+    [matchIndex, setMatchIndex] = useState(0);
+  const [activeTurn, setActiveTurn] = useState(1),
+    [jumpIndex, setJumpIndex] = useState<number | null>(null);
+  const findInput = useRef<HTMLInputElement>(null);
+  const tools = ownRuntime ? runtime.tools : [];
+  const matches = useMemo(
+    () => searchSession(messages, tools, findOpen ? query : ''),
+    [messages, runtime.tools, ownRuntime, findOpen, query],
+  );
+  const activeMatch = matches.length ? matches[matchIndex % matches.length] : undefined;
+  const startIndex = messages.length - visibleMessages.length;
+  const items = useMemo(
+    () => groupConversation(messages, messageContext.toolFor, expanded),
+    [messages, messageContext.toolFor, expanded],
+  );
+  const turns = useMemo(
+    () => conversationTurns(messages, messageContext.toolFor),
+    [messages, messageContext.toolFor],
+  );
+  const jump = (index: number) => {
+    autoScroll.current = false;
+    setMessageLimit((limit) => limitForMessage(messages.length, index, limit));
+    setJumpIndex(index);
+  };
+  const nextMatch = (direction: number) => {
+    if (matches.length) setMatchIndex((index) => (index + direction + matches.length) % matches.length);
+  };
+  useEffect(() => {
+    const open = () => {
+      setFindOpen(true);
+      requestAnimationFrame(() => {
+        findInput.current?.focus();
+        findInput.current?.select();
+      });
+    };
+    window.addEventListener('pi:find', open);
+    return () => window.removeEventListener('pi:find', open);
+  }, []);
+  useEffect(() => {
+    setFindOpen(false);
+    setQuery('');
+    setMatchIndex(0);
+    setJumpIndex(null);
+  }, [selected?.id]);
+  useEffect(() => {
+    if (!activeMatch) return;
+    if (activeMatch.messageIndex !== undefined) jump(activeMatch.messageIndex);
+    else autoScroll.current = false;
+    const timer = requestAnimationFrame(() =>
+      thread.current?.querySelector('.search-active')?.scrollIntoView({ block: 'center' }),
+    );
+    return () => cancelAnimationFrame(timer);
+  }, [activeMatch]);
+  useEffect(() => {
+    if (jumpIndex === null) return;
+    const timer = requestAnimationFrame(() =>
+      thread.current?.querySelector(`[data-message-index="${jumpIndex}"]`)?.scrollIntoView({
+        block: activeMatch ? 'center' : 'start',
+        behavior: activeMatch ? 'instant' : 'smooth',
+      }),
+    );
+    return () => cancelAnimationFrame(timer);
+  }, [jumpIndex, messageLimit, activeMatch]);
+  useEffect(() => {
+    if (!CSS.highlights) return;
+    CSS.highlights.delete('session-find');
+    if (!activeMatch) return;
+    const timer = requestAnimationFrame(() => {
+      const target = thread.current?.querySelector('.search-active');
+      if (!target) return;
+      const selectedMark = target.querySelector('.search-current');
+      if (selectedMark) {
+        selectedMark.scrollIntoView({ block: 'center' });
+        return;
+      }
+      const walker = document.createTreeWalker(
+        target.querySelector('.message-content') ?? target,
+        NodeFilter.SHOW_TEXT,
+      );
+      const ranges: Range[] = [],
+        needle = activeMatch.query.toLocaleLowerCase();
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.parentElement?.closest('.search-snippet,button,mark')) continue;
+        const text = (node.textContent ?? '').toLocaleLowerCase();
+        for (
+          let offset = text.indexOf(needle);
+          offset >= 0;
+          offset = text.indexOf(needle, offset + needle.length)
+        ) {
+          const range = document.createRange();
+          range.setStart(node, offset);
+          range.setEnd(node, offset + needle.length);
+          ranges.push(range);
+        }
+      }
+      const range = ranges[activeMatch.section === 'text' ? activeMatch.occurrence : 0];
+      if (range && thread.current) {
+        CSS.highlights.set('session-find', new Highlight(range));
+        const pre = range.startContainer.parentElement?.closest('pre');
+        if (pre)
+          pre.scrollTop +=
+            range.getBoundingClientRect().top - pre.getBoundingClientRect().top - pre.clientHeight / 2;
+        const bounds = range.getBoundingClientRect(),
+          container = thread.current;
+        container.scrollTop +=
+          bounds.top + bounds.height / 2 - container.getBoundingClientRect().top - container.clientHeight / 2;
+      }
+    });
+    return () => {
+      cancelAnimationFrame(timer);
+      CSS.highlights.delete('session-find');
+    };
+  }, [activeMatch, messageLimit]);
+  const renderMessage = (index: number) => (
+    <div
+      key={`${selected?.id}-${index}`}
+      data-message-index={index}
+      data-turn={
+        messages[index].role === 'user' ? turns.find((turn) => turn.index === index)?.turn : undefined
+      }
+      className={activeMatch?.messageIndex === index ? 'search-active' : undefined}
+    >
+      {activeMatch?.messageIndex === index && (
+        <div className="search-snippet">
+          <SearchHighlight text={activeMatch.snippet} query={activeMatch.query} />
+        </div>
+      )}
+      <ChatMessage
+        m={messages[index]}
+        last={messages[index] === lastAssistant}
+        ctx={messageContext}
+        match={activeMatch?.messageIndex === index ? activeMatch : undefined}
+      />
+    </div>
+  );
 
   return (
     <section className="conversation" inert={inspector && compact}>
+      {findOpen && (
+        <div className="session-find" role="search" aria-label="会话内查找">
+          <Search size={14} />
+          <input
+            ref={findInput}
+            aria-label="查找当前会话"
+            value={query}
+            placeholder="查找当前会话…"
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setMatchIndex(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setFindOpen(false);
+                input.current?.focus();
+              } else if (event.key === 'Enter' || event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                nextMatch(event.shiftKey || event.key === 'ArrowUp' ? -1 : 1);
+              }
+            }}
+          />
+          <span aria-live="polite">
+            {matches.length ? (matchIndex % matches.length) + 1 : 0} / {matches.length}
+          </span>
+          <button title="上一个匹配" disabled={!matches.length} onClick={() => nextMatch(-1)}>
+            <ArrowUp size={14} />
+          </button>
+          <button title="下一个匹配" disabled={!matches.length} onClick={() => nextMatch(1)}>
+            <ArrowDown size={14} />
+          </button>
+          <button title="关闭会话查找" onClick={() => setFindOpen(false)}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
       {running && !ownRuntime && (
         <div className="banner">
           <LoaderCircle size={15} className="spin" />
@@ -117,6 +300,11 @@ export function Conversation(
           if (!el) return;
           autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70;
           if (autoScroll.current) setNewContent(false);
+          const top = el.getBoundingClientRect().top;
+          const visible = [...el.querySelectorAll<HTMLElement>('[data-turn]')].findLast(
+            (node) => node.getBoundingClientRect().top <= top + 100,
+          );
+          if (visible) setActiveTurn(Number(visible.dataset.turn));
         }}
         onMouseLeave={() => {
           if (storage.writable && selected && thread.current)
@@ -188,25 +376,44 @@ export function Conversation(
             加载更早的 {Math.min(80, messages.length - messageLimit)} 条消息
           </button>
         )}
-        {visibleMessages.map((m, i) => (
-          <ChatMessage
-            key={`${selected?.id}-${i + messages.length - visibleMessages.length}`}
-            m={m}
-            last={m === lastAssistant}
-            ctx={messageContext}
-          />
-        ))}
+        {items.map((item) =>
+          item.kind === 'message'
+            ? item.index >= startIndex && renderMessage(item.index)
+            : item.indices.at(-1)! >= startIndex && (
+                <ToolGroupCard
+                  key={item.id}
+                  tools={item.indices.map((index) => messageContext.toolFor(messages[index]))}
+                  expanded={
+                    expanded.includes(item.id) || item.indices.includes(activeMatch?.messageIndex ?? -1)
+                  }
+                  onToggle={(open) => {
+                    if (
+                      !item.indices.includes(activeMatch?.messageIndex ?? -1) &&
+                      open !== expanded.includes(item.id)
+                    )
+                      toggleTool(item.id, open);
+                  }}
+                >
+                  {item.indices.map(renderMessage)}
+                </ToolGroupCard>
+              ),
+        )}
         {ownRuntime &&
           runtime.tools
             .filter((t) => !messages.some((m) => m.role === 'toolResult' && m.toolCallId === t.id))
             .map((tool) => (
-              <ToolCard
-                key={tool.id}
-                tool={tool}
-                expanded={expanded.includes(tool.id)}
-                onToggle={(v) => toggleTool(tool.id, v)}
-                openFile={(p) => void inspectFile(p, 'files')}
-              />
+              <div key={tool.id} className={activeMatch?.toolId === tool.id ? 'search-active' : undefined}>
+                <ToolCard
+                  tool={tool}
+                  expanded={expanded.includes(tool.id)}
+                  onToggle={(v) => toggleTool(tool.id, v)}
+                  openFile={(p) => void inspectFile(p, 'files')}
+                  match={activeMatch?.toolId === tool.id ? activeMatch : undefined}
+                  askHunk={messageContext.askHunk}
+                  rerun={messageContext.rerun}
+                  canRerun={messageContext.canRerun}
+                />
+              </div>
             ))}
         {ownRuntime &&
           approvals.map((d, i) => (
@@ -227,6 +434,33 @@ export function Conversation(
           </details>
         )}
       </div>
+      {turns.length >= 3 && (
+        <nav className="turn-outline" aria-label="对话轮次">
+          {turns.map((turn) => (
+            <button
+              key={turn.turn}
+              title={`第 ${turn.turn} 轮：${turn.title}`}
+              className={[
+                turn.failed ? 'failed' : turn.modified ? 'modified' : '',
+                activeTurn === turn.turn ? 'current' : '',
+              ].join(' ')}
+              aria-current={activeTurn === turn.turn ? 'step' : undefined}
+              onClick={() => {
+                setActiveTurn(turn.turn);
+                jump(turn.index);
+              }}
+            >
+              <i />
+              <span>
+                #{turn.turn} {turn.title}
+                <small>
+                  +{turn.added} / −{turn.removed}
+                </small>
+              </span>
+            </button>
+          ))}
+        </nav>
+      )}
       {newContent && (
         <button
           className="new-content"

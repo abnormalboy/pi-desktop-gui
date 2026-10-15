@@ -2,10 +2,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import { createTwoFilesPatch } from 'diff';
 import ignore from 'ignore';
 import type { Changes, Change, FileDiff, FileItem, FilePreview, Project } from '../shared/types';
 import { createSnapshotRepo, hashBlobs, readBlob, storeBlobs } from './snapshot';
+import { formatAttachmentSpec, parseAttachmentSpec, type AttachmentInfo } from '../shared/attachments';
+import { Checkpoints, checkpointRevision, type SnapshotData, type CheckpointRecord } from './checkpoints';
+import type { CheckpointContext, CheckpointPreview } from '../shared/checkpoints';
+import { isWindows } from './platform';
+export { parseAttachmentSpec } from '../shared/attachments';
 const exec = promisify(execFile);
 const MiB = 1024 * 1024;
 const excluded = new Set([
@@ -43,7 +49,7 @@ export async function safePath(root: string, relative: string, allowRoot = false
   if (!contained(canonical, real)) throw new Error('符号链接指向项目外，无法访问');
   return real;
 }
-async function git(root: string, args: string[], maxBuffer = 4 * MiB) {
+export async function git(root: string, args: string[], maxBuffer = 4 * MiB) {
   return (
     await exec('git', ['-c', 'core.fsmonitor=false', '-c', 'core.quotepath=false', ...args], {
       cwd: root,
@@ -55,20 +61,67 @@ async function git(root: string, args: string[], maxBuffer = 4 * MiB) {
     })
   ).stdout;
 }
-async function info(root: string) {
-  const gitRoot = (await git(root, ['rev-parse', '--show-toplevel'])).trim();
-  const prefix = (await git(root, ['rev-parse', '--show-prefix'])).trim();
-  let head = '';
+export async function info(root: string) {
+  const [location, status] = await Promise.all([
+    git(root, [
+      'rev-parse',
+      '--show-toplevel',
+      '--show-prefix',
+      '--path-format=absolute',
+      '--git-path',
+      'logs/HEAD',
+    ]),
+    git(root, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all', '--', '.']),
+  ]);
+  const [gitRoot, prefix = '', reflogPath] = location.trimEnd().split(/\r?\n/);
+  let reflog = '';
   try {
-    head = (await git(root, ['rev-parse', '--verify', 'HEAD'])).trim();
-  } catch {}
-  let branch = '';
-  try {
-    branch = (await git(root, ['symbolic-ref', '--short', 'HEAD'])).trim();
-  } catch {
-    branch = head ? head.slice(0, 8) : '尚无提交';
+    reflog = await fs.readFile(reflogPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  return { gitRoot, prefix, head, branch, fingerprint: `${head}:${branch}` };
+  // Checkout history also catches a branch switch away and back between watcher deliveries.
+  const branchHistory = createHash('sha256')
+    .update(
+      reflog
+        .split('\n')
+        .filter((line) => {
+          const moved = /\tcheckout: moving from (.+) to (.+)$/.exec(line);
+          return moved && moved[1] !== moved[2];
+        })
+        .join('\n'),
+    )
+    .digest('hex');
+  const records = status.split('\0');
+  const oid = records.find((record) => record.startsWith('# branch.oid '))?.slice(13) ?? '';
+  const head = oid === '(initial)' ? '' : oid;
+  const symbolic = records.find((record) => record.startsWith('# branch.head '))?.slice(14) ?? '';
+  const branch = symbolic === '(detached)' ? head.slice(0, 8) : symbolic;
+  // Normalize the stable porcelain-v2 fields to the existing path/status parser below.
+  const changed: string[] = [];
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (record.startsWith('? ')) {
+      changed.push('?? ' + record.slice(2));
+      continue;
+    }
+    const match = /^(1|2|u) (\S+) /.exec(record);
+    if (!match) continue;
+    const fieldCount = match[1] === '1' ? 8 : match[1] === '2' ? 9 : 10;
+    let offset = 0;
+    for (let field = 0; field < fieldCount; field++) offset = record.indexOf(' ', offset) + 1;
+    changed.push(match[2].replaceAll('.', ' ') + ' ' + record.slice(offset));
+    if (match[1] === '2') changed.push(records[++index]);
+  }
+  return {
+    gitRoot,
+    prefix,
+    head,
+    branch,
+    branchHistory,
+    fingerprint: `${head}:${branch}`,
+    status: changed.join('\0'),
+  };
 }
 export async function previewFile(project: Project, relative: string, limit = MiB): Promise<FilePreview> {
   if (sensitive(relative)) throw new Error('凭据文件不在文件预览和引用范围内');
@@ -98,14 +151,50 @@ export async function attachmentPrompt(project: Project, text: string, names: st
   const parts: string[] = [];
   if (names.length > 20) throw new Error('单条消息最多引用 20 个文件');
   for (const name of [...new Set(names)]) {
-    const file = await previewFile(project, name, 256 * 1024);
-    if (file.binary || file.truncated) throw new Error(`${name} 不是可引用文本或超过 256 KiB`);
-    const part = `\n\n<project_file path=${JSON.stringify(name)}>\n${file.text}\n</project_file>`;
+    const file = await attachmentContent(project, name);
+    const lines = file.startLine === undefined ? '' : ` lines="${file.startLine}-${file.endLine}"`;
+    const part = `\n\n<project_file path=${JSON.stringify(file.path)}${lines}>\n${file.text}\n</project_file>`;
     bytes += Buffer.byteLength(part, 'utf8');
     if (bytes > MiB) throw new Error('消息与附件总计超过 1 MiB');
     parts.push(part);
   }
   return text + parts.join('');
+}
+async function attachmentContent(project: Project, name: string) {
+  const spec = parseAttachmentSpec(name);
+  const ranged = spec.startLine !== undefined;
+  const file = await previewFile(project, spec.path, ranged ? 5 * MiB : 256 * 1024);
+  if (file.binary) throw new Error(`${spec.path} 是二进制文件，不能作为文本引用`);
+  if (file.truncated)
+    throw new Error(
+      ranged
+        ? `${spec.path} 超过 5 MiB，请先提取需要的片段`
+        : `${spec.path} 超过 256 KiB，请指定行范围（例如 #L1-L100）`,
+    );
+  const lines = file.text.split(/\r?\n/);
+  // A trailing newline terminates the last line; it does not create an extra source line.
+  if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+  if (ranged && spec.startLine! > lines.length)
+    throw new Error(`${spec.path} 只有 ${lines.length} 行，起始行 ${spec.startLine} 超出文件范围`);
+  const endLine = ranged ? Math.min(spec.endLine!, lines.length) : undefined;
+  const content = ranged ? lines.slice(spec.startLine! - 1, endLine).join('\n') : file.text;
+  if (Buffer.byteLength(content, 'utf8') > 256 * 1024)
+    throw new Error(`${name} 的片段超过 256 KiB，请缩小行范围`);
+  return { ...spec, endLine, text: content, lines: ranged ? endLine! - spec.startLine! + 1 : lines.length };
+}
+
+export async function attachmentInfo(project: Project, specs: string[]): Promise<AttachmentInfo[]> {
+  if (specs.length > 20) throw new Error('单条消息最多引用 20 个文件');
+  return Promise.all(
+    [...new Set(specs)].map(async (name) => {
+      const file = await attachmentContent(project, name);
+      return {
+        spec: formatAttachmentSpec(file),
+        bytes: Buffer.byteLength(file.text, 'utf8'),
+        lines: file.lines,
+      };
+    }),
+  );
 }
 async function matcher(root: string) {
   const ig = ignore();
@@ -190,7 +279,7 @@ async function snapshotPath(root: string, relative: string, allowMissing = false
   return absolute;
 }
 const SNAPSHOT_FILE_LIMIT = 50 * MiB;
-async function snapshotStorageBytes(directory: string): Promise<number> {
+export async function snapshotStorageBytes(directory: string): Promise<number> {
   let entries;
   try {
     entries = await fs.readdir(directory, { withFileTypes: true });
@@ -211,7 +300,7 @@ async function snapshotStorageBytes(directory: string): Promise<number> {
  * Classify files for snapshotting with one lstat per path component. Symbolic links, non-regular
  * files and very large files are reported as omitted; names Git cannot take on stdin are too.
  */
-async function snapshotCandidates(root: string, names: string[]) {
+export async function snapshotCandidates(root: string, names: string[]) {
   const canonical = await fs.realpath(root);
   const linkCache = new Map<string, Promise<boolean>>();
   const isLink = (absolute: string) => {
@@ -225,7 +314,7 @@ async function snapshotCandidates(root: string, names: string[]) {
     }
     return v;
   };
-  const files: { name: string; mode: number }[] = [],
+  const files: { name: string; mode: number; stamp: string }[] = [],
     omitted: string[] = [],
     missing: string[] = [];
   const check = async (name: string) => {
@@ -241,7 +330,11 @@ async function snapshotCandidates(root: string, names: string[]) {
     try {
       const stat = await fs.lstat(absolute);
       if (!stat.isFile() || stat.size > SNAPSHOT_FILE_LIMIT) return omitted.push(name);
-      files.push({ name, mode: stat.mode & 0o777 });
+      files.push({
+        name,
+        mode: stat.mode & 0o777,
+        stamp: `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}:${stat.mode}`,
+      });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') missing.push(name);
       else omitted.push(name);
@@ -250,22 +343,69 @@ async function snapshotCandidates(root: string, names: string[]) {
   for (let i = 0; i < names.length; i += 128) await Promise.all(names.slice(i, i + 128).map(check));
   return { files, omitted, missing };
 }
-interface Baseline {
-  version: 3;
-  projectId: string;
-  fingerprint: string;
-  time: number;
-  /** Private bare repository (under baselines/) that holds the blobs. */
-  repo: string;
-  /** relative path -> blob id of the bytes on disk */
-  files: Record<string, string>;
-  modes: Record<string, number>;
-  dirty: string[];
-  omitted: string[];
-}
+type Baseline = SnapshotData;
 export class Workspace {
   private baselines = new Map<string, Baseline>();
-  constructor(private dataDir: string) {}
+  private checkpoints: Checkpoints;
+  constructor(private dataDir: string) {
+    this.checkpoints = new Checkpoints(dataDir);
+  }
+  nextCheckpointTurn(sessionId: string) {
+    return this.checkpoints.nextTurn(sessionId);
+  }
+  captureCheckpoint(project: Project, sessionId: string, turn: number, timestamp?: number) {
+    return this.checkpoints.capture(project, sessionId, turn, timestamp);
+  }
+  bindCheckpoint(project: Project, sessionId: string, checkpointId: string, timestamp: number) {
+    return this.checkpoints.bind(project, sessionId, checkpointId, timestamp);
+  }
+  listCheckpoints(project: Project, sessionId: string) {
+    return this.checkpoints.list(project, sessionId);
+  }
+  beginTool(
+    project: Project,
+    sessionId: string,
+    toolId: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) {
+    return this.checkpoints.beginTool(project, sessionId, toolId, name, args);
+  }
+  endTool(project: Project, sessionId: string, toolId: string) {
+    return this.checkpoints.endTool(project, sessionId, toolId);
+  }
+  async checkpointPreview(
+    project: Project,
+    sessionId: string,
+    checkpointId: string,
+  ): Promise<CheckpointPreview> {
+    const record = await this.checkpoints.get(sessionId, checkpointId);
+    if (!record || record.projectId !== project.id) throw new Error('该轮检查点已经清理，无法撤销');
+    const summary = (await this.listCheckpoints(project, sessionId)).find(
+      (item) => item.id === checkpointId,
+    )!;
+    if (!summary.available) return { ...summary, files: [], omitted: record.omitted, revision: '' };
+    const changes = await this.changes(project, 'run', { sessionId, checkpointId });
+    if (changes.error) throw new Error(`无法确认文件变化，未执行撤销：${changes.error}`);
+    const now = await this.checkpoints.scan(
+      project,
+      changes.files.map((file) => file.path),
+    );
+    const manual = await this.checkpoints.manualPaths(record, now);
+    return {
+      ...summary,
+      files: changes.files.map((file) => ({
+        ...file,
+        manual: manual.has(file.path),
+        selected: !manual.has(file.path),
+      })),
+      omitted: changes.omitted,
+      revision: checkpointRevision(
+        now,
+        changes.files.map((file) => file.path),
+      ),
+    };
+  }
   async capture(project: Project) {
     let meta;
     try {
@@ -333,8 +473,10 @@ export class Workspace {
     for (const name of entries)
       if (/^[\w-]+-\d+\.git$/.test(name) && !live.has(name))
         await fs.rm(path.join(dir, name), { recursive: true, force: true });
+    await this.checkpoints.cleanup();
   }
   private repoPath(b: Baseline) {
+    if ('sessionId' in b) return this.checkpoints.repoPath(b as CheckpointRecord);
     return path.join(this.dataDir, 'baselines', b.repo);
   }
   /** Blob id of each named file as it is on disk now; undefined when missing. Unsafe paths throw. */
@@ -348,8 +490,20 @@ export class Workspace {
     for (const m of missing) now.set(m, undefined);
     return { now, omitted, modes: new Map(files.map((f) => [f.name, f.mode])) };
   }
-  private async baseline(projectId: string) {
-    if (this.baselines.has(projectId)) return this.baselines.get(projectId);
+  private async baseline(projectId: string, context?: CheckpointContext): Promise<Baseline | undefined> {
+    if (context) {
+      const record = await this.checkpoints.get(context.sessionId, context.checkpointId);
+      if (record) return record.projectId === projectId ? record : undefined;
+      if (context.checkpointId) return undefined;
+    }
+    if (this.baselines.has(projectId)) {
+      try {
+        await fs.access(path.join(this.dataDir, 'baselines', `${projectId}.json`));
+        const cached = this.baselines.get(projectId)!;
+        if (Date.now() - cached.time <= 7 * 86400000) return cached;
+      } catch {}
+      this.baselines.delete(projectId);
+    }
     try {
       const b: Baseline = JSON.parse(
         await fs.readFile(path.join(this.dataDir, 'baselines', `${projectId}.json`), 'utf8'),
@@ -362,15 +516,29 @@ export class Workspace {
     } catch {}
     return undefined;
   }
-  async changes(project: Project, mode: 'all' | 'run' = 'all'): Promise<Changes> {
+  private validBaseline(baseline: Baseline | undefined, meta: { branch: string; fingerprint: string }) {
+    return (
+      !!baseline &&
+      ('sessionId' in baseline
+        ? !(baseline as CheckpointRecord).invalidReason &&
+          (baseline as CheckpointRecord).branch === meta.branch
+        : baseline.fingerprint === meta.fingerprint)
+    );
+  }
+  async changes(
+    project: Project,
+    mode: 'all' | 'run' = 'all',
+    context?: CheckpointContext,
+  ): Promise<Changes> {
     let meta;
     try {
       meta = await info(project.path);
     } catch {
       return { git: false, files: [], baselineAvailable: false, omitted: [] };
     }
-    const baseline = await this.baseline(project.id);
-    const valid = !!baseline && baseline.fingerprint === meta.fingerprint;
+    if (context) await this.checkpoints.list(project, context.sessionId, meta);
+    const baseline = await this.baseline(project.id, context);
+    const valid = this.validBaseline(baseline, meta);
     const result: Changes = {
       git: true,
       branch: meta.branch,
@@ -381,14 +549,7 @@ export class Workspace {
       omitted: [...(baseline?.omitted ?? [])],
     };
     try {
-      const raw = await git(project.path, [
-        'status',
-        '--porcelain=v1',
-        '-z',
-        '--untracked-files=all',
-        '--',
-        '.',
-      ]);
+      const raw = meta.status;
       const items = raw.split('\0');
       for (let i = 0; i < items.length; i++) {
         const record = items[i];
@@ -434,8 +595,7 @@ export class Workspace {
             before = baseline!.files[name];
           const existed = before !== undefined,
             present = after !== undefined;
-          const modeChanged =
-            process.platform !== 'win32' && existed && present && baseline!.modes[name] !== modes.get(name);
+          const modeChanged = !isWindows && existed && present && baseline!.modes[name] !== modes.get(name);
           if (before === after && !modeChanged) continue;
           files.push({
             path: name,
@@ -456,12 +616,14 @@ export class Workspace {
     project: Project,
     only: string[] | null,
     remove: (file: string) => Promise<void> = (file) => fs.rm(file),
+    context?: CheckpointContext,
   ): Promise<string[]> {
     const meta = await info(project.path);
-    const baseline = await this.baseline(project.id);
-    if (!baseline || baseline.fingerprint !== meta.fingerprint)
+    if (context) await this.checkpoints.list(project, context.sessionId, meta);
+    const baseline = await this.baseline(project.id, context);
+    if (!baseline || !this.validBaseline(baseline, meta))
       throw new Error('运行基线不可用或 Git 分支已经变化，无法撤销');
-    const changes = await this.changes(project, 'run');
+    const changes = await this.changes(project, 'run', context);
     if (changes.error) throw new Error(`无法确认本轮文件变化，未执行撤销：${changes.error}`);
     const changed = changes.files.map((f) => f.path);
     const targets = only ? changed.filter((p) => only.includes(p)) : changed;
@@ -472,6 +634,13 @@ export class Workspace {
     for (const name of targets)
       if (name in baseline.files)
         originals.set(name, await readBlob(this.repoPath(baseline), project.path, baseline.files[name]));
+    // Check again only after reading every original, immediately before any disk writes.
+    if (
+      context?.revision &&
+      context.revision !== checkpointRevision(await this.checkpoints.scan(project, changed), changed)
+    )
+      throw new Error('确认清单显示后文件又有变化，未执行撤销。请重新查看清单后再试');
+    for (const name of targets) await snapshotPath(project.path, name, name in baseline.files);
     const reverted: string[] = [];
     for (const name of targets) {
       if (baseline.omitted.includes(name) || sensitive(name)) continue;
@@ -481,8 +650,7 @@ export class Workspace {
         await fs.mkdir(path.dirname(absolute), { recursive: true });
         await snapshotPath(project.path, name, true);
         await fs.writeFile(absolute, original);
-        if (process.platform !== 'win32' && baseline.modes[name] !== undefined)
-          await fs.chmod(absolute, baseline.modes[name]);
+        if (!isWindows && baseline.modes[name] !== undefined) await fs.chmod(absolute, baseline.modes[name]);
       } else {
         await remove(absolute);
       }
@@ -490,7 +658,12 @@ export class Workspace {
     }
     return reverted;
   }
-  async diff(project: Project, relative: string, mode: 'all' | 'run'): Promise<FileDiff> {
+  async diff(
+    project: Project,
+    relative: string,
+    mode: 'all' | 'run',
+    context?: CheckpointContext,
+  ): Promise<FileDiff> {
     const result: FileDiff = { path: relative, patch: '', before: '', after: '' };
     if (
       path.isAbsolute(relative) ||
@@ -500,8 +673,9 @@ export class Workspace {
     )
       return { ...result, unavailable: '该文件不能在差异面板中预览' };
     const meta = await info(project.path);
-    const baseline = await this.baseline(project.id);
-    if (mode === 'run' && (!baseline || baseline.fingerprint !== meta.fingerprint))
+    if (context) await this.checkpoints.list(project, context.sessionId, meta);
+    const baseline = await this.baseline(project.id, context);
+    if (mode === 'run' && (!baseline || !this.validBaseline(baseline, meta)))
       return { ...result, unavailable: '运行基线不可用或 Git 分支已经变化' };
     if (mode === 'run' && baseline!.omitted.includes(relative))
       return { ...result, unavailable: '该文件未包含在运行基线中' };

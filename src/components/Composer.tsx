@@ -1,85 +1,88 @@
-import {
-  ArrowUp,
-  Square,
-  Search,
-  X,
-  FileText,
-  AlertCircle,
-  LoaderCircle,
-  RefreshCw,
-  Paperclip,
-  Link2,
-  ImagePlus,
-} from 'lucide-react';
-import { modKey, shortcut, mod } from '../lib/platform';
+import { ArrowUp, Square, Search, X, FileText, LoaderCircle, Paperclip, ImagePlus } from 'lucide-react';
+import { mod } from '../lib/platform';
 import { commandSourceNames } from '../lib/commands';
 import { IconButton } from './IconButton';
-import { Badge } from './Badge';
+import { ComposerFeedback, ComposerFooter } from './conversation/ComposerStatus';
+import { ComposerResize } from './conversation/ComposerResize';
 import { ModelPicker } from './ModelPicker';
-import { ContextMeter } from './conversation/Usage';
 import { ApprovalSwitch } from './Approval';
-import { useState } from 'react';
-import { ModelErrorCard } from './ModelErrorCard';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Lightbox } from './Lightbox';
+import { Modal } from './Modal';
+import { SearchHighlight } from './conversation/SearchHighlight';
+import { PromptArguments } from './conversation/PromptArguments';
+import { parseArgumentHint, parsePromptArguments } from '../lib/prompt-arguments';
+import { shouldCollapsePaste, textBytes, textLines } from '../lib/draft-snippets';
 import type { ModelErrorAction } from '../../shared/errors';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
 import type { AppState } from '../../shared/types';
 
-export function Composer(
-  props: Pick<
-    Workbench,
-    | 'state'
-    | 'storage'
-    | 'environment'
-    | 'runtime'
-    | 'error'
-    | 'setError'
-    | 'setNotice'
-    | 'pending'
-    | 'draft'
-    | 'attachments'
-    | 'sendMode'
-    | 'setSendMode'
-    | 'images'
-    | 'setFeatureTab'
-    | 'commandIndex'
-    | 'setCommandIndex'
-    | 'setHideCommands'
-    | 'fileQuery'
-    | 'setFileQuery'
-    | 'fileResults'
-    | 'elapsed'
-    | 'setShortcutsOpen'
-    | 'stopArmed'
-    | 'dragging'
-    | 'setDragging'
-    | 'recall'
-    | 'input'
-    | 'commandList'
-    | 'selected'
-    | 'project'
-    | 'sessionEnabled'
-    | 'ownRuntime'
-    | 'running'
-    | 'ownRunning'
-    | 'sentPrompts'
-    | 'commandOptions'
-    | 'activeCommand'
-    | 'completeCommand'
-    | 'attempt'
-    | 'persistDraft'
-    | 'onDraft'
-    | 'addAttachment'
-    | 'send'
-    | 'acceptImages'
-    | 'acceptDrop'
-    | 'openSettings'
-    | 'connect'
-    | 'setModel'
-    | 'setThinking'
-    | 'inspectFile'
-  > & { state: AppState },
-) {
+export type ComposerProps = Pick<
+  Workbench,
+  | 'state'
+  | 'storage'
+  | 'environment'
+  | 'runtime'
+  | 'error'
+  | 'setError'
+  | 'setNotice'
+  | 'pending'
+  | 'draft'
+  | 'attachments'
+  | 'sendMode'
+  | 'setSendMode'
+  | 'images'
+  | 'setFeatureTab'
+  | 'commandIndex'
+  | 'setCommandIndex'
+  | 'setHideCommands'
+  | 'fileQuery'
+  | 'setFileQuery'
+  | 'fileResults'
+  | 'fileIndex'
+  | 'setFileIndex'
+  | 'fileList'
+  | 'snippets'
+  | 'pasteText'
+  | 'expandSnippet'
+  | 'removeSnippet'
+  | 'attachmentInfo'
+  | 'attachmentBytes'
+  | 'inputMaxHeight'
+  | 'setInputMaxHeight'
+  | 'elapsed'
+  | 'setShortcutsOpen'
+  | 'stopArmed'
+  | 'dragging'
+  | 'setDragging'
+  | 'recall'
+  | 'input'
+  | 'commandList'
+  | 'selected'
+  | 'project'
+  | 'sessionEnabled'
+  | 'ownRuntime'
+  | 'running'
+  | 'ownRunning'
+  | 'sentPrompts'
+  | 'commandOptions'
+  | 'activeCommand'
+  | 'completeCommand'
+  | 'attempt'
+  | 'persistDraft'
+  | 'onDraft'
+  | 'addAttachment'
+  | 'send'
+  | 'acceptImages'
+  | 'acceptDrop'
+  | 'openSettings'
+  | 'connect'
+  | 'setModel'
+  | 'setThinking'
+  | 'inspectFile'
+> & { state: AppState };
+export function Composer(props: ComposerProps) {
   const {
     state,
     storage,
@@ -101,6 +104,17 @@ export function Composer(
     fileQuery,
     setFileQuery,
     fileResults,
+    fileIndex,
+    setFileIndex,
+    fileList,
+    snippets,
+    pasteText,
+    expandSnippet,
+    removeSnippet,
+    attachmentInfo,
+    attachmentBytes,
+    inputMaxHeight,
+    setInputMaxHeight,
     elapsed,
     setShortcutsOpen,
     stopArmed,
@@ -133,6 +147,74 @@ export function Composer(
     inspectFile,
   } = props;
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null),
+    [snippetId, setSnippetId] = useState('');
+  const [parameterError, setParameterError] = useState('');
+  const parameterPick = useRef<((path: string) => void) | null>(null);
+  useEffect(() => {
+    setParameterError('');
+    parameterPick.current = null;
+  }, [selected?.id, activeCommand?.name]);
+  const selectFile = (file: string) => {
+    if (parameterPick.current) {
+      parameterPick.current(file);
+      parameterPick.current = null;
+      setFileQuery(null);
+    } else void addAttachment(file);
+  };
+  const fileKey = (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    if (fileQuery === null || event.nativeEvent.isComposing) return false;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (fileResults.length)
+        setFileIndex(
+          (index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + fileResults.length) % fileResults.length,
+        );
+      return true;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setFileQuery(null);
+      parameterPick.current = null;
+      return true;
+    }
+    if ((event.key === 'Tab' || event.key === 'Enter') && !event.shiftKey) {
+      event.preventDefault();
+      if (fileResults[fileIndex]) selectFile(fileResults[fileIndex]);
+      return true;
+    }
+    return false;
+  };
+  const sendComposer = () => {
+    if (fileQuery !== null) {
+      if (fileResults[fileIndex]) selectFile(fileResults[fileIndex]);
+      return;
+    }
+    if (parameterError) {
+      setError(parameterError);
+      return;
+    }
+    if (activeCommand?.source === 'prompt' && activeCommand.argumentHint) {
+      const values = parsePromptArguments(
+        draft.slice(activeCommand.prefix.length + activeCommand.name.length).trim(),
+      );
+      const missing = parseArgumentHint(activeCommand.argumentHint).find(
+        (field, index) => field.required && !values[index],
+      );
+      if (missing) {
+        setError(`请填写模板参数：${missing.label}`);
+        return;
+      }
+    }
+    void send();
+  };
+  const snippet = snippets.find((item) => item.id === snippetId);
+  const largest = [
+    ...attachmentInfo.map((info) => ({ name: info.spec, bytes: info.bytes })),
+    ...snippets.map((item) => ({ name: '粘贴片段', bytes: textBytes(item.text) })),
+    { name: '草稿正文', bytes: textBytes(draft) },
+  ].sort((a, b) => b.bytes - a.bytes)[0];
   const handleModelError = async (action: ModelErrorAction) => {
     if (action === 'providers') setFeatureTab('providers');
     else if (action === 'proxy') setFeatureTab('prefs');
@@ -147,83 +229,7 @@ export function Composer(
 
   return (
     <div className="composer-wrap">
-      {error && !(ownRuntime && runtime.errorKind && error === runtime.error) && (
-        <div className="error-banner" role="alert">
-          <AlertCircle size={16} />
-          <span>{error}</span>
-          <IconButton title="关闭错误提示" onClick={() => setError('')}>
-            <X size={14} />
-          </IconButton>
-        </div>
-      )}
-      {ownRuntime && runtime.status === 'retrying' && runtime.retry && (
-        <div className="retry-banner" role="status">
-          <RefreshCw size={14} className="spin" />
-          <span>
-            第 {runtime.retry.attempt}/{runtime.retry.maxAttempts} 次重试
-            {runtime.retry.delayMs > 0 &&
-              Date.now() < runtime.retry.startedAt + runtime.retry.delayMs &&
-              `，${Math.ceil((runtime.retry.startedAt + runtime.retry.delayMs - Date.now()) / 1000)} 秒后开始`}
-            {runtime.retry.error && <small>{runtime.retry.error}</small>}
-          </span>
-          <button onClick={() => void attempt(() => api.invoke('abortRetry'))}>取消重试</button>
-        </div>
-      )}
-      {ownRuntime && runtime.error && runtime.errorKind ? (
-        <ModelErrorCard
-          error={runtime.error}
-          kind={runtime.errorKind}
-          count={runtime.errorCount}
-          disabled={running || pending || !storage.writable}
-          autoCompaction={runtime.autoCompaction}
-          act={(action) => attempt(() => handleModelError(action))}
-          enableCompaction={() => attempt(() => api.invoke('piOption', selected!.id, 'autoCompaction', true))}
-          copy={async (text) => {
-            await api.invoke('copy', text);
-            setNotice('错误详情已复制');
-          }}
-        />
-      ) : (
-        ownRuntime &&
-        runtime.error &&
-        runtime.error !== error && (
-          <div className="error-banner">
-            <AlertCircle size={16} />
-            <span>{runtime.error}</span>
-          </div>
-        )
-      )}
-      {ownRuntime && (runtime.steering.length > 0 || runtime.followUp.length > 0) && (
-        <div className="queue">
-          <div>
-            <span>待处理</span>
-            <button onClick={() => void attempt(() => api.invoke('clearQueue'))}>清空并恢复草稿</button>
-          </div>
-          {runtime.steering.map((q, i) => (
-            <p key={'s' + i}>
-              <span>补充</span>
-              {q.slice(0, 180)}
-            </p>
-          ))}
-          {runtime.followUp.map((q, i) => (
-            <p key={'f' + i}>
-              <span>接下来</span>
-              {q.slice(0, 180)}
-            </p>
-          ))}
-        </div>
-      )}
-      {ownRuntime &&
-        Object.entries(runtime.widgets)
-          .filter(([key]) => runtime.widgetPlacements?.[key] !== 'belowEditor')
-          .map(([key, lines]) => (
-            <div className="extension-widget" key={key}>
-              {lines.join('\n')}
-            </div>
-          ))}
-      {ownRuntime && Object.keys(runtime.statuses).length > 0 && (
-        <div className="extension-status">{Object.values(runtime.statuses).join(' · ')}</div>
-      )}
+      <ComposerFeedback {...props} handleModelError={handleModelError} />
       <div
         className={'composer ' + (!selected ? 'disabled' : '') + (dragging ? ' dragging' : '')}
         onDragOver={(e) => {
@@ -240,6 +246,7 @@ export function Composer(
           if (selected) void acceptDrop(Array.from(e.dataTransfer.files));
         }}
       >
+        <ComposerResize maximum={inputMaxHeight} change={setInputMaxHeight} />
         {dragging && (
           <div className="drop-hint" aria-hidden="true">
             {project ? '松开以添加图片或引用项目文件' : '松开以添加图片'}
@@ -247,9 +254,15 @@ export function Composer(
         )}
         {!!images.length && (
           <div className="image-attachments">
-            {images.map((img) => (
+            {images.map((img, imageIndex) => (
               <div key={img.id}>
-                <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+                <button
+                  className="draft-image-preview"
+                  aria-label={`查看图片 ${img.name}`}
+                  onClick={() => setLightboxIndex(imageIndex)}
+                >
+                  <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name} />
+                </button>
                 <button
                   aria-label={'移除图片 ' + img.name}
                   onClick={() =>
@@ -270,7 +283,13 @@ export function Composer(
         {attachments.length > 0 && (
           <div className="attachments">
             {attachments.map((a) => (
-              <span key={a}>
+              <span
+                key={a}
+                title={(() => {
+                  const info = attachmentInfo.find((item) => item.spec === a);
+                  return info ? `${(info.bytes / 1024).toFixed(1)} KiB · ${info.lines} 行` : '正在计算大小…';
+                })()}
+              >
                 <FileText size={13} />
                 <button title="预览引用文件" onClick={() => void inspectFile(a, 'files')}>
                   {a}
@@ -290,21 +309,68 @@ export function Composer(
             ))}
           </div>
         )}
+        {!!snippets.length && (
+          <div className="attachments pasted-snippets">
+            {snippets.map((item) => (
+              <span
+                key={item.id}
+                title={`${textLines(item.text)} 行 · ${(textBytes(item.text) / 1024).toFixed(1)} KiB`}
+              >
+                <button onClick={() => setSnippetId(item.id)}>
+                  粘贴片段 · {textLines(item.text)} 行（{(textBytes(item.text) / 1024).toFixed(1)} KiB）
+                </button>
+                <IconButton title="移除粘贴片段" onClick={() => removeSnippet(item.id)}>
+                  <X size={12} />
+                </IconButton>
+              </span>
+            ))}
+          </div>
+        )}
+        {activeCommand?.source === 'prompt' && activeCommand.argumentHint && (
+          <PromptArguments
+            key={selected?.id + activeCommand.name}
+            command={activeCommand.prefix + activeCommand.name}
+            hint={activeCommand.argumentHint}
+            draft={draft}
+            update={persistDraft}
+            error={setParameterError}
+            chooseFile={(query, picked) => {
+              parameterPick.current = picked;
+              setFileQuery(query);
+            }}
+            onFileKeyDown={fileKey}
+          />
+        )}
+        {parameterError && (
+          <div className="inline-error" role="alert">
+            {parameterError}
+          </div>
+        )}
         <textarea
           ref={input}
           aria-label="任务输入"
           placeholder={project ? '描述你想完成的任务，@ 引用文件…' : '给 Pi 发消息…'}
           value={draft}
           disabled={!selected || !storage.writable}
-          onChange={(e) => onDraft(e.target.value)}
+          onChange={(e) => {
+            parameterPick.current = null;
+            onDraft(e.target.value);
+          }}
           onPaste={(e) => {
             const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
             if (files.length) {
               e.preventDefault();
               void acceptImages(files);
+            } else {
+              const text = e.clipboardData.getData('text/plain');
+              if (shouldCollapsePaste(text, draft)) {
+                e.preventDefault();
+                pasteText(text);
+              }
             }
           }}
           onKeyDown={(e) => {
+            if (fileKey(e)) return;
             if (commandOptions.length) {
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
@@ -358,7 +424,7 @@ export function Composer(
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               if (fileQuery !== null && fileResults[0]) void addAttachment(fileResults[0]);
-              else void send();
+              else sendComposer();
             }
           }}
         />
@@ -402,7 +468,7 @@ export function Composer(
           </div>
         )}
         {fileQuery !== null && (
-          <div className="file-picker">
+          <div className="file-picker" role="listbox" aria-label="项目文件" ref={fileList}>
             <div className="file-picker-header">
               <Search size={13} />
               引用项目文件
@@ -411,10 +477,16 @@ export function Composer(
               </IconButton>
             </div>
             {fileResults.length ? (
-              fileResults.map((f) => (
-                <button key={f} onClick={() => void addAttachment(f)}>
+              fileResults.map((f, index) => (
+                <button
+                  key={f}
+                  role="option"
+                  aria-selected={index === fileIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectFile(f)}
+                >
                   <FileText size={14} />
-                  {f}
+                  <SearchHighlight text={f} query={fileQuery.replace(/(?:#L|:)\d.*$/, '')} />
                 </button>
               ))
             ) : (
@@ -440,6 +512,7 @@ export function Composer(
               <IconButton
                 title="引用文件"
                 onClick={() => {
+                  parameterPick.current = null;
                   setFileQuery('');
                   input.current?.focus();
                 }}
@@ -449,6 +522,8 @@ export function Composer(
               </IconButton>
             )}
             <ApprovalSwitch
+              grants={ownRuntime ? runtime.approvalGrants : []}
+              revoke={(id) => selected && void attempt(() => api.invoke('revokeApproval', selected.id, id))}
               mode={(ownRuntime && runtime.approvalMode) || selected?.approvalMode || 'auto'}
               disabled={!selected || !sessionEnabled}
               change={(mode) =>
@@ -483,6 +558,19 @@ export function Composer(
             />
           </div>
           <div>
+            {attachmentBytes > 512 * 1024 && (
+              <span
+                className={
+                  'attachment-capacity ' +
+                  (attachmentBytes > 1024 * 1024 ? 'over' : attachmentBytes >= 850 * 1024 ? 'warning' : '')
+                }
+                title={`预估容量；发送时按实际文件内容校验。占用最多：${largest.name}（${(largest.bytes / 1024).toFixed(1)} KiB）${attachmentBytes > 1024 * 1024 ? '。请移除附件或改用行范围引用。' : ''}`}
+                role="status"
+              >
+                预计已用 {(attachmentBytes / 1024).toFixed(0)} KiB / 1 MiB
+                {attachmentBytes > 1024 * 1024 && <small>占用最多：{largest.name}；请移除或按行引用</small>}
+              </span>
+            )}
             {ownRunning ? (
               <select
                 aria-label="运行中发送方式"
@@ -513,7 +601,9 @@ export function Composer(
               aria-label="发送任务"
               title="发送任务"
               disabled={
-                (!draft.trim() && !images.length) ||
+                (!draft.trim() && !images.length && !snippets.length) ||
+                attachmentBytes > 1024 * 1024 ||
+                Boolean(parameterError) ||
                 !selected ||
                 pending ||
                 !sessionEnabled ||
@@ -521,75 +611,36 @@ export function Composer(
                 (running && !ownRuntime) ||
                 runtime.status === 'stopping'
               }
-              onClick={() => void send()}
+              onClick={sendComposer}
             >
               {pending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
             </button>
           </div>
         </div>
       </div>
-      {ownRuntime &&
-        Object.entries(runtime.widgets)
-          .filter(([key]) => runtime.widgetPlacements?.[key] === 'belowEditor')
-          .map(([key, lines]) => (
-            <div className="extension-widget" key={key}>
-              {lines.join('\n')}
-            </div>
-          ))}
-      <div className="composer-bottom">
-        <div className="run-meta" role="status" aria-live="polite">
-          {ownRuntime ? (
-            <>
-              <Badge status={runtime.status} />
-              {ownRunning && (
-                <span className="elapsed" aria-hidden="true">
-                  {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
-                </span>
-              )}
-              {!runtime.connected && !ownRunning && (
-                <button onClick={connect} disabled={pending || !sessionEnabled || running}>
-                  <Link2 size={12} />
-                  重新连接
-                </button>
-              )}
-            </>
-          ) : (
-            <button onClick={connect} disabled={!sessionEnabled || pending || running}>
-              <Link2 size={12} />
-              连接 Pi
+      <ComposerFooter {...props} />
+      {lightboxIndex !== null && images.length > 0 && (
+        <Lightbox
+          images={images.map((img) => ({ src: `data:${img.mimeType};base64,${img.data}`, alt: img.name }))}
+          initialIndex={lightboxIndex}
+          close={() => setLightboxIndex(null)}
+        />
+      )}
+      {snippet && (
+        <Modal title={`粘贴片段 · ${textLines(snippet.text)} 行`} close={() => setSnippetId('')}>
+          <div className="modal-body snippet-preview">
+            <pre>{snippet.text}</pre>
+            <button
+              onClick={() => {
+                expandSnippet(snippet.id);
+                setSnippetId('');
+              }}
+            >
+              展开到输入框
             </button>
-          )}
-        </div>
-        {runtime.status === 'stopping' &&
-        runtime.stopStartedAt &&
-        Date.now() - runtime.stopStartedAt > 15000 ? (
-          <button className="danger-link" onClick={() => void attempt(() => api.invoke('forceStop'))}>
-            强制结束
-          </button>
-        ) : stopArmed ? (
-          <span className="composer-footnote stop-armed" role="status">
-            再按一次 <kbd>Esc</kbd> 停止全部
-          </span>
-        ) : (
-          <span
-            className="composer-footnote"
-            title={
-              project
-                ? `Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · ${shortcut('/')} 快捷键。Pi 会直接修改项目文件。`
-                : `Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · ${shortcut('/')} 快捷键。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。`
-            }
-          >
-            {ownRuntime && runtime.stats?.tokens ? (
-              <ContextMeter stats={runtime.stats} open={() => setFeatureTab('session')} />
-            ) : (
-              <button className="shortcut-link" onClick={() => setShortcutsOpen(true)}>
-                Shift + Enter 换行 · <kbd>{modKey}</kbd>
-                <kbd>/</kbd> 快捷键
-              </button>
-            )}
-          </span>
-        )}
-      </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

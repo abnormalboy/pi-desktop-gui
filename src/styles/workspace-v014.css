@@ -1,0 +1,229 @@
+.checkpoint-dialog-body {
+  padding: 18px 24px;
+  font-size: 13px;
+}
+.checkpoint-dialog-body > p {
+  margin-bottom: 12px;
+  line-height: 1.7;
+}
+.checkpoint-warning {
+  color: var(--amber);
+}
+.checkpoint-files {
+  max-height: 45vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.checkpoint-files label {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  align-items: flex-start;
+}
+.checkpoint-files label > span {
+  overflow-wrap: anywhere;
+}
+.checkpoint-files label small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.checkpoint-files .manual {
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
+}
+.inspector .change-list.has-preview,
+.inspector .file-tree-scroll.has-preview {
+  height: var(--inspector-split, 40%);
+  max-height: var(--inspector-split, 40%);
+  flex: 0 1 var(--inspector-split, 40%);
+  min-height: 0;
+}
+.inspector .change-list:not(.has-preview),
+.inspector .file-tree-scroll:not(.has-preview) {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+.inspector-divider {
+  height: 4px;
+  min-height: 4px;
+  cursor: row-resize;
+  touch-action: none;
+  flex-shrink: 0;
+  position: relative;
+  background: transparent;
+}
+.inspector-divider::after {
+  content: '';
+  position: absolute;
+  inset: 1px 0;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.inspector-divider:hover::after,
+.inspector-divider:focus-visible::after {
+  opacity: 1;
+}
+.preview-maximized > .change-controls,
+.preview-maximized .change-list,
+.preview-maximized > .file-tree-scroll,
+.preview-maximized .omitted,
+.preview-maximized .project-rules-bar {
+  display: none;
+}
+.preview-return {
+  flex-shrink: 0;
+  font-size: 11px;
+  justify-content: flex-start;
+  border-radius: 0;
+  border: 0;
+  padding: 6px 12px;
+}
+.preview-stale {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.preview-stale button {
+  font-size: inherit;
+  padding: 2px 8px;
+}
+.numbered-source {
+  padding: 8px 0;
+}
+.numbered-source > div {
+  display: flex;
+  min-width: max-content;
+  white-space: pre;
+  line-height: 1.7;
+}
+.numbered-source > div > button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 46px;
+  min-width: 46px;
+  padding: 0 10px 0 4px;
+  font: inherit;
+  line-height: inherit;
+  justify-content: flex-end;
+  user-select: none;
+}
+.numbered-source > div > code {
+  padding-right: 14px;
+}
+.numbered-source > div.selected {
+  background: var(--accent-soft);
+}
+.numbered-source > div.selected > button {
+  color: var(--accent);
+}
+.file-browser {
+  min-height: 0;
+}
+.file-filter {
+  position: sticky;
+  top: -6px;
+  z-index: 1;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+}
+.file-filter input,
+.output-filters input {
+  min-width: 0;
+  flex: 1;
+  font-size: 11px;
+  padding: 5px 7px;
+}
+.file-row .tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-row .tree-change {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.file-row .tree-change.deleted {
+  color: var(--red);
+}
+.file-row.active {
+  background: var(--accent-soft);
+}
+.project-rules-bar {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.project-rules-bar > span {
+  flex: 1;
+}
+.project-rules-bar > button:not(.icon-button) {
+  padding: 4px;
+  font-size: 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.project-rules-bar > .icon-button {
+  margin-left: auto;
+}
+.output-filters {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.output-filters button {
+  font-size: 10px;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+.output-filters button[aria-pressed='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.output-command {
+  display: flex;
+  gap: 5px;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+.output-command > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.output-command > div {
+  display: flex;
+  flex-shrink: 0;
+}
+.output-command .icon-button {
+  width: 24px;
+  height: 24px;
+}

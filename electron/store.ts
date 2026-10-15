@@ -5,6 +5,8 @@ import { EventEmitter } from 'node:events';
 import type { IndexRecovery, Message, Session, StorageStatus } from '../shared/types';
 import { emptyState, parseState } from './store-state';
 import { compareAppVersions, stableVersion } from '../shared/app-update';
+import { sessionUsage } from './pi/session-usage';
+import type { SessionUsage } from '../shared/usage';
 export { defaultSettings } from './store-state';
 
 const BACKUP_INTERVAL = 10 * 60 * 1000;
@@ -243,7 +245,7 @@ export class Store extends EventEmitter {
 
 export async function readSessionFile(
   file: string,
-): Promise<{ cwd: string; name?: string; messages: Message[] }> {
+): Promise<{ cwd: string; name?: string; messages: Message[]; stats: SessionUsage }> {
   const stat = await fs.stat(file);
   if (stat.size > 64 * 1024 * 1024) throw new Error('会话文件超过 64 MiB，请在 Pi 中压缩或导出后再导入');
   const raw = await fs.readFile(file, 'utf8');
@@ -273,5 +275,6 @@ export async function readSessionFile(
     cwd: header.cwd,
     name: entries.findLast((e) => e.type === 'session_info')?.name,
     messages: branch.filter((e) => e.type === 'message' && e.message).map((e) => e.message),
+    stats: sessionUsage(entries),
   };
 }

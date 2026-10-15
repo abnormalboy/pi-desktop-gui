@@ -18,6 +18,7 @@ interface ShortcutsOptions {
   setSidebar: Toggle;
   setShortcutsOpen: Toggle;
   setInspector: Toggle;
+  setTab: Dispatch<SetStateAction<'changes' | 'files' | 'output'>>;
 }
 export function useShortcuts({
   state,
@@ -34,10 +35,32 @@ export function useShortcuts({
   setSidebar,
   setShortcutsOpen,
   setInspector,
+  setTab,
 }: ShortcutsOptions) {
   const [stopArmed, setStopArmed] = useState(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (mod(e) && e.key.toLowerCase() === 'f' && !document.querySelector('[role="dialog"]')) {
+        e.preventDefault();
+        if (compact && inspector) setInspector(false);
+        window.dispatchEvent(new CustomEvent('pi:find'));
+      }
+      if (mod(e) && e.key.toLowerCase() === 'j' && !document.querySelector('[role="dialog"]')) {
+        e.preventDefault();
+        setInspector((value) => !value);
+      }
+      if (
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        ['1', '2', '3'].includes(e.key) &&
+        !document.querySelector('[role="dialog"]')
+      ) {
+        e.preventDefault();
+        setTab(e.key === '1' ? 'changes' : e.key === '2' ? 'files' : 'output');
+        setInspector(true);
+      }
       if (
         mod(e) &&
         !e.shiftKey &&

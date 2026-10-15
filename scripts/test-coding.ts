@@ -54,13 +54,16 @@ try {
 
   // The E2E_EDIT turn re-captured the baseline, so only its edit counts as "this run".
   const output = path.join(f.projectDir, '输出结果.txt');
-  const editRun = await workspace.changes(project, 'run');
+  const editRun = await workspace.changes(project, 'run', { sessionId: f.sessionId });
   assert.deepEqual(
     editRun.files.map((x) => x.path),
     ['输入 文件.txt'],
   );
-  await assert.rejects(() => workspace.revert(project, ['输出结果.txt']), /不在本轮变更/);
-  const one = await workspace.revert(project, ['输入 文件.txt']);
+  await assert.rejects(
+    () => workspace.revert(project, ['输出结果.txt'], undefined, { sessionId: f.sessionId }),
+    /不在本轮变更/,
+  );
+  const one = await workspace.revert(project, ['输入 文件.txt'], undefined, { sessionId: f.sessionId });
   assert.deepEqual(one, ['输入 文件.txt']);
   assert.equal(
     await fs.readFile(path.join(f.projectDir, '输入 文件.txt'), 'utf8'),

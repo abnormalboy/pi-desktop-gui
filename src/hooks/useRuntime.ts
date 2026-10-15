@@ -29,7 +29,7 @@ export function useRuntime(
       else if (event.type === 'update') setUpdate(event.update);
       else if (event.type === 'runtimePatch')
         setRuntime((previous) => applyRuntimePatch(previous, event.patch));
-      else setRuntime(event.runtime);
+      else if (event.type === 'runtime') setRuntime(event.runtime);
     });
     api
       .invoke('bootstrap')

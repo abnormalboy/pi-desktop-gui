@@ -2,6 +2,7 @@ export const commandOrder = ['desktop', 'prompt', 'skill', 'extension'];
 export const builtinCommands = [
   ['new', '新建当前范围的对话'],
   ['resume', '搜索和恢复历史'],
+  ['find', '查找当前会话的消息与工具输出'],
   ['name', '重命名会话'],
   ['session', '会话信息与上下文'],
   ['tree', '查看会话树'],

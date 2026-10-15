@@ -7,6 +7,7 @@ const defaultPrompt = '上一轮因进程退出中断，请检查当前文件状
 export function CrashCard({
   crash,
   projectId,
+  sessionId,
   disabled,
   recover,
   inspect,
@@ -15,6 +16,7 @@ export function CrashCard({
 }: {
   crash: NonNullable<Runtime['crash']>;
   projectId?: string;
+  sessionId: string;
   disabled: boolean;
   recover: (prompt?: string) => Promise<void>;
   inspect: () => void;
@@ -31,7 +33,7 @@ export function CrashCard({
     if (!projectId) return;
     let active = true;
     window.desktop
-      .invoke('changes', projectId, 'run')
+      .invoke('changes', projectId, 'run', { sessionId })
       .then((value) => {
         if (active) {
           setChanges(value);
@@ -44,7 +46,7 @@ export function CrashCard({
     return () => {
       active = false;
     };
-  }, [projectId, crash.at, revision]);
+  }, [projectId, sessionId, crash.at, revision]);
   const run = async (action: () => Promise<void>) => {
     setPending(true);
     try {

@@ -45,7 +45,7 @@ try {
   );
   const input = page.getByRole('textbox', { name: '任务输入' });
   await input.fill('@输入');
-  await page.locator('.file-picker').getByRole('button', { name: '输入 文件.txt', exact: true }).click();
+  await page.locator('.file-picker').getByRole('option', { name: '输入 文件.txt', exact: true }).click();
   await page.locator('.attachments').getByText('输入 文件.txt').waitFor();
   await input.fill('E2E_FILES：读取输入文件，写入结果，再执行验证命令。');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
@@ -60,7 +60,7 @@ try {
   await page.getByRole('button', { name: '查看工作区变更', exact: true }).click();
   await page.getByRole('button', { name: '刷新变更', exact: true }).click();
   await page.locator('.change-row').filter({ hasText: '输出结果.txt' }).click();
-  await page.locator('.diff-lines').getByText('+真实 Pi 工具执行成功', { exact: true }).waitFor();
+  await page.locator('.inspector .diff-row.added').getByText('真实 Pi 工具执行成功', { exact: true }).waitFor();
   assert.equal(await page.locator('.tool-card.error').count(), 0);
   await page.screenshot({ path: path.join(output, 'workspace-completed.png'), animations: 'disabled' });
   console.log('PASS UI real Pi task, attachment, tools and diff');

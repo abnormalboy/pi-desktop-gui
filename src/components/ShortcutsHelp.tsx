@@ -27,7 +27,10 @@ export const shortcutGroups: [string, [string[], string][]][] = [
     [
       [[modKey, 'N'], '新建独立对话'],
       [[modKey, 'K'], '搜索会话标题与内容'],
+      [[modKey, 'F'], '查找当前会话，Enter / Shift+Enter 切换匹配'],
       [[modKey, 'B'], '收起或展开侧栏'],
+      [[modKey, 'J'], '收起或展开工作区面板'],
+      [['Alt', '1 / 2 / 3'], '切换工作区变更、文件、输出'],
       [[modKey, ','], '打开设置'],
       [[modKey, '/'], '显示本页'],
       [['Esc'], '关闭弹窗或工作区面板'],

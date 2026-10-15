@@ -1,11 +1,14 @@
 import { memo } from 'react';
-import { GitBranch, LoaderCircle, Copy, Terminal, RefreshCw, Pencil } from 'lucide-react';
+import { GitBranch, LoaderCircle, Copy, Terminal, RefreshCw, Pencil, Undo2 } from 'lucide-react';
 import { messageText, type Message, type ToolActivity, type MessageAction } from '../../../shared/types';
 import { time } from '../../lib/format';
 import { IconButton } from '../IconButton';
-import { CodeBlock, RichText, MessageImages, UserMessage } from './Markdown';
+import { RichText, MessageImages, UserMessage } from './Markdown';
 import { ToolCard } from './ToolCard';
 import { ReplyMeta } from './Usage';
+import type { SessionMatch } from '../../lib/session-search';
+import { SearchHighlight } from './SearchHighlight';
+import { AnsiOutput } from '../AnsiOutput';
 
 export interface MessageContext {
   running: boolean;
@@ -17,11 +20,28 @@ export interface MessageContext {
   openFile: (path: string) => void;
   copy: (text: string) => void;
   act: (m: Message, kind: MessageAction) => void;
+  askHunk?: (attachment: string | undefined, prompt: string) => void;
+  rerun?: (command: string, includeContext: boolean) => void;
+  canRerun?: boolean;
+  checkpointFor?: (m: Message) => { turn: number; disabledReason?: string } | undefined;
+  checkpointRevision?: number;
+  undo?: (m: Message) => void;
 }
 export const ChatMessage = memo(
-  function ChatMessage({ m, last, ctx }: { m: Message; last: boolean; ctx: MessageContext }) {
+  function ChatMessage({
+    m,
+    last,
+    ctx,
+    match,
+  }: {
+    m: Message;
+    last: boolean;
+    ctx: MessageContext;
+    match?: SessionMatch;
+  }) {
     if (m.role === 'toolResult') {
-      const tool = ctx.toolFor(m);
+      const observed = ctx.toolFor(m);
+      const tool = match ? { ...observed, output: messageText(m) } : observed;
       return (
         <div>
           <ToolCard
@@ -29,6 +49,10 @@ export const ChatMessage = memo(
             expanded={ctx.expanded.includes(tool.id)}
             onToggle={(v) => ctx.toggleTool(tool.id, v)}
             openFile={(p) => ctx.openFile(p)}
+            match={match}
+            askHunk={ctx.askHunk}
+            rerun={ctx.rerun}
+            canRerun={ctx.canRerun}
           />
           <MessageImages message={m} />
         </div>
@@ -40,7 +64,7 @@ export const ChatMessage = memo(
           <strong>
             <Terminal size={14} /> {String(m.command ?? '')}
           </strong>
-          <CodeBlock>{String(m.output ?? '')}</CodeBlock>
+          <AnsiOutput text={String(m.output ?? '')} />
           <small>
             {m.excludeFromContext ? '输出不进入模型上下文' : '输出已加入模型上下文'} · 退出码{' '}
             {String(m.exitCode ?? '')}
@@ -55,6 +79,7 @@ export const ChatMessage = memo(
       );
     if (m.role !== 'user' && m.role !== 'assistant') return null;
     const content = messageText(m);
+    const checkpoint = m.role === 'user' ? ctx.checkpointFor?.(m) : undefined;
     if (
       m.role === 'assistant' &&
       !content &&
@@ -82,6 +107,15 @@ export const ChatMessage = memo(
             </IconButton>
             {m.role === 'user' && m.timestamp && (
               <>
+                {checkpoint && ctx.undo && (
+                  <IconButton
+                    title={checkpoint.disabledReason || '撤销此轮起的文件修改'}
+                    disabled={ctx.locked || Boolean(checkpoint.disabledReason)}
+                    onClick={() => ctx.undo?.(m)}
+                  >
+                    <Undo2 size={13} />
+                  </IconButton>
+                )}
                 <IconButton title="编辑后重新发送" disabled={ctx.locked} onClick={() => ctx.act(m, 'edit')}>
                   <Pencil size={13} />
                 </IconButton>
@@ -110,14 +144,26 @@ export const ChatMessage = memo(
             m.content
               .filter((b) => b.type === 'thinking' && b.thinking)
               .map((b, index) => (
-                <details className="thinking" key={index}>
+                <details
+                  className="thinking"
+                  key={index}
+                  open={match?.section === 'thinking' && match.blockIndex === index ? true : undefined}
+                >
                   <summary>思考过程</summary>
-                  <pre>{b.thinking}</pre>
+                  <pre>
+                    <SearchHighlight
+                      text={b.thinking!}
+                      activeStart={match?.start}
+                      query={
+                        match?.section === 'thinking' && match.blockIndex === index ? match.query : undefined
+                      }
+                    />
+                  </pre>
                 </details>
               ))}
           {content ? (
             m.role === 'user' ? (
-              <UserMessage text={content} />
+              <UserMessage text={content} match={match} />
             ) : (
               <RichText text={content} />
             )
@@ -149,8 +195,12 @@ export const ChatMessage = memo(
   (a, b) =>
     a.m === b.m &&
     a.last === b.last &&
+    a.match === b.match &&
     a.ctx.running === b.ctx.running &&
     a.ctx.locked === b.ctx.locked &&
+    a.ctx.canRerun === b.ctx.canRerun &&
+    a.ctx.checkpointFor === b.ctx.checkpointFor &&
+    (a.m.role !== 'user' || a.ctx.checkpointRevision === b.ctx.checkpointRevision) &&
     (a.m.role !== 'toolResult' ||
       (a.ctx.expanded === b.ctx.expanded && a.ctx.toolFor(a.m) === b.ctx.toolFor(b.m))) &&
     (!b.ctx.running || a.ctx.liveToolIds === b.ctx.liveToolIds),

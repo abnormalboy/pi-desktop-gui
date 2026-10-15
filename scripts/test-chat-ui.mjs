@@ -183,6 +183,14 @@ try {
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
   await page.locator('.project-row').click();
+  assert.equal(
+    await page.locator('.trust-banner').count(),
+    0,
+    'expanding a project does not switch the current session',
+  );
+  if ((await page.locator('.project-row').getAttribute('aria-expanded')) !== 'true')
+    await page.locator('.project-row').click();
+  await page.locator('.project-group .session-row > button').first().click();
   await page.locator('.trust-banner').waitFor();
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
   await page.getByRole('button', { name: '在 project 中新建会话', exact: true }).click();
