@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { attachmentInfo, attachmentPrompt } from '../electron/workspace';
+import { attachmentInfo, attachmentPrompt, safePath } from '../electron/workspace';
 import { parseAttachmentSpec, normalizeAttachmentSpec } from '../shared/attachments';
 import { alignHunk, hunkPrompt, inlineDiff, parseDiffHunks } from '../shared/diff';
 import { createAgentRules, projectRules } from '../electron/project-rules';
@@ -35,6 +35,33 @@ test('attachment ranges normalize both syntaxes and reject invalid or reversed l
   assert.deepEqual(parseAttachmentSpec('src/a.ts'), { path: 'src/a.ts' });
   for (const spec of ['a#L0-L1', 'a:4-2', 'a#L9007199254740992', 'a#Lx-L3', 'a#L1-L', 'a\0.ts'])
     assert.throws(() => parseAttachmentSpec(spec));
+});
+
+test('a project root alias resolves local files without allowing traversal or links outside the real root', async (t) => {
+  const { project, root } = await fixture(t);
+  const real = path.join(root, 'actual'),
+    outside = path.join(root, 'outside'),
+    alias = path.join(root, 'alias');
+  await fs.mkdir(real);
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(real, 'file.ts'), 'local file\n');
+  await fs.writeFile(path.join(real, 'AGENTS.md'), '# local rules\n');
+  await fs.writeFile(path.join(outside, 'secret.txt'), 'outside');
+  try {
+    await fs.symlink(real, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await fs.symlink(outside, path.join(real, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+      t.skip('symlink creation requires privileges');
+      return;
+    }
+    throw error;
+  }
+  const linked = { ...project, path: alias };
+  assert.match(await attachmentPrompt(linked, 'read', ['file.ts#L1-L1']), /local file/);
+  assert.equal((await projectRules(linked))?.relativePath, 'AGENTS.md');
+  await assert.rejects(safePath(alias, '../outside/secret.txt'), /项目以外/);
+  await assert.rejects(safePath(alias, 'escape/secret.txt'), /项目外/);
 });
 
 test('attachment slices allow a large source, clamp the end, and report exact selected content bytes', async (t) => {

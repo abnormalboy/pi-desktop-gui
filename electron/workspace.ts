@@ -38,7 +38,7 @@ export async function safePath(root: string, relative: string, allowRoot = false
   if (typeof relative !== 'string' || relative.includes('\0') || path.isAbsolute(relative))
     throw new Error('文件路径必须位于项目内');
   const canonical = await fs.realpath(root),
-    resolved = path.resolve(root, relative);
+    resolved = path.resolve(canonical, relative);
   if (
     !contained(canonical, resolved) ||
     (!allowRoot && resolved === canonical) ||
