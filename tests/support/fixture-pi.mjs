@@ -50,7 +50,7 @@ io.on('line', (line) => {
   fs.appendFileSync(path.join(dir, 'commands.jsonl'), JSON.stringify(r) + '\n');
   switch (r.type) {
     case 'get_commands':
-      respond(r, { commands: [] });
+      respond(r, { commands: config().noBridge ? [] : [{ name: 'desktop-internal', source: 'extension' }] });
       break;
     case 'get_state':
       respond(r, {
@@ -104,7 +104,15 @@ io.on('line', (line) => {
     case 'prompt': {
       if (r.message.startsWith('/desktop-internal ')) {
         const request = JSON.parse(Buffer.from(r.message.split(' ')[1], 'base64').toString('utf8'));
-        out({ type: 'desktop_result', id: request.id, data: { autoRetry: true } });
+        out({
+          type: 'desktop_result',
+          id: request.id,
+          data: {
+            protocolVersion: 1,
+            autoRetry: true,
+            approvalMode: process.env.PI_DESKTOP_APPROVAL || 'auto',
+          },
+        });
         respond(r, { disposition: 'handled' });
         break;
       }

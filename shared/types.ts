@@ -1,4 +1,5 @@
 import type { ApprovalMode, ApprovalRequest } from './approval';
+import type { PiCompatibility } from './pi-version';
 export type { ApprovalMode, ApprovalRequest } from './approval';
 export type RunStatus =
   | 'idle'
@@ -61,6 +62,20 @@ export interface AppState {
   settings: Settings;
   selectedProjectId?: string;
   selectedSessionId?: string;
+}
+export interface IndexRecovery {
+  corruptFile?: string;
+  recoveredFrom?: string;
+  backupAt?: number;
+  discardedProjects: number;
+  discardedSessions: number;
+  repairedSettings: number;
+  restarted: boolean;
+}
+export interface StorageStatus {
+  writable: boolean;
+  problem?: string;
+  recovery?: IndexRecovery;
 }
 export interface ContentBlock {
   type: string;
@@ -199,6 +214,15 @@ export interface Runtime {
   approvalMode?: ApprovalMode;
   steeringMode?: string;
   followUpMode?: string;
+  crash?: {
+    cleanup: 'checking' | 'confirmed' | 'unconfirmed';
+    code: number | null;
+    signal: string | null;
+    lastTool?: { name: string; target: string; seconds: number };
+    log: string[];
+    at: number;
+    repeated: boolean;
+  };
 }
 export interface RuntimeNotification {
   id: number;
@@ -221,6 +245,7 @@ export interface Environment {
   piPath: string;
   version?: string;
   supported: boolean;
+  compatibility: PiCompatibility;
   nodePath?: string;
   git?: string;
   bash?: string;
@@ -281,6 +306,7 @@ export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
 };
 export type AppEvent =
   | { type: 'state'; state: AppState }
+  | { type: 'storage'; storage: StorageStatus }
   | { type: 'runtime'; runtime: Runtime }
   | { type: 'runtimePatch'; patch: RuntimePatch };
 /** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
@@ -303,6 +329,7 @@ export interface Bootstrap {
   runtime: Runtime;
   environment: Environment;
   dataDir: string;
+  storage: StorageStatus;
 }
 export interface ApiMap {
   bootstrap: { args: []; result: Bootstrap };
@@ -334,6 +361,7 @@ export interface ApiMap {
   choosePath: { args: ['pi' | 'node' | 'agent' | 'editor']; result: string | null };
   saveSettings: { args: [Partial<Settings>]; result: void };
   connect: { args: [string]; result: void };
+  recover: { args: [string, string?]; result: void };
   testConnection: { args: [string]; result: { elapsed: number; text: string } };
   send: { args: [string, string, string[], SendMode, ImageAttachment[]?]; result: void };
   pickImages: { args: []; result: ImageAttachment[] };

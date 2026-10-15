@@ -8,6 +8,8 @@ import { Toasts } from './components/Toasts';
 import { WorkbenchDialogs } from './components/WorkbenchDialogs';
 import { Composer } from './components/Composer';
 import { SettingsModal } from './components/SettingsModal';
+import { StorageBanner } from './components/StorageBanner';
+import { CrashCard } from './components/CrashCard';
 export default function App() {
   const model = useWorkbench();
   const { state, compact, columns, error } = model;
@@ -29,9 +31,36 @@ export default function App() {
     <div className="app-shell">
       <Sidebar {...model} state={state} />
       <main className="workspace">
+        <StorageBanner
+          storage={model.storage}
+          openDirectory={() => void model.attempt(() => window.desktop.invoke('revealData'))}
+        />
         <WorkspaceHeader {...model} />
         <div ref={columns} className={'workspace-columns' + (compact ? ' compact' : '')}>
-          <Conversation {...model} state={state}>
+          <Conversation
+            {...model}
+            state={state}
+            recovery={
+              model.ownRuntime && model.runtime.crash && model.selected ? (
+                <CrashCard
+                  key={model.runtime.crash.at}
+                  crash={model.runtime.crash}
+                  projectId={model.project?.id}
+                  disabled={model.pending || model.running || !model.storage.writable}
+                  recover={(prompt) =>
+                    model.action(() => window.desktop.invoke('recover', model.selected!.id, prompt))
+                  }
+                  inspect={() => {
+                    model.setChangeMode('run');
+                    model.setTab('changes');
+                    model.setInspector(true);
+                  }}
+                  undo={() => model.revert(null)}
+                  diagnostic={() => model.openSettings('diagnostic')}
+                />
+              ) : null
+            }
+          >
             <Composer {...model} state={state} />
           </Conversation>
           <Inspector {...model} state={state} />

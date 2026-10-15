@@ -26,6 +26,8 @@ export function Composer(
   props: Pick<
     Workbench,
     | 'state'
+    | 'storage'
+    | 'environment'
     | 'runtime'
     | 'error'
     | 'setError'
@@ -77,6 +79,8 @@ export function Composer(
 ) {
   const {
     state,
+    storage,
+    environment,
     runtime,
     error,
     setError,
@@ -258,7 +262,7 @@ export function Composer(
           aria-label="任务输入"
           placeholder={project ? '描述你想完成的任务，@ 引用文件…' : '给 Pi 发消息…'}
           value={draft}
-          disabled={!selected}
+          disabled={!selected || !storage.writable}
           onChange={(e) => onDraft(e.target.value)}
           onPaste={(e) => {
             const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
@@ -478,6 +482,7 @@ export function Composer(
                 !selected ||
                 pending ||
                 !sessionEnabled ||
+                !environment?.supported ||
                 (running && !ownRuntime) ||
                 runtime.status === 'stopping'
               }

@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
 import { AgentService, redact } from './agent';
 import { Workspace, listDirectory, allFiles, previewFile, safePath } from './workspace';
-import { detectEnvironment, resolvePi, agentDirectory } from './environment';
+import { detectEnvironment, requireSupportedPi, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
 import { validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
@@ -117,6 +117,7 @@ async function loadWindowState(): Promise<{ bounds?: Rectangle; maximized: boole
 let windowTimer: NodeJS.Timeout | undefined;
 let windowWrite = Promise.resolve();
 function writeWindowState() {
+  if (!store.storage.writable) return windowWrite;
   if (!window || window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return windowWrite;
   const contents = JSON.stringify({ bounds: window.getNormalBounds(), maximized: window.isMaximized() });
   // Keep the final close snapshot behind any in-flight resize save.
@@ -214,11 +215,13 @@ async function diagnostics() {
         appVersion: app.getVersion(),
         platform: process.platform,
         environment,
+        piCompatibility: environment.compatibility,
         runtime: {
           status: service.runtime.status,
           connected: service.runtime.connected,
           error: service.runtime.error,
           diagnostic: service.runtime.diagnostic,
+          crash: service.runtime.crash,
         },
       },
       null,
@@ -246,6 +249,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       runtime: service.runtime,
       environment,
       dataDir: store.dir,
+      storage: store.storage,
     };
   },
   addProject: async () => {
@@ -338,12 +342,18 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   selectSession: async (id) => {
     text(id, 100);
     const s = store.session(id);
-    if (service.runtime.connected && !busy(service.runtime.status) && service.runtime.sessionId !== id) {
+    if (
+      store.storage.writable &&
+      service.runtime.connected &&
+      !busy(service.runtime.status) &&
+      service.runtime.sessionId !== id
+    ) {
       if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id);
       else await service.disconnect();
     }
     store.selectSession(s.id);
-    await save();
+    if (store.storage.writable) await save();
+    else send({ type: 'state', state: store.state });
     return service.history(id);
   },
   renameSession: async (id, name) => {
@@ -447,6 +457,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.admin(id, 'set_label', { entryId, label });
   },
   revertChanges: async (projectId, only) => {
+    service.assertCommandsStopped();
     text(projectId, 100);
     if (only !== null) strings(only);
     const project = store.project(projectId);
@@ -474,6 +485,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return [];
+    service.assertCommandsStopped();
+    if (busy(service.runtime.status)) throw new Error('任务正在执行，请停止后再撤销');
     return workspace.revert(project, only, (file) => shell.trashItem(file));
   },
   saveDraft: async (id, draft, attachments, images) => {
@@ -578,6 +591,11 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   connect: async (id) => {
     text(id, 100);
     await service.connect(id);
+  },
+  recover: async (id, prompt) => {
+    text(id, 100);
+    if (prompt !== undefined) text(prompt);
+    await service.recover(id, prompt);
   },
   testConnection: async (id) => {
     text(id, 100);
@@ -688,6 +706,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (source.startsWith('-')) throw new Error('包来源不能是命令参数');
     const s = store.session(id);
     if (local && (!s.projectId || !store.project(s.projectId).trusted)) throw new Error('请先启用项目');
+    await requireSupportedPi(store.state.settings, developmentRoot);
     await service.disconnect();
     const pi = await resolvePi(store.state.settings, developmentRoot);
     const args = [
@@ -740,6 +759,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   openPiTerminal: async (id) => {
     text(id, 100);
+    await requireSupportedPi(store.state.settings, developmentRoot);
     await service.connect(id);
     await service.disconnect();
     const spec = (await resolvePi(store.state.settings, developmentRoot)).spec;
@@ -975,16 +995,18 @@ else {
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
         const initial = store.state.sessions[0] ?? store.createSession();
         store.selectSession(initial.id);
-        await store.save();
+        if (store.storage.writable) await store.save().catch(() => {});
       }
+      if (store.storage.recovery && store.storage.writable) await store.save().catch(() => {});
       workspace = new Workspace(store.dir);
-      await workspace.cleanup();
+      if (store.storage.writable) await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
       service.on('runtimePatch', (patch) => {
         send({ type: 'runtimePatch', patch });
         notifyAttention(service.runtime);
       });
       service.on('state', (state) => send({ type: 'state', state }));
+      store.on('storage', (storage) => send({ type: 'storage', storage }));
       ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {
         if (
           !window ||
@@ -999,8 +1021,36 @@ else {
         )
           throw new Error('无效请求');
         try {
+          const readOnlyMethods: (keyof ApiMap)[] = [
+            'bootstrap',
+            'selectSession',
+            'readHistory',
+            'searchSessions',
+            'piSessions',
+            'detect',
+            'choosePath',
+            'files',
+            'searchFiles',
+            'preview',
+            'diff',
+            'changes',
+            'configRead',
+            'copy',
+            'diagnostics',
+            'exportDiagnostics',
+            'exportOutput',
+            'revealData',
+            'openLink',
+            'openFile',
+            'stop',
+            'forceStop',
+            'quit',
+          ];
+          if (!store.storage.writable && !readOnlyMethods.includes(method as keyof ApiMap))
+            store.assertWritable();
           const engineOperation = [
             'connect',
+            'recover',
             'send',
             'selectSession',
             'sessionTree',
@@ -1026,6 +1076,7 @@ else {
             'setEntryLabel',
           ].includes(method);
           if (engineOperation) {
+            service.assertCommandsStopped();
             if (updatingConfiguration) throw new Error('正在更新配置或资源包，请稍候');
             await assertTerminalClosed();
           }

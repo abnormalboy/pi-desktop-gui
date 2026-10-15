@@ -1,58 +1,148 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Message, Session, Settings } from '../shared/types';
+import { EventEmitter } from 'node:events';
+import type { IndexRecovery, Message, Session, StorageStatus } from '../shared/types';
+import { emptyState, parseState } from './store-state';
+export { defaultSettings } from './store-state';
 
-export const defaultSettings: Settings = {
-  piPath: '',
-  nodePath: '',
-  agentDir: '',
-  editorPath: '',
-  provider: '',
-  modelId: '',
-  thinking: '',
-  theme: 'system',
-  fontScale: 1,
-  sidebarWidth: 240,
-  inspectorWidth: 380,
-  onboardingDone: false,
-  notifyOnFinish: true,
-};
-export class Store {
-  state: AppState = { version: 1, projects: [], sessions: [], settings: { ...defaultSettings } };
+const BACKUP_INTERVAL = 10 * 60 * 1000;
+export class Store extends EventEmitter {
+  state = emptyState();
+  storage: StorageStatus = { writable: true };
   private writing = Promise.resolve();
-  constructor(readonly dir: string) {}
+  constructor(readonly dir: string) {
+    super();
+  }
+  private file(name: string) {
+    return path.join(this.dir, name);
+  }
+  private writeFailure(error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    this.storage = {
+      ...this.storage,
+      writable: false,
+      problem: `无法写入本地数据目录，发送与保存已暂停。请检查磁盘剩余空间和目录权限后重新启动${code ? `（${code}）` : ''}。`,
+    };
+    this.emit('storage', this.storage);
+  }
+  assertWritable() {
+    if (!this.storage.writable) throw new Error(this.storage.problem);
+  }
   async load() {
-    await fs.mkdir(this.dir, { recursive: true });
+    this.state = emptyState();
+    this.storage = { writable: true };
     try {
-      const data = JSON.parse(await fs.readFile(path.join(this.dir, 'state.json'), 'utf8'));
-      if (data.version !== 1 || !Array.isArray(data.projects) || !Array.isArray(data.sessions))
-        throw new Error('本地索引格式不受支持');
-      this.state = { ...data, settings: { ...defaultSettings, ...data.settings } };
-      for (const s of this.state.sessions) {
-        s.attachments ??= [];
-        s.draft ??= '';
-        if (['running', 'starting', 'waiting', 'stopping', 'retrying', 'compacting'].includes(s.lastStatus))
-          s.lastStatus = 'interrupted';
-      }
+      await fs.mkdir(this.dir, { recursive: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-        throw new Error(`无法读取本地索引。原文件已保留：${String(error)}`);
+      this.writeFailure(error);
     }
+    let contents: string | undefined;
+    try {
+      contents = await fs.readFile(this.file('state.json'), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.writeFailure(error);
+    }
+    if (contents !== undefined) {
+      let valid: ReturnType<typeof parseState> | undefined;
+      try {
+        valid = parseState(JSON.parse(contents));
+      } catch {}
+      if (valid) this.state = valid.state;
+      if (!valid || valid.discardedProjects || valid.discardedSessions || valid.repairedSettings) {
+        const recovery = {
+          corruptFile: this.file(`state.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`),
+          discardedProjects: valid?.discardedProjects ?? 0,
+          discardedSessions: valid?.discardedSessions ?? 0,
+          repairedSettings: valid?.repairedSettings ?? 0,
+          restarted: !valid,
+        };
+        this.storage.recovery = recovery;
+        try {
+          await fs.rename(this.file('state.json'), recovery.corruptFile);
+        } catch (error) {
+          recovery.corruptFile = this.file('state.json');
+          this.writeFailure(error);
+        }
+        if (!valid) await this.restoreBackup(recovery);
+      }
+    }
+    // A previous recovery may have preserved the corrupt file and exited before its first save.
+    // The missing current index must not overwrite the existing backups with an empty state.
+    if (contents === undefined) await this.restoreBackup();
+    if (this.storage.writable) {
+      const probe = this.file(`.write-probe-${randomUUID()}`);
+      try {
+        await fs.writeFile(probe, '', { flag: 'wx', mode: 0o600 });
+        await fs.unlink(probe);
+      } catch (error) {
+        this.writeFailure(error);
+      }
+    }
+    return this.storage;
+  }
+  private async restoreBackup(recovery?: IndexRecovery) {
+    for (let i = 1; i <= 3; i++) {
+      const backup = this.file(`state.backup-${i}.json`);
+      try {
+        const parsed = parseState(JSON.parse(await fs.readFile(backup, 'utf8')));
+        const backupAt = (await fs.stat(backup)).mtimeMs;
+        this.state = parsed.state;
+        this.storage.recovery = {
+          ...recovery,
+          recoveredFrom: backup,
+          backupAt,
+          discardedProjects: parsed.discardedProjects,
+          discardedSessions: parsed.discardedSessions,
+          repairedSettings: parsed.repairedSettings,
+          restarted: false,
+        };
+        return;
+      } catch {}
+    }
+  }
+  private async replace(name: string, contents: string) {
+    const temporary = this.file(name + '.tmp');
+    await fs.writeFile(temporary, contents, { mode: 0o600 });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await fs.rename(temporary, this.file(name));
+        return;
+      } catch (error) {
+        if (attempt >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+  }
+  private async backup(contents: string) {
+    const latest = await fs.stat(this.file('state.backup-1.json')).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    if (latest && Date.now() - latest.mtimeMs < BACKUP_INTERVAL) return;
+    for (let i = 2; i >= 1; i--) {
+      const source = this.file(`state.backup-${i}.json`),
+        target = `state.backup-${i + 1}.json`;
+      try {
+        const stat = await fs.stat(source);
+        await this.replace(target, await fs.readFile(source, 'utf8'));
+        await fs.utimes(this.file(target), stat.atime, stat.mtime);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    await this.replace('state.backup-1.json', contents);
   }
   save() {
     const contents = JSON.stringify(this.state, null, 2);
     const write = async () => {
-      const temporary = path.join(this.dir, 'state.json.tmp');
-      await fs.writeFile(temporary, contents, { mode: 0o600 });
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await fs.rename(temporary, path.join(this.dir, 'state.json'));
-          return;
-        } catch (e) {
-          if (attempt >= 3) throw e;
-          await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
-        }
+      this.assertWritable();
+      try {
+        await this.replace('state.json', contents);
+        await this.backup(contents);
+      } catch (error) {
+        this.writeFailure(error);
+        throw new Error(this.storage.problem, { cause: error });
       }
     };
     this.writing = this.writing.catch(() => {}).then(write);

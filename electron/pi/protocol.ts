@@ -1,0 +1,108 @@
+import type { Message, Model, PiCommand, Runtime } from '../../shared/types';
+import { COMPATIBLE } from '../../shared/pi-version';
+import { DESKTOP_BRIDGE_PROTOCOL } from '../../shared/pi-bridge';
+
+export interface PiState {
+  model?: Model;
+  thinkingLevel?: string;
+  sessionFile?: string;
+  isStreaming: boolean;
+  isCompacting: boolean;
+  pendingMessageCount: number;
+  autoCompactionEnabled?: boolean;
+  steeringMode?: string;
+  followUpMode?: string;
+}
+export interface RpcResults {
+  get_state: PiState;
+  get_messages: { messages: Message[] };
+  get_available_models: { models: Model[] };
+  get_available_thinking_levels: { levels: string[] };
+  get_commands: { commands: PiCommand[] };
+}
+export type RpcResult<K extends string> = K extends keyof RpcResults ? RpcResults[K] : any;
+const object = (value: unknown): value is Record<string, any> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+const model = (value: unknown) =>
+  object(value) && typeof value.id === 'string' && typeof value.provider === 'string';
+const numbers = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
+export function incompatible(command: string, detail: string): never {
+  throw new Error(
+    `Pi 返回的 ${command} 数据格式与当前桌面端不兼容（${detail}）。请在诊断中记录 Pi 版本，更新 Pi Desktop 或使用 ${COMPATIBLE} 系列。`,
+  );
+}
+
+/** Check documented fields at the subprocess boundary. Unknown additional fields are allowed. */
+export function validateRpcResult(command: string, value: unknown) {
+  if (command === 'get_state') {
+    if (
+      !object(value) ||
+      typeof value.isStreaming !== 'boolean' ||
+      typeof value.isCompacting !== 'boolean' ||
+      !numbers(value.pendingMessageCount) ||
+      value.pendingMessageCount < 0 ||
+      (value.model !== undefined && !model(value.model)) ||
+      (value.sessionFile !== undefined && typeof value.sessionFile !== 'string')
+    )
+      incompatible(command, '会话状态缺少必要字段');
+  } else if (command === 'get_messages') {
+    if (
+      !object(value) ||
+      !Array.isArray(value.messages) ||
+      value.messages.some(
+        (message) =>
+          !object(message) ||
+          typeof message.role !== 'string' ||
+          (['user', 'assistant', 'toolResult'].includes(message.role) &&
+            typeof message.content !== 'string' &&
+            !Array.isArray(message.content)),
+      )
+    )
+      incompatible(command, '消息列表无效');
+  } else if (command === 'get_available_models') {
+    if (!object(value) || !Array.isArray(value.models) || !value.models.every(model))
+      incompatible(command, '模型列表无效');
+  } else if (command === 'get_available_thinking_levels') {
+    if (
+      !object(value) ||
+      !Array.isArray(value.levels) ||
+      value.levels.some((level) => typeof level !== 'string')
+    )
+      incompatible(command, '推理级别列表无效');
+  } else if (command === 'get_commands') {
+    if (
+      !object(value) ||
+      !Array.isArray(value.commands) ||
+      value.commands.some((c) => !object(c) || typeof c.name !== 'string')
+    )
+      incompatible(command, '命令列表无效');
+  }
+}
+
+export function validateBridgeResult(method: string, value: unknown) {
+  if (
+    method === 'options' &&
+    (!object(value) ||
+      value.protocolVersion !== DESKTOP_BRIDGE_PROTOCOL ||
+      typeof value.autoRetry !== 'boolean' ||
+      !['auto', 'confirm', 'readonly'].includes(value.approvalMode))
+  )
+    incompatible('桌面适配', '适配扩展未正确加载或协议版本不一致');
+}
+
+export function sessionStats(value: unknown): Runtime['stats'] {
+  if (!object(value)) incompatible('get_session_stats', '统计数据无效');
+  const optionalNumber = (value: unknown, field: string) => {
+    // Pi documents null usage immediately after compaction, until the next model response.
+    if (value === undefined || value === null) return undefined;
+    if (!numbers(value)) incompatible('get_session_stats', field + ' 不是有效数字');
+    return value as number;
+  };
+  return {
+    tokens: optionalNumber(value.tokens?.total, 'tokens.total'),
+    cost: optionalNumber(value.cost, 'cost'),
+    contextPercent: optionalNumber(value.contextUsage?.percent, 'contextUsage.percent'),
+    contextTokens: optionalNumber(value.contextUsage?.tokens, 'contextUsage.tokens'),
+    contextWindow: optionalNumber(value.contextUsage?.contextWindow, 'contextUsage.contextWindow'),
+  };
+}

@@ -18,6 +18,7 @@ import {
 } from '../../shared/types';
 
 import { readableError } from '../lib/format';
+import { PI_SOURCE_URL } from '../../shared/pi-version';
 
 import { useFocusScope } from './useFocusScope';
 import { type MessageContext } from '../components/conversation/ChatMessage';
@@ -30,7 +31,7 @@ export function useWorkbench() {
     [settingsOpen, setSettingsOpen] = useState(false),
     [settingsTab, setSettingsTab] = useState('environment'),
     [prefs, setPrefs] = useState<Settings>();
-  const { state, runtime, environment, setEnvironment } = useRuntime(setError, setPrefs);
+  const { state, runtime, environment, setEnvironment, storage } = useRuntime(setError, setPrefs);
   const [pending, setPending] = useState(false);
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
@@ -71,7 +72,10 @@ export function useWorkbench() {
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
-  const sessionEnabled = Boolean(selected && (!selected.projectId || project?.trusted));
+  const sessionEnabled =
+    storage.writable &&
+    (!runtime.crash || runtime.crash.cleanup === 'confirmed') &&
+    Boolean(selected && (!selected.projectId || project?.trusted));
   const ownRuntime = runtime.sessionId === selected?.id,
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
@@ -285,6 +289,14 @@ export function useWorkbench() {
   }, [runtime.status, runtime.retry?.startedAt]);
 
   async function send() {
+    if (!environment?.supported) {
+      setError(environment?.errors.join('\n') || '正在检测 Pi 运行环境，请稍候');
+      return;
+    }
+    if (!storage.writable) {
+      setError(storage.problem ?? '本地数据不可写，请检查目录权限后重新启动');
+      return;
+    }
     if (!selected || (!draft.trim() && !images.length) || pending) return;
     setError('');
     setPending(true);
@@ -347,11 +359,7 @@ export function useWorkbench() {
       if (project) await api.invoke('trustProject', project.id);
     } else if (cmd === 'bug') openSettings('diagnostic');
     else if (cmd === 'hotkeys') setShortcutsOpen(true);
-    else if (cmd === 'changelog')
-      await api.invoke(
-        'openLink',
-        'https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/CHANGELOG.md',
-      );
+    else if (cmd === 'changelog') await api.invoke('openLink', PI_SOURCE_URL + '/CHANGELOG.md');
     else setFeatureTab('help');
     return true;
   }
@@ -394,6 +402,7 @@ export function useWorkbench() {
     if (!selected) return;
     setError('');
     await action(() => api.invoke('connect', selected.id));
+    void detect();
   }
   async function chooseSettingPath(kind: 'pi' | 'node' | 'agent' | 'editor') {
     const p = await attempt(() => api.invoke('choosePath', kind));
@@ -542,6 +551,7 @@ export function useWorkbench() {
   });
   return {
     state,
+    storage,
     runtime,
     environment,
     history,

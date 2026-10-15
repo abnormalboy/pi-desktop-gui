@@ -43,7 +43,7 @@ export function Conversation(
     | 'inspectFile'
     | 'toggleTool'
     | 'messageContext'
-  > & { state: AppState; children: ReactNode },
+  > & { state: AppState; children: ReactNode; recovery: ReactNode },
 ) {
   const {
     state,
@@ -215,6 +215,7 @@ export function Conversation(
               respond={(value) => void attempt(() => api.invoke('respond', d.id, { value }))}
             />
           ))}
+        {props.recovery}
         {ownRuntime && runtime.notices.length > 0 && (
           <details className="runtime-notices">
             <summary>运行记录 · {runtime.notices.length}</summary>

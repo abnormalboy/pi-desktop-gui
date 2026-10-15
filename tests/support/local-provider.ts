@@ -82,13 +82,18 @@ export async function createLocalProvider() {
       done();
       return;
     }
-    if (prompt.includes('E2E_STOP') && results.length === 0) {
+    if ((prompt.includes('E2E_STOP') || prompt.includes('E2E_CRASH')) && results.length === 0) {
       const shell = body.tools.some((t: any) => t.function?.name === 'powershell') ? 'powershell' : 'bash';
       return tool(shell, {
         command:
-          shell === 'powershell'
-            ? "Write-Output 'WAITING_FOR_STOP'; Start-Sleep -Seconds 30; Set-Content -LiteralPath 'should-not-exist.txt' -Value 'NOT_STOPPED'"
-            : "printf 'WAITING_FOR_STOP\\n'; sleep 30; printf 'NOT_STOPPED' > should-not-exist.txt",
+          (prompt.includes('E2E_CRASH')
+            ? shell === 'powershell'
+              ? "Set-Content -LiteralPath 'crash-partial.txt' -Value 'PARTIAL'; "
+              : "printf 'PARTIAL' > crash-partial.txt; "
+            : '') +
+          (shell === 'powershell'
+            ? `Write-Output 'WAITING_FOR_STOP'; Start-Sleep -Seconds ${prompt.includes('E2E_ORPHAN') ? 2 : 30}; Set-Content -LiteralPath 'should-not-exist.txt' -Value 'NOT_STOPPED'`
+            : `printf 'WAITING_FOR_STOP\\n'; sleep ${prompt.includes('E2E_ORPHAN') ? 2 : 30}; printf 'NOT_STOPPED' > should-not-exist.txt`),
       });
     }
     if (prompt.includes('E2E_SLOW')) {

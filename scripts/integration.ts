@@ -7,6 +7,7 @@ import { AgentService } from '../electron/agent';
 import { Store, readSessionFile } from '../electron/store';
 import { Workspace } from '../electron/workspace';
 import { messageText } from '../shared/types';
+import { detectEnvironment } from '../electron/environment';
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
 const fixture = await prepareRealPiFixture(provider.baseUrl, 'integration');
@@ -155,7 +156,7 @@ try {
     JSON.stringify(
       {
         result: 'PASS',
-        engine: 'Pi 1.1.0 (unmodified)',
+        engine: `Pi ${(await detectEnvironment(store.state.settings)).version} (unmodified)`,
         provider: 'deterministic localhost HTTP server',
         checks: [
           'connection probe',

@@ -82,8 +82,10 @@ test('store writes latest draft atomically and recovers interrupted session with
   assert.equal(restored.state.sessions[0].draft, '最后草稿');
   assert.equal(restored.state.sessions[0].lastStatus, 'interrupted');
   await fs.writeFile(path.join(dir, 'state.json'), 'broken');
-  await assert.rejects(new Store(dir).load(), /原文件已保留/);
-  assert.equal(await fs.readFile(path.join(dir, 'state.json'), 'utf8'), 'broken');
+  const recovered = new Store(dir);
+  await recovered.load();
+  assert.equal(await fs.readFile(recovered.storage.recovery!.corruptFile!, 'utf8'), 'broken');
+  assert.equal(recovered.state.sessions[0].draft, '中文草稿');
 });
 test('standalone conversations persist alongside projects and keep independent working directories', async () => {
   const store = new Store(await sandbox());

@@ -20,6 +20,8 @@ import { readableError } from '../lib/format';
 import { IconButton } from './IconButton';
 import { Modal } from './Modal';
 import { CodeBlock } from './conversation/Markdown';
+import { compatibilityLabels, PI_INSTALL_COMMAND, PI_SOURCE_URL } from '../../shared/pi-version';
+import { PiCompatibilityNotice } from './PiCompatibilityNotice';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
 
@@ -134,7 +136,10 @@ export function SettingsModal(
                   <div className="environment-status">
                     <div>
                       <span>Pi 版本</span>
-                      <strong>{environment?.version || '未检测到'}</strong>
+                      <strong>
+                        {environment?.version || '未检测到'}
+                        {environment && ` · ${compatibilityLabels[environment.compatibility]}`}
+                      </strong>
                       {environment?.supported ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
                     </div>
                     <div>
@@ -146,6 +151,7 @@ export function SettingsModal(
                       <strong>{environment?.bash ? '已找到' : '未找到'}</strong>
                     </div>
                   </div>
+                  {environment && <PiCompatibilityNotice environment={environment} />}
                   {environment?.errors.map((e) => (
                     <p className="environment-note" key={e}>
                       {e}
@@ -189,10 +195,8 @@ export function SettingsModal(
                   </div>
                   <details className="setup-guide">
                     <summary>还没有安装 Pi？</summary>
-                    <p>在终端安装固定版本，再回到这里重新检测：</p>
-                    <CodeBlock>
-                      npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
-                    </CodeBlock>
+                    <p>在终端安装受支持的版本线，再回到这里重新检测：</p>
+                    <CodeBlock>{PI_INSTALL_COMMAND}</CodeBlock>
                     <button
                       className="text-button"
                       onClick={() => void api.invoke('openLink', 'https://pi.dev/docs/latest')}
@@ -252,7 +256,14 @@ export function SettingsModal(
                   </select>
                   <div className="connection-test">
                     <button
-                      disabled={!runtime.model || pending || running || !selected}
+                      disabled={
+                        !runtime.model ||
+                        pending ||
+                        running ||
+                        !selected ||
+                        !sessionEnabled ||
+                        !environment?.supported
+                      }
                       onClick={() =>
                         void action(async () => {
                           setTestResult('正在连接…');
@@ -289,12 +300,7 @@ export function SettingsModal(
                     <p>可在供应商管理中登录、保存 API Key 或编辑自定义模型。已有密钥不会回显。</p>
                     <button
                       className="text-button"
-                      onClick={() =>
-                        void api.invoke(
-                          'openLink',
-                          'https://github.com/earendil-works/pi/blob/v1.1.0/packages/coding-agent/docs/providers.md',
-                        )
-                      }
+                      onClick={() => void api.invoke('openLink', PI_SOURCE_URL + '/docs/providers.md')}
                     >
                       查看凭据配置说明 <ExternalLink size={13} />
                     </button>

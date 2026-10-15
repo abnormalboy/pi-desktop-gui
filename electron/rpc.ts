@@ -1,50 +1,10 @@
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
-
-const exec = promisify(execFile);
-
-async function killPosixTree(pid: number) {
-  const signal = (target: number, value: NodeJS.Signals) => {
-    try {
-      process.kill(target, value);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-    }
-  };
-  // Pause Pi before inspecting its children so it cannot start the next tool while we stop this one.
-  signal(-pid, 'SIGSTOP');
-  try {
-    const { stdout } = await exec('ps', ['-A', '-o', 'pid=,ppid=,pgid='], { timeout: 5000 });
-    const processes = stdout
-      .trim()
-      .split('\n')
-      .map((line) => {
-        const [child, parent, group] = line.trim().split(/\s+/).map(Number);
-        return { child, parent, group };
-      });
-    const descendants: typeof processes = [];
-    const parents = new Set([pid]);
-    for (const parent of parents) {
-      for (const process of processes) {
-        if (process.parent !== parent || parents.has(process.child)) continue;
-        parents.add(process.child);
-        descendants.push(process);
-      }
-    }
-    // Pi's shell tools start their own groups. Killing only Pi's group leaves those commands running.
-    for (const child of descendants.reverse()) {
-      if (child.group === child.child) signal(-child.group, 'SIGKILL');
-      signal(child.child, 'SIGKILL');
-    }
-    signal(-pid, 'SIGKILL');
-  } catch (error) {
-    signal(-pid, 'SIGCONT');
-    throw new Error('无法确认所有命令已结束，请重试强制结束。', { cause: error });
-  }
-}
+import { isWindows, terminateProcessTree } from './platform';
+import { incompatible, validateRpcResult, validateBridgeResult, type RpcResult } from './pi/protocol';
+import { DESKTOP_BRIDGE_COMMAND } from '../shared/pi-bridge';
 
 export interface CommandSpec {
   command: string;
@@ -84,9 +44,10 @@ export class PiRpc extends EventEmitter {
   child?: ChildProcessWithoutNullStreams;
   private pending = new Map<
     string,
-    { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+    { command: string; resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
   >();
   private writes = Promise.resolve();
+  private termination?: Promise<void>;
   closed = false;
   start(spec: CommandSpec, cwd: string, args: string[], env: NodeJS.ProcessEnv = {}) {
     if (this.child) throw new Error('进程已启动');
@@ -94,7 +55,7 @@ export class PiRpc extends EventEmitter {
       cwd,
       windowsHide: true,
       // Own process group on POSIX so killTree can stop commands Pi spawned, not just Pi itself.
-      detached: process.platform !== 'win32',
+      detached: !isWindows,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...spec.env, ...env },
     });
@@ -118,9 +79,16 @@ export class PiRpc extends EventEmitter {
           if (item) {
             clearTimeout(item.timer);
             this.pending.delete(record.id);
-            record.success
-              ? item.resolve(record.data)
-              : item.reject(new Error(record.error || 'Pi 拒绝了命令'));
+            try {
+              if (record.command !== item.command || typeof record.success !== 'boolean')
+                incompatible(item.command, '响应命令或成功标记无效');
+              if (record.success) {
+                validateRpcResult(item.command, record.data);
+                item.resolve(record.data);
+              } else item.reject(new Error(record.error || 'Pi 拒绝了命令'));
+            } catch (error) {
+              item.reject(error as Error);
+            }
           }
         } else this.emit('event', record);
       },
@@ -164,14 +132,18 @@ export class PiRpc extends EventEmitter {
       );
     return this.writes;
   }
-  request(type: string, values: Record<string, unknown> = {}, timeout = 30_000): Promise<any> {
+  request<K extends string>(
+    type: K,
+    values: Record<string, unknown> = {},
+    timeout = 30_000,
+  ): Promise<RpcResult<K>> {
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${type} 超时，请检查 Pi 状态`));
       }, timeout);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { command: type, resolve, reject, timer });
       this.write({ id, type, ...values }).catch((e) => {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -180,6 +152,9 @@ export class PiRpc extends EventEmitter {
     });
   }
   async bridge(method: string, params: unknown = {}) {
+    const { commands } = await this.request('get_commands');
+    if (!commands.some((command) => command.name === DESKTOP_BRIDGE_COMMAND))
+      throw new Error('Pi 桌面适配扩展未加载，已停止调用。请打开诊断检查扩展错误并重新连接。');
     const id = randomUUID();
     let result: any;
     let received = false;
@@ -195,12 +170,16 @@ export class PiRpc extends EventEmitter {
         'prompt',
         {
           message:
-            '/desktop-internal ' + Buffer.from(JSON.stringify({ id, method, params })).toString('base64'),
+            '/' +
+            DESKTOP_BRIDGE_COMMAND +
+            ' ' +
+            Buffer.from(JSON.stringify({ id, method, params })).toString('base64'),
         },
         600_000,
       );
       if (!received) throw new Error('Pi 桌面适配未响应，请重新连接');
       if (result.error) throw new Error(result.error);
+      validateBridgeResult(method, result.data);
       return result.data;
     } finally {
       this.off('event', listener);
@@ -224,16 +203,30 @@ export class PiRpc extends EventEmitter {
       this.once('exit', done);
     });
   }
-  async killTree() {
+  /** Only our completed tree termination can prove that a tool was stopped with Pi. */
+  async treeTerminationConfirmed() {
+    if (!this.termination) return false;
+    try {
+      await this.termination;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  killTree() {
+    if (this.termination) return this.termination;
+    if (!this.child?.pid || this.closed) return Promise.resolve();
+    const attempt = this.terminateTree();
+    this.termination = attempt;
+    void attempt.catch(() => {
+      if (this.termination === attempt) this.termination = undefined;
+    });
+    return attempt;
+  }
+  private async terminateTree() {
     const pid = this.child?.pid;
     if (!pid || this.closed) return;
-    if (process.platform === 'win32')
-      await new Promise<void>((resolve, reject) =>
-        execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, (error) =>
-          error && !this.closed ? reject(error) : resolve(),
-        ),
-      );
-    else await killPosixTree(pid);
+    await terminateProcessTree(pid);
     await this.waitExit(5000);
     if (!this.closed) throw new Error('进程未确认退出');
   }

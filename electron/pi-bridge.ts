@@ -13,6 +13,7 @@ import type {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { toggleResourceSetting } from './resources-config';
+import { DESKTOP_BRIDGE_COMMAND, DESKTOP_BRIDGE_PROTOCOL } from '../shared/pi-bridge';
 import {
   APPROVAL_ALLOW,
   APPROVAL_ALWAYS,
@@ -76,7 +77,7 @@ export default function desktopBridge(pi: ExtensionAPI) {
     }
     return m;
   }
-  pi.registerCommand('desktop-internal', {
+  pi.registerCommand(DESKTOP_BRIDGE_COMMAND, {
     description: 'Pi Desktop internal bridge',
     handler: async (encoded, ctx) => {
       const emit = (value: object) => ctx.ui.notify('__PI_DESKTOP__' + JSON.stringify(value));
@@ -89,7 +90,11 @@ export default function desktopBridge(pi: ExtensionAPI) {
         let data: unknown;
         switch (request.method) {
           case 'options':
-            data = { autoRetry: pi.getSettings().retry?.enabled !== false, approvalMode };
+            data = {
+              protocolVersion: DESKTOP_BRIDGE_PROTOCOL,
+              autoRetry: pi.getSettings().retry?.enabled !== false,
+              approvalMode,
+            };
             break;
           case 'approval_mode':
             if (!['auto', 'confirm', 'readonly'].includes(p.mode)) throw new Error('审批模式无效');

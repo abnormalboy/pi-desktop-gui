@@ -1,5 +1,7 @@
 import { CheckCircle2 } from 'lucide-react';
 import { type Runtime, type Environment } from '../../shared/types';
+import { compatibilityMessage } from '../../shared/pi-version';
+import { PiCompatibilityNotice } from './PiCompatibilityNotice';
 
 export function ReadinessChecklist({
   environment,
@@ -24,7 +26,7 @@ export function ReadinessChecklist({
   const connected = ownRuntime && runtime.connected;
   const piReady = environment.supported;
   const modelReady = connected ? Boolean(runtime.model) : Boolean(savedModel);
-  if (piReady && modelReady) return null;
+  if (piReady && modelReady) return <PiCompatibilityNotice environment={environment} />;
   const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();
   const steps: { done: boolean; title: string; detail: string; action?: [string, () => void] }[] = [
     {
@@ -33,7 +35,7 @@ export function ReadinessChecklist({
       detail: piReady
         ? environment.piPath
         : environment.version
-          ? `检测到 Pi ${environment.version}，当前适配 1.1.0`
+          ? compatibilityMessage(environment.version, environment.compatibility)
           : '未检测到 Pi，请安装或在设置中指定 cli.js',
       action: piReady ? undefined : ['检查运行环境', checkEnvironment],
     },
@@ -62,6 +64,7 @@ export function ReadinessChecklist({
   return (
     <div className="readiness" role="region" aria-label="开始前检查">
       <strong>开始前还差一步</strong>
+      <PiCompatibilityNotice environment={environment} />
       {steps.map((s, i) => (
         <div key={i} className={'readiness-step' + (s.done ? ' done' : '')}>
           {s.done ? <CheckCircle2 size={17} /> : <span className="step-number">{i + 1}</span>}

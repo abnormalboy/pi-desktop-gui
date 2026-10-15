@@ -97,8 +97,10 @@
 Pi Desktop 依赖本机 Node.js（`>= 22.19`）与 Pi Coding Agent CLI：
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.1
 ```
+
+桌面端支持 Pi **1.1.x**，完整回归基准为 **1.1.0**。同一版本线的补丁版可直接使用；其他版本线会给出明确提示。Pi 的升级由用户管理，桌面端不自动安装或升级 Pi。
 
 > **Windows 用户提示**：请确保已安装 [Git for Windows](https://git-scm.com/download/win)（提供智能体执行命令所需的 Git Bash 环境）。
 
@@ -168,18 +170,25 @@ pi-desktop/
 ├── electron/           # Electron 主进程与系统桥接层
 │   ├── main.ts         # 窗口生命周期、菜单与 IPC 路由
 │   ├── rpc.ts          # Pi Agent stdio RPC 通信（JSONL）
+│   ├── pi/protocol.ts  # Pi 核心响应校验与数据转换
+│   ├── store.ts        # 索引、备份轮转与损坏恢复
+│   ├── store-state.ts  # 项目、会话与设置的逐项校验
 │   ├── workspace.ts    # 工作区文件监控、Git Diff 与快照回滚
 │   ├── snapshot.ts     # 基于 Git 对象的私有运行快照
 │   ├── pi-bridge.ts    # 注入 Pi 的桌面适配扩展（含工具审批）
 │   ├── history.ts      # JSONL 会话树解析与全文检索
 │   └── ...
 ├── src/                # React 19 渲染进程前端
-│   ├── App.tsx         # 主工作台、对话流与消息分支交互
-│   ├── PiFeatures.tsx  # MCP / Skills / 供应商 / 会话树管理中心
-│   └── SettingsForm.tsx# 环境诊断与偏好设置
+│   ├── App.tsx         # 顶层布局组合
+│   ├── components/    # 对话、输入、工作区、设置与恢复提示
+│   ├── hooks/         # 运行状态、草稿、快捷键及面板操作
+│   ├── features/      # 按页签组织 Pi 管理功能
+│   └── lib/           # 纯展示函数、命令和平台文案
 ├── shared/             # 主进程与渲染进程共享类型契约、审批策略
 └── scripts/            # 构建、打包与端到端自动化验收脚本
 ```
+
+模块依赖、Pi 升级方式和恢复边界见 [架构说明](docs/architecture.md)。本地索引保存三份间隔至少十分钟的备份；恢复时显示具体备份时间。Pi 崩溃后不会自动重发提问，尚未执行的队列会回到草稿；若无法确认旧命令已经结束，会先阻止恢复和撤销，需手动结束命令后重启应用。
 
 ### 本地启动与构建
 

@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 export default function (pi) {
+  pi.registerCommand('gui-pid', {
+    description: 'Return the isolated test process identifier',
+    handler: async (_args, ctx) => ctx.ui.notify('GUI_PID:' + process.pid, 'info'),
+  });
   pi.on('session_before_switch', async () => {
     if (fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'cancel-switch'))) return { cancel: true };
   });

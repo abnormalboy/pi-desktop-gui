@@ -6,6 +6,7 @@ import {
   type Runtime,
   type Environment,
   type Settings,
+  type StorageStatus,
 } from '../../shared/types';
 import { readableError } from '../lib/format';
 const api = window.desktop;
@@ -15,12 +16,14 @@ export function useRuntime(
 ) {
   const [state, setState] = useState<AppState>(),
     [runtime, setRuntime] = useState<Runtime>(emptyRuntime),
-    [environment, setEnvironment] = useState<Environment>();
+    [environment, setEnvironment] = useState<Environment>(),
+    [storage, setStorage] = useState<StorageStatus>({ writable: false });
   useEffect(() => {
     let alive = true;
     const unsubscribe = api.onEvent((event) => {
       if (!alive) return;
       if (event.type === 'state') setState(event.state);
+      else if (event.type === 'storage') setStorage(event.storage);
       else if (event.type === 'runtimePatch')
         setRuntime((previous) => applyRuntimePatch(previous, event.patch));
       else setRuntime(event.runtime);
@@ -33,6 +36,7 @@ export function useRuntime(
         setRuntime(v.runtime);
         setEnvironment(v.environment);
         setPrefs(v.state.settings);
+        setStorage(v.storage);
       })
       .catch((e) => setError(readableError(e)));
     return () => {
@@ -40,5 +44,5 @@ export function useRuntime(
       unsubscribe();
     };
   }, []);
-  return { state, setState, runtime, environment, setEnvironment };
+  return { state, setState, runtime, environment, setEnvironment, storage };
 }

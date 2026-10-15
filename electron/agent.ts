@@ -3,7 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { PiRpc } from './rpc';
-import { agentDirectory, detectEnvironment, resolvePi } from './environment';
+import { agentDirectory, requireSupportedPi, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
 import { Workspace, attachmentPrompt } from './workspace';
 import { Configuration } from './configuration';
@@ -26,6 +26,9 @@ import {
 } from '../shared/types';
 import { APPROVAL_DENY, APPROVAL_PREFIX } from '../shared/approval';
 import { validateImages } from './images';
+import { piShellEnvironment } from './platform';
+import { sessionStats } from './pi/protocol';
+import { DESKTOP_BRIDGE_COMMAND } from '../shared/pi-bridge';
 
 // Pi model records may contain provider headers. Keep only display metadata in IPC.
 const displayModel = (model: any): Model | undefined =>
@@ -83,6 +86,9 @@ export class AgentService extends EventEmitter {
   private stopEpoch = 0;
   private queuedImages: { text: string; images: ImageAttachment[] }[] = [];
   private notificationId = 0;
+  private crashTimes = new Map<string, number>();
+  private crashCleanup = Promise.resolve();
+  private unsafeExit = false;
   constructor(
     readonly store: Store,
     readonly workspace: Workspace,
@@ -446,14 +452,7 @@ export class AgentService extends EventEmitter {
       if (this.rpc === rpc) this.runtime.messages = messages.messages ?? [];
       try {
         const stats = await rpc.request('get_session_stats');
-        if (this.rpc === rpc)
-          this.runtime.stats = {
-            tokens: stats.tokens?.total ?? stats.totalTokens,
-            cost: stats.cost ?? stats.totalCost,
-            contextPercent: stats.contextUsage?.percent,
-            contextTokens: stats.contextUsage?.tokens,
-            contextWindow: stats.contextUsage?.contextWindow,
-          };
+        if (this.rpc === rpc) this.runtime.stats = sessionStats(stats);
       } catch {}
     }
     this.publish();
@@ -461,7 +460,17 @@ export class AgentService extends EventEmitter {
   connect(sessionId: string) {
     return this.exclusive(() => this.ensureConnected(sessionId));
   }
+  assertCommandsStopped() {
+    if (this.unsafeExit)
+      throw new Error(
+        '无法确认 Pi 启动的命令已结束，已暂停启动任务、切换会话和撤销文件。请在系统任务管理器或终端结束残留命令，再重新启动 Pi Desktop；可先打开诊断查看最后的命令。',
+      );
+  }
   private async ensureConnected(sessionId: string) {
+    await this.crashCleanup;
+    this.assertCommandsStopped();
+    await this.store.flush();
+    this.store.assertWritable();
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
       project = session.projectId ? this.store.project(session.projectId) : undefined;
@@ -483,15 +492,15 @@ export class AgentService extends EventEmitter {
       await old.close();
     }
     this.clearDialogs();
-    this.runtime = { ...emptyRuntime(), sessionId };
+    const previousCrash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
+    this.runtime = { ...emptyRuntime(), sessionId, crash: previousCrash };
     this.queuedImages = [];
     this.stopRequested = false;
     this.connecting = true;
     this.fullOutput = '';
     this.status('starting');
     try {
-      const environment = await detectEnvironment(this.store.state.settings, this.developmentRoot);
-      if (!environment.supported) throw new Error(environment.errors.join('\n'));
+      const environment = await requireSupportedPi(this.store.state.settings, this.developmentRoot);
       const resolved = await resolvePi(this.store.state.settings, this.developmentRoot);
       if (this.stopRequested) throw new Error('启动已取消');
       const rpc = new PiRpc();
@@ -516,14 +525,56 @@ export class AgentService extends EventEmitter {
           this.status('error');
         }
       });
-      rpc.on('exit', () => {
+      rpc.on('exit', (code: number | null, signal: string | null) => {
         if (this.rpc !== rpc || this.shutdown) return;
         this.runtime.connected = false;
         this.clearDialogs();
-        if (busy(this.runtime.status)) {
-          this.runtime.error = 'Pi 进程已退出，历史保留，可重新连接。';
-          this.status(this.stopRequested ? 'stopped' : 'interrupted');
-        } else this.publish(true);
+        const last = this.runtime.tools.findLast((tool) => tool.status === 'running');
+        this.restoreQueuedDrafts([...this.runtime.steering, ...this.runtime.followUp], this.queuedImages);
+        this.runtime.steering = [];
+        this.runtime.followUp = [];
+        this.queuedImages = [];
+        if (last) {
+          this.unsafeExit = true;
+          this.crashCleanup = rpc.treeTerminationConfirmed().then((confirmed) => {
+            this.unsafeExit = !confirmed;
+            if (this.runtime.crash) this.runtime.crash.cleanup = confirmed ? 'confirmed' : 'unconfirmed';
+            if (!confirmed) this.runtime.error = '无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。';
+            this.publish(true);
+          });
+        }
+        if (this.stopRequested) {
+          this.status('stopped');
+          return;
+        }
+        const at = Date.now();
+        this.runtime.crash = {
+          cleanup: last ? 'checking' : 'confirmed',
+          code,
+          signal,
+          at,
+          repeated: at - (this.crashTimes.get(sessionId) ?? 0) <= 10000,
+          lastTool: last
+            ? {
+                name: last.name,
+                target: redact(String(last.args.command ?? last.args.path ?? '')).slice(0, 2000),
+                seconds: Math.max(0, Math.floor((at - last.startedAt) / 1000)),
+              }
+            : undefined,
+          log: this.runtime.diagnostic
+            .flatMap((line) => line.split(/\r?\n/))
+            .filter(Boolean)
+            .slice(-20),
+        };
+        this.crashTimes.set(sessionId, at);
+        for (const tool of this.runtime.tools)
+          if (tool.status === 'running') {
+            tool.status = 'error';
+            tool.durationMs = at - tool.startedAt;
+            tool.output += '\nPi 意外退出，工具是否完成需要检查当前文件。';
+          }
+        this.runtime.error = 'Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。';
+        this.status('interrupted');
       });
       const args = [
         '--mode',
@@ -539,16 +590,14 @@ export class AgentService extends EventEmitter {
       await fs.copyFile(this.bridgeSource, bridge);
       args.push('--extension', bridge);
       // Project trust is answered in Pi's own dialog; no implicit --approve flag.
-      const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
       const shellEnv: NodeJS.ProcessEnv = {
         PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
         PI_TELEMETRY: '0',
         PI_DESKTOP_APPROVAL: session.approvalMode ?? 'auto',
+        ...piShellEnvironment(environment.bash),
       };
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
       // including installations on another drive, over Windows' legacy WSL bash launcher.
-      if (environment.bash && process.platform === 'win32')
-        shellEnv[pathKey] = path.dirname(environment.bash) + path.delimiter + (process.env[pathKey] ?? '');
       rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
       this.runtime.cwd = await this.store.sessionDirectory(sessionId);
       const state = await rpc.request('get_state', {}, 120000);
@@ -583,7 +632,7 @@ export class AgentService extends EventEmitter {
         .slice(-10 * 1024 * 1024);
       this.runtime.models = ((await rpc.request('get_available_models')).models ?? [])
         .map(displayModel)
-        .filter(Boolean);
+        .filter((model): model is Model => Boolean(model));
       const settings = this.store.state.settings;
       const wanted =
         session.model ?? (resuming ? undefined : { provider: settings.provider, id: settings.modelId });
@@ -607,9 +656,10 @@ export class AgentService extends EventEmitter {
         await rpc.request('set_thinking_level', { level: thinking });
         this.runtime.thinking = thinking;
       }
-      this.runtime.connected = true;
       this.status('idle');
       await this.refreshCapabilities();
+      this.runtime.connected = true;
+      this.runtime.crash = undefined;
       session.model = this.runtime.model
         ? { provider: this.runtime.model.provider, id: this.runtime.model.id }
         : undefined;
@@ -617,7 +667,8 @@ export class AgentService extends EventEmitter {
       this.save();
     } catch (e) {
       this.runtime.error = errorText(e);
-      this.status(this.stopRequested ? 'stopped' : 'error');
+      this.runtime.connected = false;
+      this.status(this.stopRequested ? 'stopped' : this.runtime.crash ? 'interrupted' : 'error');
       const rpc = this.rpc;
       this.rpc = undefined;
       await rpc?.close();
@@ -628,110 +679,134 @@ export class AgentService extends EventEmitter {
   }
   send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
     const epoch = this.stopEpoch;
+    return this.exclusive(() => this.sendInOperation(id, text, attachments, mode, images, epoch));
+  }
+  recover(id: string, continuePrompt?: string) {
+    const epoch = this.stopEpoch;
     return this.exclusive(async () => {
-      if (epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
-      if (this.probing) throw new Error('正在测试模型连接，请稍候');
-      validateImages(images);
-      if (!text.trim() && !images.length) throw new Error('请输入任务内容或添加图片');
-      const session = this.store.session(id),
-        project = session.projectId ? this.store.project(session.projectId) : undefined;
-      if (busy(this.runtime.status) && this.runtime.sessionId !== id)
-        throw new Error('已有会话运行中，请先等待完成或停止');
-      if (this.runtime.status === 'stopping') throw new Error('正在停止，请稍候');
-      if (!project && attachments.length) throw new Error('引用本地文件需要在项目会话中进行');
-      if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
-      const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
+      if (this.runtime.sessionId !== id || !this.runtime.crash || busy(this.runtime.status))
+        throw new Error('这个会话没有等待恢复的中断，请使用正常连接或等待当前操作结束');
+      if (continuePrompt !== undefined && !continuePrompt.trim())
+        throw new Error('请填写继续任务的内容，或选择“重新连接”');
       await this.ensureConnected(id);
-      const shellCommand = /^!!?\S/.test(text);
-      if (!this.runtime.model && !text.startsWith('/') && !shellCommand)
-        throw new Error('请选择一个可用模型');
-      if (images.length && !this.runtime.model?.input?.includes('image'))
-        throw new Error('当前模型未声明图片能力，请切换到支持图片的模型');
-      const isActive = busy(this.runtime.status);
-      if (isActive && images.length)
-        validateImages([...this.queuedImages.flatMap((q) => q.images), ...images]);
-      if (shellCommand && isActive) throw new Error('请等待当前任务完成后再执行命令');
-      if (!isActive) {
-        this.stopRequested = false;
-        this.runtime.error = undefined;
-        this.runtime.tools = [];
-        this.runtime.startedAt = Date.now();
-        this.status('starting');
-        if (project)
-          try {
-            await this.workspace.capture(project);
-          } catch (error) {
-            this.runtime.error = `无法建立本轮快照，任务未开始：${errorText(error)}`;
-            this.status(this.stopRequested ? 'stopped' : 'error');
-            throw new Error(this.runtime.error, { cause: error });
-          }
-      }
-      if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
-      try {
-        let result: any;
-        if (shellCommand) {
-          if (images.length || attachments.length) throw new Error('终端命令不能附带附件');
-          this.status('running');
-          this.runtime.tools.push({
-            id: 'desktop-bash',
-            name: 'bash',
-            args: { command: text.replace(/^!!?/, '') },
-            status: 'running',
-            output: '',
-            startedAt: Date.now(),
-          });
-          const output = await this.rpc!.request(
-            'bash',
-            { command: text.replace(/^!!?/, ''), excludeFromContext: text.startsWith('!!') },
-            3600000,
-          );
-          const tool = this.runtime.tools.find((t) => t.id === 'desktop-bash')!;
-          tool.output = output.output;
-          tool.status = output.exitCode === 0 ? 'done' : 'error';
-          tool.durationMs = Date.now() - tool.startedAt;
-          this.status(output.cancelled ? 'stopped' : output.exitCode === 0 ? 'completed' : 'error');
-          await this.refresh();
-          await this.syncApprovalMode();
-        } else
-          result = await this.rpc!.request(
-            'prompt',
-            {
-              message: prompt,
-              ...(isActive ? { streamingBehavior: mode } : {}),
-              ...(images.length
-                ? { images: images.map(({ data, mimeType }) => ({ type: 'image', data, mimeType })) }
-                : {}),
-            },
-            text.startsWith('/') ? 600000 : 30000,
-          );
-        if (result?.disposition === 'queued' && images.length)
-          this.queuedImages.push({ text: prompt, images: structuredClone(images) });
-        if (result?.disposition === 'handled' && !this.stopRequested) {
-          const state = await this.rpc!.request('get_state');
-          if (!state.isStreaming && !state.isCompacting && !state.pendingMessageCount) this.status('idle');
-        }
-        if (session.draft === text) {
-          session.draft = '';
-          session.attachments = [];
-          session.images = [];
-        }
-        if (session.title === '新会话' || session.title === '新对话') {
-          session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
-          void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
-        }
-        session.updatedAt = Date.now();
-        this.save();
-      } catch (e) {
-        this.runtime.error = errorText(e);
-        if (!isActive && !this.stopRequested) this.status('error');
-        throw e;
-      }
+      if (continuePrompt !== undefined)
+        await this.sendInOperation(id, continuePrompt, [], 'steer', [], epoch);
     });
+  }
+  private async sendInOperation(
+    id: string,
+    text: string,
+    attachments: string[],
+    mode: SendMode,
+    images: ImageAttachment[],
+    epoch: number,
+  ) {
+    this.store.assertWritable();
+    if (epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+    if (this.probing) throw new Error('正在测试模型连接，请稍候');
+    validateImages(images);
+    if (!text.trim() && !images.length) throw new Error('请输入任务内容或添加图片');
+    const session = this.store.session(id),
+      project = session.projectId ? this.store.project(session.projectId) : undefined;
+    if (busy(this.runtime.status) && this.runtime.sessionId !== id)
+      throw new Error('已有会话运行中，请先等待完成或停止');
+    if (this.runtime.status === 'stopping') throw new Error('正在停止，请稍候');
+    if (!project && attachments.length) throw new Error('引用本地文件需要在项目会话中进行');
+    if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
+    const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
+    await this.ensureConnected(id);
+    const shellCommand = /^!!?\S/.test(text);
+    if (!this.runtime.model && !text.startsWith('/') && !shellCommand) throw new Error('请选择一个可用模型');
+    if (images.length && !this.runtime.model?.input?.includes('image'))
+      throw new Error('当前模型未声明图片能力，请切换到支持图片的模型');
+    const isActive = busy(this.runtime.status);
+    if (isActive && images.length) validateImages([...this.queuedImages.flatMap((q) => q.images), ...images]);
+    if (shellCommand && isActive) throw new Error('请等待当前任务完成后再执行命令');
+    if (!isActive) {
+      this.stopRequested = false;
+      this.runtime.error = undefined;
+      this.runtime.tools = [];
+      this.runtime.startedAt = Date.now();
+      this.status('starting');
+      if (project)
+        try {
+          await this.workspace.capture(project);
+        } catch (error) {
+          this.runtime.error = `无法建立本轮快照，任务未开始：${errorText(error)}`;
+          this.status(this.stopRequested ? 'stopped' : 'error');
+          throw new Error(this.runtime.error, { cause: error });
+        }
+    }
+    if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+    try {
+      // Persist the pending draft and run state before any command can reach Pi. An asynchronous
+      // status save alone can fail after the entry guard but before prompt/bash starts execution.
+      await this.store.save();
+      if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+      let result: any;
+      if (shellCommand) {
+        if (images.length || attachments.length) throw new Error('终端命令不能附带附件');
+        this.status('running');
+        await this.store.flush();
+        if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+        this.runtime.tools.push({
+          id: 'desktop-bash',
+          name: 'bash',
+          args: { command: text.replace(/^!!?/, '') },
+          status: 'running',
+          output: '',
+          startedAt: Date.now(),
+        });
+        const output = await this.rpc!.request(
+          'bash',
+          { command: text.replace(/^!!?/, ''), excludeFromContext: text.startsWith('!!') },
+          3600000,
+        );
+        const tool = this.runtime.tools.find((t) => t.id === 'desktop-bash')!;
+        tool.output = output.output;
+        tool.status = output.exitCode === 0 ? 'done' : 'error';
+        tool.durationMs = Date.now() - tool.startedAt;
+        this.status(output.cancelled ? 'stopped' : output.exitCode === 0 ? 'completed' : 'error');
+        await this.refresh();
+        await this.syncApprovalMode();
+      } else
+        result = await this.rpc!.request(
+          'prompt',
+          {
+            message: prompt,
+            ...(isActive ? { streamingBehavior: mode } : {}),
+            ...(images.length
+              ? { images: images.map(({ data, mimeType }) => ({ type: 'image', data, mimeType })) }
+              : {}),
+          },
+          text.startsWith('/') ? 600000 : 30000,
+        );
+      if (result?.disposition === 'queued' && images.length)
+        this.queuedImages.push({ text: prompt, images: structuredClone(images) });
+      if (result?.disposition === 'handled' && !this.stopRequested) {
+        const state = await this.rpc!.request('get_state');
+        if (!state.isStreaming && !state.isCompacting && !state.pendingMessageCount) this.status('idle');
+      }
+      if (session.draft === text) {
+        session.draft = '';
+        session.attachments = [];
+        session.images = [];
+      }
+      if (session.title === '新会话' || session.title === '新对话') {
+        session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
+        void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
+      }
+      session.updatedAt = Date.now();
+      this.save();
+    } catch (e) {
+      this.runtime.error = errorText(e);
+      if (!isActive && !this.stopRequested) this.status(this.runtime.crash ? 'interrupted' : 'error');
+      throw e;
+    }
   }
   private async loadThinkingLevels(rpc: PiRpc) {
     const levels = await rpc.request('get_available_thinking_levels');
-    this.runtime.thinkingLevels =
-      levels.levels ?? levels.thinkingLevels ?? (Array.isArray(levels) ? levels : []);
+    this.runtime.thinkingLevels = levels.levels;
   }
   setModel(id: string, provider: string, modelId: string) {
     return this.exclusive(async () => {
@@ -853,6 +928,16 @@ export class AgentService extends EventEmitter {
     const queuedImages = [...this.queuedImages];
     const result = await this.rpc.request('clear_queue');
     const returned = [...(result?.steering ?? []), ...(result?.followUp ?? [])];
+    this.restoreQueuedDrafts(returned, queuedImages);
+    this.runtime.steering = [];
+    this.runtime.followUp = [];
+    this.queuedImages = [];
+    // Stopping remains available even after disk failure; recovered drafts remain visible in memory.
+    await this.store.save().catch((error) => this.diagnostic(errorText(error)));
+    this.emit('state', this.store.state);
+    this.publish(true);
+  }
+  private restoreQueuedDrafts(returned: string[], queuedImages: typeof this.queuedImages) {
     if (returned.length && this.runtime.sessionId) {
       const s = this.store.session(this.runtime.sessionId);
       const selectedId = this.store.state.selectedSessionId;
@@ -863,7 +948,7 @@ export class AgentService extends EventEmitter {
           s.images = [...(s.images ?? []), ...q.images];
         } catch {
           const recovered = this.store.createSession(s.projectId);
-          if (!s.projectId) recovered.cwd = await this.store.sessionDirectory(s.id);
+          if (!s.projectId) recovered.cwd = this.runtime.cwd;
           recovered.title = '已恢复的图片消息';
           recovered.draft = q.text;
           recovered.images = q.images;
@@ -874,18 +959,13 @@ export class AgentService extends EventEmitter {
       }
       if (selectedId) this.store.selectSession(selectedId);
       s.draft = [s.draft, ...restored].filter(Boolean).join('\n\n');
-      this.save();
     }
-    this.runtime.steering = [];
-    this.runtime.followUp = [];
-    this.queuedImages = [];
-    this.publish(true);
   }
   private async refreshCapabilities() {
     if (!this.rpc || this.rpc.closed) return;
     this.runtime.commands = await Promise.all(
       ((await this.rpc.request('get_commands')).commands ?? [])
-        .filter((c: any) => c.name !== 'desktop-internal')
+        .filter((c: any) => c.name !== DESKTOP_BRIDGE_COMMAND)
         .map(async (c: any) =>
           c.source === 'prompt' && c.sourceInfo?.path
             ? { ...c, argumentHint: await argumentHint(c.sourceInfo.path) }
@@ -894,7 +974,7 @@ export class AgentService extends EventEmitter {
     );
     this.runtime.models = ((await this.rpc.request('get_available_models')).models ?? [])
       .map(displayModel)
-      .filter(Boolean);
+      .filter((model): model is Model => Boolean(model));
     const options = await this.rpc.bridge('options');
     this.runtime.autoRetry = options.autoRetry;
     this.runtime.approvalMode = options.approvalMode ?? 'auto';
@@ -1042,6 +1122,8 @@ export class AgentService extends EventEmitter {
     this.status('stopped');
   }
   async disconnect() {
+    await this.crashCleanup;
+    this.assertCommandsStopped();
     if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务或连接测试结束');
     const rpc = this.rpc;
     this.rpc = undefined;
@@ -1050,6 +1132,8 @@ export class AgentService extends EventEmitter {
     this.publish(true);
   }
   async testConnection(sessionId: string) {
+    this.assertCommandsStopped();
+    this.store.assertWritable();
     if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务结束');
     const session = this.store.session(sessionId);
     const cwd = await this.store.sessionDirectory(session.id);
@@ -1066,6 +1150,7 @@ export class AgentService extends EventEmitter {
     let failure = '';
     let timer: NodeJS.Timeout | undefined;
     try {
+      await requireSupportedPi(settings, this.developmentRoot);
       const resolved = await resolvePi(settings, this.developmentRoot);
       const settled = new Promise<void>((resolve, reject) => {
         probe.on('event', (e) => {
@@ -1141,6 +1226,6 @@ export class AgentService extends EventEmitter {
       await this.stop().catch(() => {});
     }
     await this.rpc?.close();
-    await this.store.flush();
+    await this.store.flush().catch((e) => this.diagnostic(errorText(e)));
   }
 }

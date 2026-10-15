@@ -8,6 +8,35 @@ const exec = promisify(execFile);
 
 export const isWindows = process.platform === 'win32';
 export const isMac = process.platform === 'darwin';
+export const nodeExecutableName = isWindows ? 'node.exe' : 'node 可执行文件';
+export async function locateExecutable(name: string): Promise<string> {
+  try {
+    const { stdout } = await exec(isWindows ? 'where.exe' : 'which', [name], {
+      windowsHide: true,
+      timeout: 3000,
+    });
+    return stdout.trim().split(/\r?\n/)[0] || '';
+  } catch {
+    return '';
+  }
+}
+export async function shellCandidates(git?: string, configured?: string) {
+  return (
+    isWindows
+      ? [
+          configured || '',
+          process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe') : '',
+          git ? path.resolve(git, '..', '..', 'bin', 'bash.exe') : '',
+          await locateExecutable('bash'),
+        ]
+      : [configured || '', await locateExecutable('bash'), '/bin/bash']
+  ).filter(Boolean);
+}
+export function piShellEnvironment(bash?: string): NodeJS.ProcessEnv {
+  if (!isWindows || !bash) return {};
+  const key = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+  return { [key]: path.dirname(bash) + path.delimiter + (process.env[key] ?? '') };
+}
 
 export const pathKey = (p: string) => {
   const resolved = path.resolve(p);
@@ -252,3 +281,49 @@ export async function loadLoginShellPath() {
 
 export const fileManagerName = isWindows ? '资源管理器' : isMac ? '访达' : '文件管理器';
 export const trashName = isWindows ? '回收站' : '废纸篓';
+
+async function killPosixTree(pid: number) {
+  const signal = (target: number, value: NodeJS.Signals) => {
+    try {
+      process.kill(target, value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  };
+  // Pause Pi before inspecting its children so it cannot start the next tool while we stop this one.
+  signal(-pid, 'SIGSTOP');
+  try {
+    const { stdout } = await exec('ps', ['-A', '-o', 'pid=,ppid=,pgid='], { timeout: 5000 });
+    const processes = stdout
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const [child, parent, group] = line.trim().split(/\s+/).map(Number);
+        return { child, parent, group };
+      });
+    const descendants: typeof processes = [];
+    const parents = new Set([pid]);
+    for (const parent of parents) {
+      for (const process of processes) {
+        if (process.parent !== parent || parents.has(process.child)) continue;
+        parents.add(process.child);
+        descendants.push(process);
+      }
+    }
+    // Pi's shell tools start their own groups. Killing only Pi's group leaves those commands running.
+    for (const child of descendants.reverse()) {
+      if (child.group === child.child) signal(-child.group, 'SIGKILL');
+      signal(child.child, 'SIGKILL');
+    }
+    signal(-pid, 'SIGKILL');
+  } catch (error) {
+    signal(-pid, 'SIGCONT');
+    throw new Error('无法确认所有命令已结束，请重试强制结束。', { cause: error });
+  }
+}
+
+export async function terminateProcessTree(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error('无效的进程编号');
+  if (isWindows) await exec('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+  else await killPosixTree(pid);
+}
