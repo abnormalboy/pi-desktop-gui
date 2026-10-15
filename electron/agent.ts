@@ -519,77 +519,7 @@ export class AgentService extends EventEmitter {
       if (this.stopRequested) throw new Error('启动已取消');
       const rpc = new PiRpc();
       this.rpc = rpc;
-      rpc.on('event', (e) => {
-        if (this.rpc === rpc) this.onEvent(e);
-      });
-      rpc.on('diagnostic', (s) => {
-        if (this.rpc === rpc) this.diagnostic(s);
-      });
-      rpc.on('protocolError', (e) => {
-        if (this.rpc === rpc) {
-          this.runtime.error = errorText(e);
-          this.status('error');
-          void rpc.killTree().catch(() => {});
-        }
-      });
-      rpc.on('fault', (e) => {
-        if (this.rpc === rpc) {
-          this.runtime.error = errorText(e);
-          this.runtime.connected = false;
-          this.status('error');
-        }
-      });
-      rpc.on('exit', (code: number | null, signal: string | null) => {
-        if (this.rpc !== rpc || this.shutdown) return;
-        this.runtime.connected = false;
-        this.clearDialogs();
-        const last = this.runtime.tools.findLast((tool) => tool.status === 'running');
-        this.restoreQueuedDrafts([...this.runtime.steering, ...this.runtime.followUp], this.queuedImages);
-        this.runtime.steering = [];
-        this.runtime.followUp = [];
-        this.queuedImages = [];
-        if (last) {
-          this.unsafeExit = true;
-          this.crashCleanup = rpc.treeTerminationConfirmed().then((confirmed) => {
-            this.unsafeExit = !confirmed;
-            if (this.runtime.crash) this.runtime.crash.cleanup = confirmed ? 'confirmed' : 'unconfirmed';
-            if (!confirmed) this.runtime.error = '无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。';
-            this.publish(true);
-          });
-        }
-        if (this.stopRequested) {
-          this.status('stopped');
-          return;
-        }
-        const at = Date.now();
-        this.runtime.crash = {
-          cleanup: last ? 'checking' : 'confirmed',
-          code,
-          signal,
-          at,
-          repeated: at - (this.crashTimes.get(sessionId) ?? 0) <= 10000,
-          lastTool: last
-            ? {
-                name: last.name,
-                target: redact(String(last.args.command ?? last.args.path ?? '')).slice(0, 2000),
-                seconds: Math.max(0, Math.floor((at - last.startedAt) / 1000)),
-              }
-            : undefined,
-          log: this.runtime.diagnostic
-            .flatMap((line) => line.split(/\r?\n/))
-            .filter(Boolean)
-            .slice(-20),
-        };
-        this.crashTimes.set(sessionId, at);
-        for (const tool of this.runtime.tools)
-          if (tool.status === 'running') {
-            tool.status = 'error';
-            tool.durationMs = at - tool.startedAt;
-            tool.output += '\nPi 意外退出，工具是否完成需要检查当前文件。';
-          }
-        this.runtime.error = 'Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。';
-        this.status('interrupted');
-      });
+      this.installRpcHandlers(rpc, sessionId);
       const args = [
         '--mode',
         'rpc',
@@ -614,71 +544,7 @@ export class AgentService extends EventEmitter {
       // including installations on another drive, over Windows' legacy WSL bash launcher.
       rpc.start(resolved.spec, await this.store.sessionDirectory(sessionId), args, shellEnv);
       this.runtime.cwd = await this.store.sessionDirectory(sessionId);
-      const state = await rpc.request('get_state', {}, 120000);
-      if (this.stopRequested) throw new Error('启动已取消');
-      if (state.sessionFile) session.file = state.sessionFile;
-      this.runtime.model = displayModel(state.model);
-      this.runtime.thinking = state.thinkingLevel;
-      this.runtime.messages = (await rpc.request('get_messages')).messages ?? [];
-      const calls = new Map(
-        this.runtime.messages
-          .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-          .filter((b) => b.type === 'toolCall')
-          .map((b) => [b.id, b]),
-      );
-      this.runtime.tools = this.runtime.messages
-        .filter((m) => m.role === 'toolResult')
-        .slice(-1000)
-        .map((m) => ({
-          id: m.toolCallId ?? '',
-          name: m.toolName ?? 'tool',
-          args: calls.get(m.toolCallId)?.arguments ?? {},
-          status: m.isError ? 'error' : 'done',
-          output: messageText(m).split('\n').slice(-200).join('\n'),
-          startedAt: m.timestamp ?? 0,
-          durationMs: typeof m.durationMs === 'number' ? m.durationMs : undefined,
-          patch: toolPatch(m),
-        }));
-      this.fullOutput = this.runtime.messages
-        .filter((m) => m.role === 'toolResult')
-        .map((m) => `[${m.toolName ?? 'tool'}]\n${messageText(m)}`)
-        .join('\n\n')
-        .slice(-10 * 1024 * 1024);
-      this.runtime.models = ((await rpc.request('get_available_models')).models ?? [])
-        .map(displayModel)
-        .filter((model): model is Model => Boolean(model));
-      const settings = this.store.state.settings;
-      const wanted =
-        session.model ?? (resuming ? undefined : { provider: settings.provider, id: settings.modelId });
-      if (
-        wanted?.provider &&
-        wanted.id &&
-        this.runtime.models.some((m) => m.provider === wanted.provider && m.id === wanted.id)
-      ) {
-        this.runtime.model = displayModel(
-          await rpc.request('set_model', { provider: wanted.provider, modelId: wanted.id }),
-        );
-      }
-      await this.loadThinkingLevels(rpc);
-      const currentState = await rpc.request('get_state');
-      this.runtime.model = displayModel(currentState.model);
-      this.runtime.thinking = currentState.thinkingLevel;
-      // New sessions use Pi's effective default (including project overrides).
-      // Only an existing session's own choice should override it.
-      const thinking = session.thinking;
-      if (thinking && thinking !== this.runtime.thinking && this.runtime.thinkingLevels.includes(thinking)) {
-        await rpc.request('set_thinking_level', { level: thinking });
-        this.runtime.thinking = thinking;
-      }
-      this.status('idle');
-      await this.refreshCapabilities();
-      this.runtime.connected = true;
-      this.runtime.crash = undefined;
-      session.model = this.runtime.model
-        ? { provider: this.runtime.model.provider, id: this.runtime.model.id }
-        : undefined;
-      session.thinking = this.runtime.thinking;
-      this.save();
+      await this.rebindSession(sessionId, resuming);
     } catch (e) {
       this.runtime.error = errorText(e);
       this.runtime.connected = false;
@@ -690,6 +556,148 @@ export class AgentService extends EventEmitter {
     } finally {
       this.connecting = false;
     }
+  }
+  private installRpcHandlers(rpc: PiRpc, sessionId: string) {
+    rpc.on('event', (e) => {
+      if (this.rpc === rpc) this.onEvent(e);
+    });
+    rpc.on('diagnostic', (s) => {
+      if (this.rpc === rpc) this.diagnostic(s);
+    });
+    rpc.on('protocolError', (e) => {
+      if (this.rpc === rpc) {
+        this.runtime.error = errorText(e);
+        this.status('error');
+        void rpc.killTree().catch(() => {});
+      }
+    });
+    rpc.on('fault', (e) => {
+      if (this.rpc === rpc) {
+        this.runtime.error = errorText(e);
+        this.runtime.connected = false;
+        this.status('error');
+      }
+    });
+    rpc.on('exit', (code: number | null, signal: string | null) => {
+      if (this.rpc !== rpc || this.shutdown) return;
+      this.runtime.connected = false;
+      this.clearDialogs();
+      const last = this.runtime.tools.findLast((tool) => tool.status === 'running');
+      this.restoreQueuedDrafts([...this.runtime.steering, ...this.runtime.followUp], this.queuedImages);
+      this.runtime.steering = [];
+      this.runtime.followUp = [];
+      this.queuedImages = [];
+      if (last) {
+        this.unsafeExit = true;
+        this.crashCleanup = rpc.treeTerminationConfirmed().then((confirmed) => {
+          this.unsafeExit = !confirmed;
+          if (this.runtime.crash) this.runtime.crash.cleanup = confirmed ? 'confirmed' : 'unconfirmed';
+          if (!confirmed) this.runtime.error = '无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。';
+          this.publish(true);
+        });
+      }
+      if (this.stopRequested) {
+        this.status('stopped');
+        return;
+      }
+      const at = Date.now();
+      this.runtime.crash = {
+        cleanup: last ? 'checking' : 'confirmed',
+        code,
+        signal,
+        at,
+        repeated: at - (this.crashTimes.get(sessionId) ?? 0) <= 10000,
+        lastTool: last
+          ? {
+              name: last.name,
+              target: redact(String(last.args.command ?? last.args.path ?? '')).slice(0, 2000),
+              seconds: Math.max(0, Math.floor((at - last.startedAt) / 1000)),
+            }
+          : undefined,
+        log: this.runtime.diagnostic
+          .flatMap((line) => line.split(/\r?\n/))
+          .filter(Boolean)
+          .slice(-20),
+      };
+      this.crashTimes.set(sessionId, at);
+      for (const tool of this.runtime.tools)
+        if (tool.status === 'running') {
+          tool.status = 'error';
+          tool.durationMs = at - tool.startedAt;
+          tool.output += '\nPi 意外退出，工具是否完成需要检查当前文件。';
+        }
+      this.runtime.error = 'Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。';
+      this.status('interrupted');
+    });
+  }
+  private async rebindSession(sessionId: string, resuming: boolean) {
+    const rpc = this.rpc!;
+    const session = this.store.session(sessionId);
+    const state = await rpc.request('get_state', {}, 120000);
+    if (this.stopRequested) throw new Error('启动已取消');
+    if (state.sessionFile) session.file = state.sessionFile;
+    this.runtime.model = displayModel(state.model);
+    this.runtime.thinking = state.thinkingLevel;
+    this.runtime.messages = (await rpc.request('get_messages')).messages ?? [];
+    const calls = new Map(
+      this.runtime.messages
+        .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+        .filter((b) => b.type === 'toolCall')
+        .map((b) => [b.id, b]),
+    );
+    this.runtime.tools = this.runtime.messages
+      .filter((m) => m.role === 'toolResult')
+      .slice(-1000)
+      .map((m) => ({
+        id: m.toolCallId ?? '',
+        name: m.toolName ?? 'tool',
+        args: calls.get(m.toolCallId)?.arguments ?? {},
+        status: m.isError ? 'error' : 'done',
+        output: messageText(m).split('\n').slice(-200).join('\n'),
+        startedAt: m.timestamp ?? 0,
+        durationMs: typeof m.durationMs === 'number' ? m.durationMs : undefined,
+        patch: toolPatch(m),
+      }));
+    this.fullOutput = this.runtime.messages
+      .filter((m) => m.role === 'toolResult')
+      .map((m) => `[${m.toolName ?? 'tool'}]\n${messageText(m)}`)
+      .join('\n\n')
+      .slice(-10 * 1024 * 1024);
+    this.runtime.models = ((await rpc.request('get_available_models')).models ?? [])
+      .map(displayModel)
+      .filter((model): model is Model => Boolean(model));
+    const settings = this.store.state.settings;
+    const wanted =
+      session.model ?? (resuming ? undefined : { provider: settings.provider, id: settings.modelId });
+    if (
+      wanted?.provider &&
+      wanted.id &&
+      this.runtime.models.some((m) => m.provider === wanted.provider && m.id === wanted.id)
+    ) {
+      this.runtime.model = displayModel(
+        await rpc.request('set_model', { provider: wanted.provider, modelId: wanted.id }),
+      );
+    }
+    await this.loadThinkingLevels(rpc);
+    const currentState = await rpc.request('get_state');
+    this.runtime.model = displayModel(currentState.model);
+    this.runtime.thinking = currentState.thinkingLevel;
+    // New sessions use Pi's effective default (including project overrides).
+    // Only an existing session's own choice should override it.
+    const thinking = session.thinking;
+    if (thinking && thinking !== this.runtime.thinking && this.runtime.thinkingLevels.includes(thinking)) {
+      await rpc.request('set_thinking_level', { level: thinking });
+      this.runtime.thinking = thinking;
+    }
+    this.status('idle');
+    await this.refreshCapabilities();
+    this.runtime.connected = true;
+    this.runtime.crash = undefined;
+    session.model = this.runtime.model
+      ? { provider: this.runtime.model.provider, id: this.runtime.model.id }
+      : undefined;
+    session.thinking = this.runtime.thinking;
+    this.save();
   }
   send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
     const epoch = this.stopEpoch;
