@@ -124,6 +124,9 @@ export function SessionTab({
         )}
       </section>
       <h3>上下文与队列</h3>
+      {!runtime.connected && (
+        <p className="settings-copy">连接 Pi 后才能读取和修改当前会话的上下文与队列设置。</p>
+      )}
       {[
         ['autoCompaction', '自动压缩上下文'],
         ['autoRetry', '临时错误自动重试'],
@@ -134,7 +137,7 @@ export function SessionTab({
             type="checkbox"
             aria-label={label}
             checked={Boolean(runtime[key as 'autoCompaction'])}
-            disabled={disabled}
+            disabled={disabled || !runtime.connected}
             onChange={(e) =>
               void run(async () => {
                 await api.invoke('piOption', session.id, key as 'autoCompaction', e.target.checked);
@@ -151,7 +154,7 @@ export function SessionTab({
           {label}
           <select
             aria-label={label}
-            disabled={disabled}
+            disabled={disabled || !runtime.connected}
             value={runtime[key as 'steeringMode'] || 'one-at-a-time'}
             onChange={(e) =>
               void run(async () => {

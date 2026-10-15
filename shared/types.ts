@@ -171,6 +171,10 @@ export interface ConfigDocument {
   revision: string;
   path: string;
 }
+export interface ConfigSaveResult {
+  applied: boolean;
+  warning?: string;
+}
 export interface ResourceItem {
   path: string;
   enabled: boolean;
@@ -323,7 +327,31 @@ export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
   tools: ToolActivity[];
   toolCount: number;
 };
+export interface AppDialog {
+  id: string;
+  message: string;
+  detail?: string;
+  buttons: string[];
+  cancelId: number;
+}
+export type WindowAction =
+  | 'minimize'
+  | 'toggleMaximize'
+  | 'close'
+  | 'toggleFullscreen'
+  | 'undo'
+  | 'redo'
+  | 'cut'
+  | 'copy'
+  | 'paste'
+  | 'selectAll'
+  | 'resetZoom'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'newSession';
 export type AppEvent =
+  | { type: 'appDialog'; dialog: AppDialog }
+  | { type: 'windowState'; maximized: boolean }
   | { type: 'workspaceChanged'; projectId: string; changedPaths?: string[] }
   | { type: 'state'; state: AppState }
   | { type: 'storage'; storage: StorageStatus }
@@ -354,6 +382,10 @@ export interface Bootstrap {
   update: UpdateState;
 }
 export interface ApiMap {
+  appDialogsReady: { args: []; result: void };
+  respondAppDialog: { args: [id: string, response: number]; result: void };
+  windowState: { args: []; result: { maximized: boolean } };
+  windowAction: { args: [action: WindowAction]; result: void };
   bootstrap: { args: []; result: Bootstrap };
   checkUpdate: { args: []; result: void };
   downloadUpdate: { args: []; result: void };
@@ -426,7 +458,7 @@ export interface ApiMap {
   logout: { args: [string, string]; result: void };
   cancelLogin: { args: []; result: void };
   configRead: { args: [string, ConfigKind, boolean]; result: ConfigDocument };
-  configSave: { args: [string, ConfigKind, boolean, ConfigDocument]; result: void };
+  configSave: { args: [string, ConfigKind, boolean, ConfigDocument]; result: ConfigSaveResult };
   revealSessionDirectory: { args: [string]; result: void };
   openPiTerminal: { args: [string]; result: void };
   editDraft: { args: [string]; result: void };

@@ -208,11 +208,12 @@ try {
   const sessionDirectory = path.resolve(fixture.dataDir, 'sessions');
   assert.equal(path.dirname(sessionFile), sessionDirectory, 'only remove the isolated test session file');
   await fs.unlink(sessionFile);
-  await app.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-  });
   await page.getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true }).click();
   await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: `删除会话“${missingFileSession.title}”？` })
+    .getByRole('button', { name: '删除', exact: true })
+    .click();
   await waitForSaved((state) => !state.sessions.some((session) => session.id === missingFileSession.id));
   await page
     .getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true })

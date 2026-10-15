@@ -10,27 +10,51 @@ import { Composer } from './components/Composer';
 import { SettingsModal } from './components/SettingsModal';
 import { StorageBanner } from './components/StorageBanner';
 import { CrashCard } from './components/CrashCard';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { AboutUpdates, UpdateBadge, UpdateDialog } from './components/Updates';
 import { ResizeHandle } from './components/ResizeHandle';
 import { CheckpointDialog } from './components/CheckpointDialog';
+import { TitleBar } from './components/TitleBar';
+import { AppDialogs } from './components/AppDialogs';
+import './styles/titlebar.css';
+
+function AppLayout({
+  children,
+  title,
+  onError,
+}: {
+  children: ReactNode;
+  title?: string;
+  onError: (message: string) => void;
+}) {
+  return (
+    <div className="desktop-shell">
+      <TitleBar title={title} onError={onError} />
+      {children}
+      <AppDialogs />
+    </div>
+  );
+}
+
 export default function App() {
   const model = useWorkbench();
   const [updateOpen, setUpdateOpen] = useState(false);
   const { state, compact, columns, error } = model;
   if (!state)
     return (
-      <main className="loading-screen">
-        <div className="brand-mark">π</div>
-        <h2>Pi Desktop</h2>
-        {error ? (
-          <p className="inline-error">{error}</p>
-        ) : (
-          <p>
-            <LoaderCircle size={15} className="spin" /> 正在准备 Pi…
-          </p>
-        )}
-      </main>
+      <AppLayout onError={model.setError}>
+        <main className="loading-screen">
+          <div className="brand-mark">π</div>
+          <h2>Pi Desktop</h2>
+          {error ? (
+            <p className="inline-error">{error}</p>
+          ) : (
+            <p>
+              <LoaderCircle size={15} className="spin" /> 正在准备 Pi…
+            </p>
+          )}
+        </main>
+      </AppLayout>
     );
   const updateBusy = model.running || model.runtime.dialogs.length > 0 || model.pending;
   const installUpdate = async () => {
@@ -63,98 +87,100 @@ export default function App() {
     void model.attempt(() => window.desktop.invoke('saveSettings', { [key]: width }));
   };
   return (
-    <div className="app-shell">
-      <Sidebar
-        {...model}
-        state={state}
-        updateBadge={<UpdateBadge update={model.update} open={() => setUpdateOpen(true)} />}
-      />
-      {model.sidebar && !compact && (
-        <ResizeHandle
-          label="项目侧栏宽度"
-          variable="--sidebar-width"
-          value={state.settings.sidebarWidth}
-          min={180}
-          max={360}
-          defaultValue={240}
-          direction={1}
-          save={(width) => saveWidth('sidebarWidth', width)}
+    <AppLayout title={model.runtime.title || 'Pi Desktop'} onError={model.setError}>
+      <div className="app-shell">
+        <Sidebar
+          {...model}
+          state={state}
+          updateBadge={<UpdateBadge update={model.update} open={() => setUpdateOpen(true)} />}
         />
-      )}
-      <main className="workspace">
-        <StorageBanner
-          storage={model.storage}
-          openDirectory={() => void model.attempt(() => window.desktop.invoke('revealData'))}
+        {model.sidebar && !compact && (
+          <ResizeHandle
+            label="项目侧栏宽度"
+            variable="--sidebar-width"
+            value={state.settings.sidebarWidth}
+            min={180}
+            max={360}
+            defaultValue={240}
+            direction={1}
+            save={(width) => saveWidth('sidebarWidth', width)}
+          />
+        )}
+        <main className="workspace">
+          <StorageBanner
+            storage={model.storage}
+            openDirectory={() => void model.attempt(() => window.desktop.invoke('revealData'))}
+          />
+          <WorkspaceHeader {...model} />
+          <div ref={columns} className={'workspace-columns' + (compact ? ' compact' : '')}>
+            <Conversation
+              {...model}
+              state={state}
+              recovery={
+                model.ownRuntime && model.runtime.crash && model.selected ? (
+                  <CrashCard
+                    key={model.runtime.crash.at}
+                    crash={model.runtime.crash}
+                    projectId={model.project?.id}
+                    sessionId={model.selected.id}
+                    disabled={model.pending || model.running || !model.storage.writable}
+                    recover={(prompt) =>
+                      model.action(() => window.desktop.invoke('recover', model.selected!.id, prompt))
+                    }
+                    inspect={() => {
+                      model.setChangeMode('run');
+                      model.setTab('changes');
+                      model.setInspector(true);
+                    }}
+                    undo={() => model.revert(null)}
+                    diagnostic={() => model.openSettings('diagnostic')}
+                  />
+                ) : null
+              }
+            >
+              <Composer {...model} state={state} />
+            </Conversation>
+            {model.inspector && !compact && (
+              <ResizeHandle
+                label="文件面板宽度"
+                variable="--inspector-width"
+                value={state.settings.inspectorWidth}
+                min={300}
+                max={720}
+                defaultValue={380}
+                direction={-1}
+                save={(width) => saveWidth('inspectorWidth', width)}
+              />
+            )}
+            <Inspector {...model} state={state} />
+          </div>
+        </main>
+        <Toasts {...model} />
+        <WorkbenchDialogs
+          {...model}
+          state={state}
+          settings={<SettingsModal {...model} updatePanel={updatePanel} />}
         />
-        <WorkspaceHeader {...model} />
-        <div ref={columns} className={'workspace-columns' + (compact ? ' compact' : '')}>
-          <Conversation
-            {...model}
-            state={state}
-            recovery={
-              model.ownRuntime && model.runtime.crash && model.selected ? (
-                <CrashCard
-                  key={model.runtime.crash.at}
-                  crash={model.runtime.crash}
-                  projectId={model.project?.id}
-                  sessionId={model.selected.id}
-                  disabled={model.pending || model.running || !model.storage.writable}
-                  recover={(prompt) =>
-                    model.action(() => window.desktop.invoke('recover', model.selected!.id, prompt))
-                  }
-                  inspect={() => {
-                    model.setChangeMode('run');
-                    model.setTab('changes');
-                    model.setInspector(true);
-                  }}
-                  undo={() => model.revert(null)}
-                  diagnostic={() => model.openSettings('diagnostic')}
-                />
-              ) : null
-            }
-          >
-            <Composer {...model} state={state} />
-          </Conversation>
-          {model.inspector && !compact && (
-            <ResizeHandle
-              label="文件面板宽度"
-              variable="--inspector-width"
-              value={state.settings.inspectorWidth}
-              min={300}
-              max={720}
-              defaultValue={380}
-              direction={-1}
-              save={(width) => saveWidth('inspectorWidth', width)}
-            />
-          )}
-          <Inspector {...model} state={state} />
-        </div>
-      </main>
-      <Toasts {...model} />
-      <WorkbenchDialogs
-        {...model}
-        state={state}
-        settings={<SettingsModal {...model} updatePanel={updatePanel} />}
-      />
-      {model.checkpointPreview && (
-        <CheckpointDialog
-          key={model.checkpointPreview.id + model.checkpointPreview.revision}
-          preview={model.checkpointPreview}
-          pending={model.pending}
-          restoredCount={model.checkpointRestoredCount}
-          onClose={model.closeCheckpoint}
-          onConfirm={(paths, revision) => void model.confirmCheckpoint(paths, revision)}
-          onReturnToMessage={() => void model.returnToCheckpointMessage()}
-        />
-      )}
-      {updateOpen && model.update && (
-        <UpdateDialog
-          update={model.update}
-          busy={updateBusy}
-          install={installUpdate}
-          close={() => setUpdateOpen(false)}
-        />
-      )}
-    </div>
+        {model.checkpointPreview && (
+          <CheckpointDialog
+            key={model.checkpointPreview.id + model.checkpointPreview.revision}
+            preview={model.checkpointPreview}
+            pending={model.pending}
+            restoredCount={model.checkpointRestoredCount}
+            onClose={model.closeCheckpoint}
+            onConfirm={(paths, revision) => void model.confirmCheckpoint(paths, revision)}
+            onReturnToMessage={() => void model.returnToCheckpointMessage()}
+          />
+        )}
+        {updateOpen && model.update && (
+          <UpdateDialog
+            update={model.update}
+            busy={updateBusy}
+            install={installUpdate}
+            close={() => setUpdateOpen(false)}
+          />
+        )}
+      </div>
+    </AppLayout>
   );
 }

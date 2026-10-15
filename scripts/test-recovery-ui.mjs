@@ -145,8 +145,10 @@ try {
 } finally {
   if (app) {
     await app
-      .evaluate(({ dialog }) => {
-        dialog.showMessageBox = async () => ({ response: 1 });
+      .evaluate(({ BrowserWindow }) => {
+        return BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+          `window.desktop.onEvent(event => { if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id, 1); })`,
+        );
       })
       .catch(() => {});
     await app.close();

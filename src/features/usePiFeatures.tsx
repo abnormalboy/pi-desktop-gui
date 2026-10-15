@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import {
   type ConfigDocument,
@@ -8,8 +8,11 @@ import {
   type TreeEntry,
   type ResourceCatalog,
   type ProviderInfo,
+  type Environment,
+  type StorageStatus,
 } from '../../shared/types';
-import { busy } from '../../shared/types';
+import { emptyRuntime } from '../../shared/types';
+import { configSaveNotice, piFeatureAvailability } from '../lib/pi-features';
 import type { LocalUsageSummary } from '../../shared/usage';
 const api = window.desktop;
 export function usePiFeatures({
@@ -17,16 +20,28 @@ export function usePiFeatures({
   runtime,
   initialTab,
   close,
+  environment,
+  storage,
+  projectEnabled,
 }: {
   session: Session;
   runtime: Runtime;
   initialTab: string;
   close: () => void;
+  environment?: Environment;
+  storage: StorageStatus;
+  projectEnabled: boolean;
 }) {
   const [tab, setTab] = useState(initialTab),
     [pending, setPending] = useState(false),
     [error, setError] = useState(''),
-    [notice, setNotice] = useState('');
+    [notice, setNotice] = useState(''),
+    [loading, setLoading] = useState(false),
+    [readingConfig, setReadingConfig] = useState(false),
+    [deferred, setDeferred] = useState(false);
+  const requestVersion = useRef(0);
+  const actionPending = useRef(false);
+  const currentRuntime = runtime.sessionId === session.id ? runtime : emptyRuntime();
   const [tree, setTree] = useState<TreeEntry[]>([]),
     [filter, setFilter] = useState(''),
     [treeMode, setTreeMode] = useState<'conversation' | 'user' | 'labeled' | 'all'>('conversation'),
@@ -59,45 +74,112 @@ export function usePiFeatures({
     [serverType, setServerType] = useState('http'),
     [serverTarget, setServerTarget] = useState(''),
     [serverArgs, setServerArgs] = useState('[]');
-  const disabled = pending || busy(runtime.status);
+  const { operationReason, prerequisiteReason, engineReason } = piFeatureAvailability({
+    runtime,
+    pending,
+    environment,
+    storage,
+    projectEnabled,
+  });
+  const disabled = Boolean(engineReason) || loading;
+  const reportError = (e: unknown) =>
+    setError(
+      String(e instanceof Error ? e.message : e).replace(
+        /^Error invoking remote method '[^']+': (Error: )?/,
+        '',
+      ),
+    );
   const run = async (fn: () => Promise<void>) => {
+    if (actionPending.current) return;
+    actionPending.current = true;
     setPending(true);
     setError('');
     setNotice('');
     try {
       await fn();
     } catch (e) {
-      setError(
-        String(e instanceof Error ? e.message : e).replace(
-          /^Error invoking remote method '[^']+': (Error: )?/,
-          '',
-        ),
-      );
+      reportError(e);
     } finally {
+      actionPending.current = false;
       setPending(false);
     }
   };
   const read = async (k = kind, scope = local) => {
-    setDocument(await api.invoke('configRead', session.id, k, scope));
-    setDirty(false);
+    const version = ++requestVersion.current;
+    setReadingConfig(true);
+    setLoading(true);
+    try {
+      const doc = await api.invoke('configRead', session.id, k, scope);
+      if (version !== requestVersion.current) return;
+      setDocument(doc);
+      setLocal(scope);
+      setDirty(false);
+    } finally {
+      if (version === requestVersion.current) {
+        setReadingConfig(false);
+        setLoading(false);
+      }
+    }
   };
   const refresh = async () => {
-    if (tab === 'tree') setTree(await api.invoke('sessionTree', session.id));
-    else if (tab === 'resources') setCatalog(await api.invoke('resources', session.id));
-    else if (tab === 'providers') {
-      await read('models', false);
-      setProviders(await api.invoke('providers', session.id));
-    } else if (tab === 'mcp') await read('mcp');
-    else if (tab === 'settings') await read();
-    else if (tab === 'prefs') return;
-    else {
-      await api.invoke('connect', session.id);
-      if (tab === 'session') setUsage(await api.invoke('usageSummary'));
+    const version = ++requestVersion.current;
+    const current = () => version === requestVersion.current;
+    setLoading(true);
+    setReadingConfig(['settings', 'mcp', 'providers'].includes(tab));
+    setDeferred(false);
+    setError('');
+    try {
+      if (['settings', 'mcp', 'providers'].includes(tab)) {
+        const doc = await api.invoke(
+          'configRead',
+          session.id,
+          tab === 'providers' ? 'models' : tab === 'mcp' ? 'mcp' : 'settings',
+          tab === 'providers' ? false : local,
+        );
+        if (!current()) return;
+        setDocument(doc);
+        setDirty(false);
+        setReadingConfig(false);
+      }
+      if (tab === 'prefs' || tab === 'settings' || tab === 'mcp' || tab === 'help') return;
+      if (tab === 'session') {
+        const summary = await api.invoke('usageSummary');
+        if (!current()) return;
+        setUsage(summary);
+        if (currentRuntime.connected) return;
+      }
+      if (engineReason) {
+        setDeferred(true);
+        return;
+      }
+      if (tab === 'tree') {
+        const entries = await api.invoke('sessionTree', session.id);
+        if (current()) setTree(entries);
+      } else if (tab === 'resources') {
+        const resources = await api.invoke('resources', session.id);
+        if (current()) setCatalog(resources);
+      } else if (tab === 'providers') {
+        const available = await api.invoke('providers', session.id);
+        if (current()) setProviders(available);
+      } else if (tab === 'session') await api.invoke('connect', session.id);
+    } catch (e) {
+      if (current()) reportError(e);
+    } finally {
+      if (current()) {
+        setLoading(false);
+        setReadingConfig(false);
+      }
     }
   };
   useEffect(() => {
-    void run(refresh);
+    void refresh();
+    return () => {
+      requestVersion.current++;
+    };
   }, [tab, session.id]);
+  useEffect(() => {
+    if (deferred && !engineReason && !dirty) void refresh();
+  }, [deferred, engineReason, dirty]);
   const exportFile = (format: 'html' | 'jsonl') =>
     run(async () => {
       const file = await api.invoke('exportSession', session.id, format);
@@ -121,31 +203,33 @@ export function usePiFeatures({
             <select
               aria-label="配置范围"
               value={local ? 'project' : 'user'}
-              disabled={disabled || dirty}
+              disabled={pending || readingConfig || dirty}
               onChange={(e) => {
                 const scope = e.target.value === 'project';
-                setLocal(scope);
                 void run(() => read(k, scope));
               }}
             >
               <option value="user">个人</option>
-              <option value="project">当前项目</option>
+              <option value="project" disabled={!projectEnabled}>
+                当前项目{!projectEnabled ? '（请先信任并启用）' : ''}
+              </option>
             </select>
           </label>
         )}
-        <button disabled={disabled || dirty} onClick={() => void run(() => read(k))}>
+        <button disabled={pending || readingConfig} onClick={() => void run(() => read(k))}>
           <RefreshCw size={14} />
-          重新读取
+          {dirty ? '放弃修改并重新读取' : '重新读取'}
         </button>
         <button
-          disabled={disabled || !dirty || !document}
+          disabled={Boolean(operationReason) || readingConfig || !dirty || !document}
+          title={operationReason || (!dirty ? '修改配置后即可保存' : !document ? '请先重新读取配置' : '')}
           className="primary"
           onClick={() =>
             void run(async () => {
-              await api.invoke('configSave', session.id, k, local, document!);
+              const result = await api.invoke('configSave', session.id, k, local, document!);
               await read(k);
               setApiKey('');
-              setNotice('已保存并重新连接 Pi。原配置已备份。');
+              setNotice(configSaveNotice(result));
             })
           }
         >
@@ -155,14 +239,15 @@ export function usePiFeatures({
       <p className="settings-copy">
         {document?.path}
         <br />
-        已有密钥显示为占位符，保存时保留原值。修改前会保留备份；配置变动会重新连接 Pi。
+        已有密钥显示为占位符，保存时保留原值。修改前会保留备份；保存后尝试重新连接
+        Pi，连接失败时配置仍会保留。
       </p>
       <textarea
         className="json-editor"
         aria-label="Pi 配置 JSON"
         spellCheck={false}
         value={document?.text ?? ''}
-        disabled={disabled || !document}
+        disabled={pending || readingConfig || !document}
         onChange={(e) => {
           setDocument((d) => (d ? { ...d, text: e.target.value } : d));
           setDirty(true);
@@ -173,13 +258,20 @@ export function usePiFeatures({
   );
   return {
     session,
-    runtime,
+    runtime: currentRuntime,
     usage,
     close,
     setNotice,
     instructions,
     setInstructions,
     disabled,
+    configEditingDisabled: pending || readingConfig || !document,
+    operationReason,
+    prerequisiteReason,
+    engineReason,
+    loading,
+    reportError,
+    projectEnabled,
     run,
     exportFile,
     tree,

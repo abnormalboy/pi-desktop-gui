@@ -12,6 +12,8 @@ export function WorkbenchDialogs(
     Workbench,
     | 'state'
     | 'runtime'
+    | 'environment'
+    | 'storage'
     | 'featureTab'
     | 'setFeatureTab'
     | 'searchOpen'
@@ -109,6 +111,11 @@ export function WorkbenchDialogs(
         <PiFeatures
           session={selected}
           runtime={runtime}
+          environment={props.environment}
+          storage={props.storage}
+          projectEnabled={
+            !selected.projectId || Boolean(state.projects.find((p) => p.id === selected.projectId)?.trusted)
+          }
           initialTab={featureTab}
           close={() => setFeatureTab('')}
         />

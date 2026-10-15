@@ -38,6 +38,12 @@ jobs:
       - name: Install Linux desktop test dependencies
         if: matrix.os == 'ubuntu-latest'
         run: npx playwright install-deps chromium
+      - name: Install Chromium for renderer regression tests
+        if: matrix.os == 'ubuntu-latest'
+        run: npx playwright install chromium
+      - name: Test themed window controls and Pi settings
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run test:desktop-chrome
       - name: Test desktop layout and interactions
         if: matrix.os == 'ubuntu-latest'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" npm run test:ui

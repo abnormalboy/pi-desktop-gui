@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfigDocument, Session } from '../shared/types';
+import { configSaveNotice } from './lib/pi-features';
 
 type Field =
   | { key: string; label: string; hint?: string; kind: 'bool'; fallback: boolean; userOnly?: boolean }
@@ -172,12 +173,18 @@ function toolsFrom(value: unknown, inherited?: unknown): string[] {
 export function SettingsForm({
   session,
   disabled,
+  saveReason,
+  projectEnabled,
+  reportError,
   run,
   notify,
   dirtyChange,
 }: {
   session: Session;
   disabled: boolean;
+  saveReason: string;
+  projectEnabled: boolean;
+  reportError: (error: unknown) => void;
   run: (fn: () => Promise<void>) => Promise<void>;
   notify: (text: string) => void;
   dirtyChange: (dirty: boolean) => void;
@@ -188,21 +195,39 @@ export function SettingsForm({
     [values, setValues] = useState<Record<string, unknown>>({}),
     [inherited, setInherited] = useState<Record<string, unknown>>({}),
     [edits, setEdits] = useState<Record<string, unknown>>({});
+  const [loading, setLoading] = useState(true);
+  const requestVersion = useRef(0);
   const dirty = Object.keys(edits).length > 0;
+  const fieldsDisabled = disabled || loading || !document;
   useEffect(() => dirtyChange(dirty), [dirty]);
   const load = async (scope = local) => {
-    const [doc, personal] = await Promise.all([
-      api.invoke('configRead', session.id, 'settings', scope),
-      scope ? api.invoke('configRead', session.id, 'settings', false) : undefined,
-    ]);
-    setLocal(scope);
-    setDocument(doc);
-    setValues(JSON.parse(doc.text));
-    setInherited(personal ? JSON.parse(personal.text) : {});
-    setEdits({});
+    const version = ++requestVersion.current;
+    setLoading(true);
+    reportError('');
+    try {
+      const [doc, personal] = await Promise.all([
+        api.invoke('configRead', session.id, 'settings', scope),
+        scope ? api.invoke('configRead', session.id, 'settings', false) : undefined,
+      ]);
+      if (version !== requestVersion.current) return;
+      const values = JSON.parse(doc.text);
+      const inherited = personal ? JSON.parse(personal.text) : {};
+      setLocal(scope);
+      setDocument(doc);
+      setValues(values);
+      setInherited(inherited);
+      setEdits({});
+    } catch (error) {
+      if (version === requestVersion.current) reportError(error);
+    } finally {
+      if (version === requestVersion.current) setLoading(false);
+    }
   };
   useEffect(() => {
-    void run(() => load(false));
+    void load(false);
+    return () => {
+      requestVersion.current++;
+    };
   }, [session.id]);
   const value = (key: string) => (key in edits ? edits[key] : getPath(values, key));
   const edit = (key: string, v: unknown) =>
@@ -216,12 +241,12 @@ export function SettingsForm({
       if (!document) return;
       const config = JSON.parse(document.text);
       for (const [key, v] of Object.entries(edits)) setPath(config, key, v === '' ? undefined : v);
-      await api.invoke('configSave', session.id, 'settings', local, {
+      const result = await api.invoke('configSave', session.id, 'settings', local, {
         ...document,
         text: JSON.stringify(config, null, 2),
       });
       await load();
-      notify('设置已保存，Pi 已重新加载。原文件已备份。');
+      notify(result.applied ? '设置已保存，Pi 已重新加载。原文件已备份。' : configSaveNotice(result));
     });
   return (
     <div className="settings-form">
@@ -238,8 +263,11 @@ export function SettingsForm({
                 key={title}
                 role="radio"
                 aria-checked={local === scope}
-                disabled={disabled || dirty}
-                onClick={() => void run(() => load(scope))}
+                disabled={disabled || loading || dirty || (scope && !projectEnabled)}
+                title={
+                  scope && !projectEnabled ? '请先在工作区信任并启用项目' : dirty ? '请先保存或放弃修改' : ''
+                }
+                onClick={() => void load(scope)}
               >
                 {title}
               </button>
@@ -250,14 +278,30 @@ export function SettingsForm({
         )}
         <span className="spacer" />
         {dirty && (
-          <button disabled={disabled} onClick={() => setEdits({})}>
+          <button disabled={fieldsDisabled} onClick={() => setEdits({})}>
             放弃修改
           </button>
         )}
-        <button className="primary" disabled={disabled || !dirty} onClick={() => void save()}>
+        <button
+          className="primary"
+          disabled={fieldsDisabled || Boolean(saveReason) || !dirty}
+          title={saveReason || (!dirty ? '修改设置后即可保存' : '')}
+          onClick={() => void save()}
+        >
           保存并重新加载
         </button>
       </div>
+      {!document && !loading && (
+        <p className="environment-note">
+          设置读取失败，请检查上方错误后 <button onClick={() => void load()}>重新读取设置</button>
+        </p>
+      )}
+      {loading && (
+        <p className="settings-copy" role="status">
+          正在读取本机设置…
+        </p>
+      )}
+      {dirty && <p className="environment-note">设置尚未保存。请保存或放弃修改后切换页面。</p>}
       {local && (
         <p className="environment-note">未单独设置的项沿用个人设置；只把本次修改写入 {document?.path}</p>
       )}
@@ -282,7 +326,7 @@ export function SettingsForm({
                     <input
                       type="checkbox"
                       aria-label={f.label}
-                      disabled={disabled}
+                      disabled={fieldsDisabled}
                       checked={typeof v === 'boolean' ? v : f.fallback}
                       onChange={(e) => edit(f.key, e.target.checked)}
                     />
@@ -291,7 +335,7 @@ export function SettingsForm({
                     <input
                       type="number"
                       aria-label={f.label}
-                      disabled={disabled}
+                      disabled={fieldsDisabled}
                       min={f.min}
                       max={f.max}
                       step={f.step ?? 1}
@@ -310,7 +354,7 @@ export function SettingsForm({
                   {f.kind === 'choice' && (
                     <select
                       aria-label={f.label}
-                      disabled={disabled}
+                      disabled={fieldsDisabled}
                       value={typeof v === 'string' ? v : f.fallback}
                       onChange={(e) => edit(f.key, e.target.value)}
                     >
@@ -324,7 +368,7 @@ export function SettingsForm({
                   {f.kind === 'text' && (
                     <input
                       aria-label={f.label}
-                      disabled={disabled}
+                      disabled={fieldsDisabled}
                       placeholder={f.placeholder}
                       value={typeof v === 'string' ? v : ''}
                       onChange={(e) => edit(f.key, e.target.value)}
@@ -338,7 +382,7 @@ export function SettingsForm({
                           <label key={tool}>
                             <input
                               type="checkbox"
-                              disabled={disabled}
+                              disabled={fieldsDisabled}
                               checked={enabled}
                               onChange={() => {
                                 const next = enabled ? tools.filter((t) => t !== tool) : [...tools, tool];

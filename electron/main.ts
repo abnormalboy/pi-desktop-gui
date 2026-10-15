@@ -7,6 +7,7 @@ import {
   clipboard,
   ClipboardItem,
   nativeImage,
+  nativeTheme,
   Menu,
   Notification,
   screen,
@@ -15,6 +16,7 @@ import {
   type Rectangle,
 } from 'electron';
 import fs from 'node:fs/promises';
+import { AppDialogRequests, type DialogOptions } from './app-dialogs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -59,6 +61,7 @@ let window: BrowserWindow | undefined, store: Store, service: AgentService, work
 let updates: UpdateService;
 let quitting = false;
 let closing = false;
+let rendererReady = false;
 let sessionEnding = false;
 let activeOperations = 0;
 let activeEngineOperations = 0;
@@ -72,6 +75,29 @@ const send = (event: AppEvent) => {
   if (window && !window.isDestroyed()) window.webContents.send('desktop:event', event);
   if (event.type === 'state') void watchSelectedProject();
 };
+const appDialogs = new AppDialogRequests((dialog) => send({ type: 'appDialog', dialog }));
+const cancelAppDialogs = () => appDialogs.cancelAll();
+function showAppDialog(options: DialogOptions) {
+  if (!window || window.isDestroyed()) return Promise.resolve({ response: options.cancelId ?? 0 });
+  // macOS can keep running with its window hidden; an exit confirmation must be visible.
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  // Startup and renderer-crash recovery cannot display React dialogs.
+  if (!rendererReady)
+    return dialog.showMessageBox(window, {
+      message: options.message,
+      detail: options.detail,
+      buttons: options.buttons,
+      cancelId: options.cancelId,
+      defaultId: options.defaultId,
+    });
+  return appDialogs.show(options);
+}
+function applyNativeTheme() {
+  nativeTheme.themeSource = store.state.settings.theme;
+  window?.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#191c19' : '#f8f9f7');
+}
 async function watchSelectedProject() {
   if (!store || quitting) return;
   const selected = store.state.sessions.find((session) => session.id === store.state.selectedSessionId);
@@ -360,7 +386,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (busy(service.runtime.status) && store.session(service.runtime.sessionId!).projectId === id)
       throw new Error('请先停止该项目的任务');
     const p = store.project(id);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `从列表移除 ${p.name}？`,
       detail: '磁盘项目和 Pi 会话文件将保留。',
@@ -386,7 +412,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     const p = store.project(id);
     if (p.trusted) return;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `启用项目 ${p.name}`,
       detail: `Pi 将使用当前用户权限读取、修改文件并执行命令。\n\n${p.path}`,
@@ -440,7 +466,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const s = store.session(id);
     if (service.runtime.sessionId === id && busy(service.runtime.status))
       throw new Error('请先停止这个会话的任务');
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message: `删除会话“${s.title}”？`,
       detail: s.file ? 'Pi 会话文件会移到回收站，可从回收站恢复。' : '这个会话还没有内容，将直接移除。',
@@ -489,7 +515,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       )
     ).filter((id): id is string => !!id);
     if (!candidates.length) return 0;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `清理 ${candidates.length} 个空会话？`,
       detail:
@@ -624,7 +650,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     );
     if (!pending.length) return [];
     const created = pending.filter((f) => f.status === '新增').length;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message:
         only?.length === 1 ? `撤销对 ${only[0]} 的修改？` : `撤销本轮 ${pending.length} 个文件的修改？`,
@@ -755,6 +781,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       next.autoDownloadUpdates = value.autoDownloadUpdates;
     }
     store.state.settings = next;
+    applyNativeTheme();
     await save();
     updates.configure(next.autoDownloadUpdates);
   },
@@ -829,7 +856,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.connect(id);
     const out = path.join(store.dir, 'share-preview.html');
     await service.exportHtml(id, out);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: '分享完整会话到 GitHub Gist？',
       detail:
@@ -963,7 +990,12 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(document?.revision, 100);
     await service.disconnect();
     await new Configuration(store).save(id, kind, local, document);
-    await service.connect(id);
+    try {
+      await service.connect(id);
+      return { applied: true };
+    } catch (error) {
+      return { applied: false, warning: redact(error instanceof Error ? error.message : String(error)) };
+    }
   },
   revealSessionDirectory: async (id) => {
     text(id, 100);
@@ -993,7 +1025,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const file = path.join(store.dir, 'draft-' + encodeURIComponent(id) + '.txt');
     await fs.writeFile(file, composeDraftText(s.draft, s.draftSnippets ?? []), 'utf8');
     await openTextEditor(file, store.state.settings.editorPath || undefined);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'info',
       message: '在外部编辑器中编辑草稿',
       detail: '编辑并保存文件后，点击“导入已保存内容”。',
@@ -1014,7 +1046,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   stop: () => service.stop(),
   clearQueue: () => service.clearQueue(),
   forceStop: async () => {
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message: '强制结束当前 Pi 会话进程？',
       detail: '正在执行的命令将被终止。已写入的项目文件将保留。',
@@ -1152,12 +1184,61 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   revealData: async () => {
     await shell.openPath(store.dir);
   },
+  appDialogsReady: () => {
+    rendererReady = true;
+  },
+  respondAppDialog: (id, response) => {
+    text(id, 100);
+    appDialogs.respond(id, response);
+  },
+  windowState: () => ({ maximized: window?.isMaximized() ?? false }),
+  windowAction: async (action: import('../shared/types').WindowAction) => {
+    if (!window) return;
+    switch (action) {
+      case 'minimize':
+        window.minimize();
+        break;
+      case 'toggleMaximize':
+        window.isMaximized() ? window.unmaximize() : window.maximize();
+        break;
+      case 'close':
+        window.close();
+        break;
+      case 'toggleFullscreen':
+        window.setFullScreen(!window.isFullScreen());
+        break;
+      case 'resetZoom':
+        window.webContents.setZoomLevel(0);
+        break;
+      case 'zoomIn':
+        window.webContents.setZoomLevel(Math.min(3, window.webContents.getZoomLevel() + 0.5));
+        break;
+      case 'zoomOut':
+        window.webContents.setZoomLevel(Math.max(-3, window.webContents.getZoomLevel() - 0.5));
+        break;
+      case 'newSession':
+        store.assertWritable();
+        await newSession();
+        break;
+      case 'undo':
+      case 'redo':
+      case 'cut':
+      case 'copy':
+      case 'paste':
+      case 'selectAll':
+        window.webContents[action]();
+        break;
+      default:
+        throw new Error('无效窗口操作');
+    }
+  },
   quit: () => {
     window?.close();
   },
 };
 
 async function createWindow() {
+  applyNativeTheme();
   const saved = await loadWindowState();
   window = new BrowserWindow({
     width: saved.bounds?.width ?? 1440,
@@ -1167,7 +1248,8 @@ async function createWindow() {
     minHeight: 700,
     title: 'Pi Desktop',
     icon: path.join(app.getAppPath(), 'build', 'icon.png'),
-    backgroundColor: '#f8f9f7',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c19' : '#f8f9f7',
+    ...(!isMac ? { frame: false } : {}),
     show: false,
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {}),
     webPreferences: {
@@ -1177,6 +1259,20 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  if (!isMac) window.setMenu(null);
+  window.webContents.on('did-start-loading', () => {
+    rendererReady = false;
+    cancelAppDialogs();
+  });
+  window.webContents.on('render-process-gone', () => {
+    rendererReady = false;
+    cancelAppDialogs();
+  });
+  window.on('closed', cancelAppDialogs);
+  for (const event of ['maximize', 'unmaximize'] as const)
+    window.on(event as 'maximize', () =>
+      send({ type: 'windowState', maximized: window?.isMaximized() ?? false }),
+    );
   window.once('ready-to-show', () => {
     if (saved.maximized) window?.maximize();
     window?.show();
@@ -1205,7 +1301,7 @@ async function createWindow() {
     void (async () => {
       try {
         if (busy(service.runtime.status)) {
-          const result = await dialog.showMessageBox(window!, {
+          const result = await showAppDialog({
             type: 'question',
             message: 'Pi 仍在执行任务',
             detail: '停止并退出会清空后续队列，已写入文件将保留。',
@@ -1217,7 +1313,7 @@ async function createWindow() {
           try {
             await service.stop();
           } catch {
-            await dialog.showMessageBox(window!, {
+            await showAppDialog({
               type: 'error',
               message: '任务尚未停止，请先使用强制结束。',
             });
@@ -1259,6 +1355,10 @@ else {
       await loadLoginShellPath();
       store = new Store(app.getPath('userData'), app.getVersion());
       await store.load();
+      nativeTheme.on('updated', () => {
+        if (window && !window.isDestroyed())
+          window.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#191c19' : '#f8f9f7');
+      });
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
         const initial = store.state.sessions[0] ?? store.createSession();
         store.selectSession(initial.id);
@@ -1334,6 +1434,10 @@ else {
             throw new Error('正在准备重启更新，请稍候');
           const readOnlyMethods: (keyof ApiMap)[] = [
             'bootstrap',
+            'respondAppDialog',
+            'appDialogsReady',
+            'windowState',
+            'windowAction',
             'checkUpdate',
             'downloadUpdate',
             'installUpdate',

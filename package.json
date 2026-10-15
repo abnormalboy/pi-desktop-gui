@@ -13,6 +13,7 @@
     "icons": "electron scripts/render-icon.cjs",
     "test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
     "test:integration": "node --import tsx scripts/integration.ts",
+    "test:desktop-chrome": "node --import tsx scripts/test-titlebar-ui.mjs && node --import tsx scripts/test-pi-settings-ui.mjs",
     "test:ui": "node --import tsx scripts/test-ui.mjs && node --import tsx scripts/test-experience-ui.mjs",
     "test:chat-ui": "node --import tsx scripts/test-chat-ui.mjs",
     "test:features": "node --import tsx scripts/test-features.ts && node --import tsx scripts/test-management.ts && node --import tsx scripts/test-workflow.ts && node --import tsx scripts/test-session-context.ts && node --import tsx scripts/test-model-errors.ts && node --import tsx scripts/test-coding.ts && node --import tsx scripts/test-approval.ts && node --import tsx scripts/test-recovery.ts && node --import tsx scripts/test-checkpoints.ts",

@@ -263,6 +263,7 @@ export function ResourcesTab({
         <p className="settings-copy">尚未发现额外资源。可以安装 npm / Git 包，也可以填写本机资源目录。</p>
       )}
       <h3>安装与管理资源包</h3>
+      <p className="settings-copy">填写 npm 包、Git 仓库或本机完整路径后可安装。资源管理需要 Pi 空闲。</p>
       <input
         className="input"
         aria-label="资源包来源"
@@ -279,6 +280,7 @@ export function ResourcesTab({
       <div className="button-row">
         <button
           disabled={disabled || !source.trim()}
+          title={!source.trim() ? '请先填写资源包来源' : ''}
           onClick={() =>
             void run(async () => {
               await api.invoke('packageAction', session.id, 'install', source, local);

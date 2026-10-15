@@ -1,0 +1,136 @@
+.desktop-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.desktop-shell > .app-shell,
+.desktop-shell > .loading-screen {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.app-titlebar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-height: 36px;
+  background: var(--rail);
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+  position: relative;
+  z-index: 25;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.titlebar-brand {
+  color: var(--accent);
+  font-family: Georgia, serif;
+  font-size: 23px;
+  line-height: 1;
+  margin: 0 12px;
+}
+.titlebar-menubar,
+.titlebar-window-controls,
+.titlebar-dropdown {
+  -webkit-app-region: no-drag;
+}
+.titlebar-menubar,
+.titlebar-window-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  flex-shrink: 0;
+}
+.titlebar-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.titlebar-menu > button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: calc(12px * var(--font-scale));
+  background: transparent;
+}
+.titlebar-menu > button:hover,
+.titlebar-menu > button[aria-expanded='true'] {
+  background: var(--hover);
+}
+.titlebar-drag-region {
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.titlebar-drag-region > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titlebar-window-controls > button {
+  width: 46px;
+  min-height: 35px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+.titlebar-window-controls > button:hover {
+  background: var(--hover);
+}
+.titlebar-window-controls > .titlebar-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.app-titlebar button:focus-visible {
+  outline-offset: -3px;
+}
+.titlebar-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 230px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.titlebar-dropdown button {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  white-space: nowrap;
+  font-size: calc(12px * var(--font-scale));
+}
+.titlebar-dropdown button:hover,
+.titlebar-dropdown button:focus {
+  background: var(--hover);
+}
+.titlebar-dropdown kbd {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: calc(11px * var(--font-scale));
+}
+.titlebar-menu-separator {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--line);
+}

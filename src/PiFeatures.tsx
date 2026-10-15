@@ -1,4 +1,4 @@
-import type { Session, Runtime } from '../shared/types';
+import type { Session, Runtime, Environment, StorageStatus } from '../shared/types';
 import { Modal } from './components/Modal';
 import { usePiFeatures } from './features/usePiFeatures';
 import { SessionTab } from './features/SessionTab';
@@ -14,13 +14,19 @@ export function PiFeatures({
   runtime,
   initialTab,
   close,
+  environment,
+  storage,
+  projectEnabled,
 }: {
   session: Session;
   runtime: Runtime;
   initialTab: string;
   close: () => void;
+  environment?: Environment;
+  storage: StorageStatus;
+  projectEnabled: boolean;
 }) {
-  const model = usePiFeatures({ session, runtime, initialTab, close });
+  const model = usePiFeatures({ session, runtime, initialTab, close, environment, storage, projectEnabled });
   const { tab, setTab, pending, error, notice, setLocal, setKind, setDocument, dirty } = model;
   return (
     <Modal wide title="Pi 功能" subtitle="会话、工具与个人配置" close={close}>
@@ -40,7 +46,9 @@ export function PiFeatures({
               key={id}
               className={tab === id ? 'active' : ''}
               disabled={dirty || pending}
+              title={dirty ? '请先保存或放弃当前修改' : pending ? '请等待当前操作完成' : ''}
               onClick={() => {
+                if (id === tab) return;
                 setLocal(false);
                 setDocument(undefined);
                 setKind(id === 'mcp' ? 'mcp' : id === 'providers' ? 'models' : 'settings');
@@ -52,9 +60,25 @@ export function PiFeatures({
           ))}
         </nav>
         <div className="settings-content feature-content">
+          {model.engineReason && (
+            <p className="environment-note" role="status">
+              {model.engineReason}
+            </p>
+          )}
+          {model.prerequisiteReason && ['settings', 'prefs', 'providers', 'mcp'].includes(tab) && (
+            <p className="settings-copy">本机配置仍可编辑和保存；运行环境就绪后重新连接即可应用。</p>
+          )}
+          {model.loading && (
+            <p className="settings-copy" role="status">
+              正在读取此页数据…可切换到其他页面。
+            </p>
+          )}
           {error && (
             <div className="error-banner" role="alert">
               {error}
+              {tab !== 'prefs' && !dirty && !pending && (
+                <button onClick={() => void model.refresh()}>重试读取</button>
+              )}
             </div>
           )}
           {notice && (
