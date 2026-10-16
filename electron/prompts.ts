@@ -118,6 +118,71 @@ export async function promptEditable(
   }
 }
 
+const compactLine = (value: unknown, max: number) =>
+  typeof value === 'string' && value.trim() ? value.replace(/\s+/g, ' ').trim().slice(0, max) : undefined;
+
+function fallbackResourceName(resource: ResourceItem) {
+  const base = path.basename(resource.path);
+  if (resource.kind === 'skills' && /^skill\.md$/i.test(base)) {
+    const parent = path.basename(path.dirname(resource.path));
+    if (parent && parent !== '.') return parent;
+  }
+  if (resource.kind === 'skills' || resource.kind === 'prompts')
+    return path.basename(resource.path, path.extname(resource.path));
+  return base;
+}
+
+function firstBodyLine(body: string) {
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith('```') || line.startsWith('<!--')) continue;
+    const cleaned = line
+      .replace(/^[-*+>]\s+/, '')
+      .replace(/[*_`~]/g, '')
+      .trim();
+    if (cleaned) return compactLine(cleaned, 240);
+  }
+  return undefined;
+}
+
+export async function describeResource(
+  context: PromptTemplateContext,
+  resource: ResourceItem,
+): Promise<ResourceItem> {
+  const editable = await promptEditable(context, resource);
+  let name = fallbackResourceName(resource);
+  let description = compactLine(resource.description, 240);
+  let argumentHint = compactLine(resource.argumentHint, 200);
+  if ((resource.kind === 'skills' || resource.kind === 'prompts') && /\.md$/i.test(resource.path)) {
+    try {
+      const handle = await fs.open(resource.path, 'r');
+      try {
+        const stat = await handle.stat();
+        if (stat.isFile()) {
+          const buffer = Buffer.alloc(16384);
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          const head = buffer.subarray(0, bytesRead).toString('utf8');
+          const { frontmatter, body } = parseTemplate(head);
+          if (resource.kind === 'skills') name = compactLine(frontmatter.name, 120) ?? name;
+          description = compactLine(frontmatter.description, 240) ?? firstBodyLine(body) ?? description;
+          argumentHint = compactLine(frontmatter['argument-hint'], 200) ?? argumentHint;
+        }
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      // Unreadable or malformed skill/prompt markdown must not fail catalog listing.
+    }
+  }
+  return {
+    ...resource,
+    name,
+    ...(description ? { description } : {}),
+    ...(argumentHint ? { argumentHint } : {}),
+    promptEditable: editable,
+  };
+}
+
 export async function readPromptTemplate(
   context: PromptTemplateContext,
   file: string,

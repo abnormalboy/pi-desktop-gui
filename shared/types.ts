@@ -175,6 +175,9 @@ export interface ResourceItem {
   path: string;
   enabled: boolean;
   kind: 'extensions' | 'skills' | 'prompts' | 'themes';
+  name?: string;
+  description?: string;
+  argumentHint?: string;
   promptEditable?: boolean;
   metadata: { source: string; scope: string; origin: string; baseDir?: string };
 }
@@ -450,6 +453,7 @@ export interface ApiMap {
     result: FileDiff;
   };
   openFile: { args: [string, string]; result: void };
+  openResource: { args: [string, string]; result: void };
   referenceDropped: { args: [string, string[]]; result: { accepted: string[]; rejected: string[] } };
   openLink: { args: [string]; result: void };
   copy: { args: [string]; result: void };

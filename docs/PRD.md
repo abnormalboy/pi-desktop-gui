@@ -451,11 +451,12 @@ UI1–UI5 已实现，沿用浅色墨绿 `#1F6B52` / 深色 `#74C7A3`、运行�
 
 ## v0.14.0：工程化验证闭环、模板交互与会话成本治理（已实现）
 
-本版完成 E1、E2、E3，并与 v0.11–v0.13 合并发布。模板继续使用 Pi 原生文件；费用读取实际 Pi usage 并缓存到桌面 `state.json` 的 `Session.stats`。日期筛选按会话最后活动时间选择整份会话，因此不是服务商逐日账单。
+本版完成 E1、E2、E3、E4，并与 v0.11–v0.13 合并发布。模板继续使用 Pi 原生文件；费用读取实际 Pi usage 并缓存到桌面 `state.json` 的 `Session.stats`。日期筛选按会话最后活动时间选择整份会话，因此不是服务商逐日账单。
 
 - **`E1`**：项目规则卡片（`AGENTS.md` 感知与快速初始化）与验证命令一键重跑
 - **`E2`**：提示词模板（Prompt Templates）参数化填空与可视新建
 - **`E3`**：上下文水位预警、本地费用统计与冷会话自动收纳
+- **`E4`**：设置与 Pi 功能中的 Skills 及资源展示优化
 
 ### E1 项目规则卡片（`AGENTS.md` 感知与初始化）与验证命令一键重跑
 
@@ -552,6 +553,60 @@ UI1–UI5 已实现，沿用浅色墨绿 `#1F6B52` / 深色 `#74C7A3`、运行�
 3. 超过 7 天未活跃的未置顶会话自动归入 `更早的会话 (N)` 折叠项；点击“清理空会话”准确移除无消息的空白会话，不影响有内容的会话。
 
 **测试。** `tests/store.test.ts` 增加空会话判定与按项目费用聚合单元测试；`scripts/test-experience-ui.mjs` 增加上下文预警气泡、费用汇总展示与冷会话折叠测试。
+
+---
+
+### E4 设置与 Pi 功能中的 Skills 及资源展示优化
+
+**现状与问题。**
+
+1. **缺失语义简介（看不懂用途）**：原 `ResourcesTab.tsx` 仅显示 `SKILL.md` 父目录名（或文件名）、英文内部枚举 `{kind} · {scope}`（如 `skills · user`）以及完整绝对路径，未读取 `SKILL.md` 与提示词模板 `.md` 的 YAML frontmatter（`name`、`description`、`argument-hint`）。用户无法在界面上判断某个 Skill 的触发场景与功能职责，也无法按简介检索；
+2. **无分类与状态统计（找不到目标）**：`skills`、`prompts`、`extensions`、`themes` 四类资源混排在单一列表中，没有按类别切换的分段标签、分类计数与已启用数量统计；
+3. **路径喧宾夺主与长列表挤压（版面失控）**：每条资源的完整绝对路径独占一行且自动折行，且 `.resource-list` 无高度上限；当用户本机安装了数十个 Skills 时，下方的“安装与管理资源包”与“当前工具”被彻底挤出视口，同时缺少一键在编辑器或系统文件管理器中定位该资源文件的动作；
+4. **设置入口割裂**：用户常先通过 `Ctrl+,` 打开主“设置”弹窗寻找 Skill 管理，但“设置 → 运行环境”仅展示“Pi 配置目录”路径，缺少像“模型连接 → 管理供应商与登录”那样一键跳转到“Skills 与扩展”的直达入口。
+
+**产品结论（PM 决策定稿）。**
+
+经产品评估，上述四项痛点互为因果，仅靠局部调样式无法解决几十个 Skills 场景下的可用性问题，因此**全部纳入本轮正式方案一并交付**：
+1. **主进程补齐资源元数据提取**（`name`、`description`、`argumentHint`），展示与检索均覆盖简介说明；
+2. **重构顶部操作栏与分类分段筛选**（全部 / Skills / 提示词模板 / 扩展 / 主题 + 数量与启用统计），并将原始英文 `kind · scope` 升级为中文语义徽章与命令调用微标（`/skill:名称`、`/命令名`）；
+3. **采用紧凑列表排版、路径单行收敛、列表独立滚动（上限 `360px`）与一键打开文件（`openResource`）**；
+4. **在主“设置 → 运行环境”页签补充直达“Skills 与扩展”的快捷入口**。
+
+**不做。** 不建立私有资源数据库或缓存索引，所有展示元数据实时从本地文件头部轻量读取；不对第三方或不可读的异常 `SKILL.md` 报错阻断列表加载；不放开对非 Pi 资源路径的任意文件打开权限。
+
+**交互与技术方案。**
+
+- **主进程资源元数据轻量解析（`electron/prompts.ts`、`electron/main.ts`、`shared/types.ts`）**：
+  - `ResourceItem` 扩展可选字段 `name?: string`、`description?: string`、`argumentHint?: string`；
+  - 新增 `describeResource(context, resource)`：对 `skills` 与 `prompts` 的 `.md` 文件读取前 `16 KiB` 内容，解析 YAML frontmatter：
+    - `name`：`skills` 优先取 frontmatter `name`，回退取 `SKILL.md`（不区分大小写）所在父目录名；`prompts` 取不含 `.md` 的文件名以严格对应 `/命令名`；其余资源取文件名；
+    - `description`：优先取 frontmatter `description`（压缩多行空白并截断至 240 字）；若无则提取正文首段非标题、非注释文本；
+    - `argumentHint`：取 frontmatter `argument-hint`（截断至 200 字）；
+    - 异常容错：文件不存在、权限不足或 YAML 损坏时静默降级为默认文件名，绝不阻断 `resources` 列表返回。
+- **分类分段筛选、中文化徽章与紧凑列表（`src/features/ResourcesTab.tsx`、`src/styles/management.css`）**：
+  - **顶部操作栏**：标题右侧并排放置“新建提示词模板”与“刷新”按钮；
+  - **分类工具栏**：提供 `全部`、`Skills`、`提示词模板`、`扩展`（以及存在主题时显示 `主题`）分段按钮（附带各自数量），右侧展示当前分类下的 `已启用 X / Y` 统计；
+  - **多维检索**：筛选框支持按名称、简介（`description`）、参数提示、路径、中英文类型及范围关键词实时过滤；
+  - **紧凑资源行（`.resource-row`）**：
+    - 首行展示启用复选框、**名称**、命令调用提示（`skills` 显示 `/skill:<name>`，`prompts` 显示 `/<name>` 及参数提示）、中文类型徽章（`Skill` / `提示词模板` / `扩展` / `主题`）、中文范围徽章（`个人` / `当前项目` / `临时` 及资源包来源），右侧放置“定位/打开文件”与模板“编辑 / 删除”操作；
+    - 次行展示 `description`（最多 2 行截断，`title` 悬停显示完整说明）；
+    - 末行路径 `<code>` 设为单行尾部省略并弱化字色，`title` 保留完整路径；
+  - **高度约束**：`.resource-list` 设置 `max-height: 360px` 独立滚动，确保下方的“安装与管理资源包”与“当前工具”始终留在视口内。
+- **受控资源文件打开（`openResource` IPC）**：
+  - 在 `shared/types.ts` 与 `electron/main.ts` 新增只读方法 `openResource(sessionId, targetPath)`；
+  - 主进程校验 `targetPath` 必须属于该会话已解析出的 `ResourceCatalog.resources` 路径集合（使用 `samePath` 比对），拒绝任何列表外路径；若用户配置了 `editorPath` 则在外部编辑器中打开，否则调用 `shell.showItemInFolder` 在系统文件管理器中定位。
+- **主“设置”直达入口（`src/components/SettingsModal.tsx`）**：
+  - 在“设置 → 运行环境”的“Pi 配置目录”下方提供 **“管理 Skills、扩展与提示词模板”** 按钮，点击后关闭设置弹窗并直接打开 `Pi 功能 → Skills 与扩展` 页签。
+
+**验收标准。**
+
+1. 包含 YAML frontmatter（`name`、`description`）的 `SKILL.md` 在“Skills 与扩展”列表中展示其名称、`/skill:<name>` 调用提示、中文简介及“Skill · 个人/当前项目”徽章；输入简介中的关键词可准确筛选出该 Skill。
+2. 点击分类分段标签（如 `Skills`、`提示词模板`、`扩展`）可按类别过滤列表并显示准确计数与已启用统计；当存在数十个资源时，列表在独立容器内滚动，下方“安装与管理资源包”无需滚穿全表即可操作。
+3. 点击资源行右侧的定位按钮，仅对当前会话已解析的资源文件触发打开/定位，传入未注册路径时被主进程拒绝。
+4. 在主“设置 → 运行环境”点击“管理 Skills、扩展与提示词模板”，可直接跳转至“Pi 功能 → Skills 与扩展”页签。
+
+**测试。** `tests/templates-v014.test.ts` 增加 `describeResource` 对 Skill / 模板 frontmatter、正文首段回退与损坏文件容错的单元测试；`scripts/test-features-ui.mjs` 与 `scripts/test-management-v014-ui.mjs` 回归分类筛选、简介展示与模板编辑操作。
 
 ## v0.7.0 需求补充：工具审批、Git 快照与长会话性能
 

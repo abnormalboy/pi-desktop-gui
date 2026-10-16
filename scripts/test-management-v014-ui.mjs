@@ -229,6 +229,11 @@ try {
   await modal.getByRole('button', { name: '保存模板', exact: true }).click();
   const editButton = modal.getByRole('button', { name: '编辑模板 check-diff.md', exact: true });
   await editButton.waitFor();
+  await modal.locator('.resource-description').filter({ hasText: '检查模块变更' }).waitFor();
+  await modal.locator('.resource-trigger').filter({ hasText: '/check-diff <模块名>' }).waitFor();
+  await modal.getByRole('radio', { name: /^提示词模板/ }).click();
+  await editButton.waitFor();
+  await modal.getByRole('radio', { name: /^全部/ }).click();
   assert.match(
     await fs.readFile(path.join(fixture.projectDir, '.pi/prompts/check-diff.md'), 'utf8'),
     /argument-hint: "<模块名>"/,
@@ -250,6 +255,12 @@ try {
   await modal.getByRole('button', { name: '删除模板 check-diff.md', exact: true }).click();
   await modal.getByRole('button', { name: '删除模板', exact: true }).click();
   await until((value) => !value.runtime.commands.some((command) => command.name === 'check-diff'));
+  await modal.getByRole('button', { name: '关闭', exact: true }).last().click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  const settingsDialog = page.getByRole('dialog', { name: '设置', exact: true });
+  await settingsDialog.waitFor();
+  await settingsDialog.getByRole('button', { name: '管理 Skills、扩展与提示词模板', exact: true }).click();
+  await modal.getByRole('radiogroup', { name: '资源分类' }).waitFor();
   await modal.getByRole('button', { name: '关闭', exact: true }).last().click();
   console.log(
     'PASS native project template create/edit/delete refreshes commands and usage shows its accounting basis',

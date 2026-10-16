@@ -10,6 +10,7 @@ import {
   savePromptTemplate,
   deletePromptTemplate,
   promptEditable,
+  describeResource,
   type PromptTemplateContext,
 } from '../electron/prompts';
 import type { ResourceItem } from '../shared/types';
@@ -114,4 +115,68 @@ test('template writes reject symlinked scopes, directory escape and hard-linked 
   safe.resources.push(resource(created.path, 'user'));
   await fs.link(created.path, path.join(dir, 'hard-linked.md'));
   await assert.rejects(readPromptTemplate(safe, created.path), /链接文件/);
+});
+
+test('describeResource extracts skill/prompt frontmatter and falls back safely', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-resource-meta-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const cwd = path.join(dir, 'project'),
+    agentDir = path.join(dir, 'agent');
+  const skillDir = path.join(agentDir, 'skills', 'code-review');
+  const fallbackDir = path.join(agentDir, 'skills', 'fallback-skill');
+  const brokenDir = path.join(agentDir, 'skills', 'broken-skill');
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.mkdir(fallbackDir, { recursive: true });
+  await fs.mkdir(brokenDir, { recursive: true });
+
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  await fs.writeFile(
+    skillFile,
+    '---\nname: review-excellence\ndescription: |\n  Master effective code review\n  with constructive feedback.\n---\n# Heading\nBody text\n',
+  );
+  const fallbackFile = path.join(fallbackDir, 'SKILL.md');
+  await fs.writeFile(fallbackFile, '# Title Heading\n\nFirst paragraph summary of fallback skill.\n');
+  const brokenFile = path.join(brokenDir, 'SKILL.md');
+  await fs.writeFile(brokenFile, '---\nname: [unclosed\n---\nFallback body after broken yaml\n');
+
+  const context: PromptTemplateContext = { cwd, agentDir, resources: [] };
+  const savedPrompt = await savePromptTemplate(context, input);
+  const promptRes = resource(savedPrompt.path);
+  const skillRes: ResourceItem = {
+    path: skillFile,
+    kind: 'skills',
+    enabled: true,
+    metadata: { source: 'auto', origin: 'top-level', scope: 'user' },
+  };
+  const fallbackRes: ResourceItem = {
+    path: fallbackFile,
+    kind: 'skills',
+    enabled: true,
+    metadata: { source: 'auto', origin: 'top-level', scope: 'user' },
+  };
+  const brokenRes: ResourceItem = {
+    path: brokenFile,
+    kind: 'skills',
+    enabled: false,
+    metadata: { source: 'auto', origin: 'top-level', scope: 'user' },
+  };
+  context.resources.push(promptRes, skillRes, fallbackRes, brokenRes);
+
+  const describedSkill = await describeResource(context, skillRes);
+  assert.equal(describedSkill.name, 'review-excellence');
+  assert.equal(describedSkill.description, 'Master effective code review with constructive feedback.');
+
+  const describedFallback = await describeResource(context, fallbackRes);
+  assert.equal(describedFallback.name, 'fallback-skill');
+  assert.equal(describedFallback.description, 'First paragraph summary of fallback skill.');
+
+  const describedBroken = await describeResource(context, brokenRes);
+  assert.equal(describedBroken.name, 'broken-skill');
+
+  const describedPrompt = await describeResource(context, promptRes);
+  assert.equal(describedPrompt.name, 'check-diff');
+  assert.equal(describedPrompt.description, input.description);
+  assert.equal(describedPrompt.argumentHint, input.argumentHint);
+  assert.equal(describedPrompt.promptEditable, true);
 });

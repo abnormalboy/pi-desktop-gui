@@ -1,12 +1,38 @@
-import { RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react';
+import { RefreshCw, Plus, Pencil, Trash2, FolderOpen } from 'lucide-react';
 import { useState } from 'react';
 import type { PromptTemplateInput, PromptTemplateDocument } from '../../shared/prompts';
+import type { ResourceItem } from '../../shared/types';
 import '../styles/management.css';
 const api = window.desktop;
 import type { FeatureModel } from './usePiFeatures';
+
+type KindFilter = 'all' | ResourceItem['kind'];
+
+const kindLabels: Record<ResourceItem['kind'], string> = {
+  skills: 'Skill',
+  prompts: '提示词模板',
+  extensions: '扩展',
+  themes: '主题',
+};
+
+const scopeLabels: Record<string, string> = {
+  user: '个人',
+  global: '个人',
+  project: '当前项目',
+  temporary: '临时',
+};
+
+function resourceDisplayName(r: ResourceItem) {
+  if (r.name && r.name.trim()) return r.name.trim();
+  const parts = r.path.split(/[\\/]/);
+  const last = parts.at(-1) ?? r.path;
+  if (r.kind === 'skills' && /^skill\.md$/i.test(last)) return parts.at(-2) || last;
+  if (r.kind === 'skills' || r.kind === 'prompts') return last.replace(/\.md$/i, '');
+  return last;
+}
+
 export function ResourcesTab({
   session,
-  filter,
   catalog,
   source,
   setSource,
@@ -14,7 +40,6 @@ export function ResourcesTab({
   setLocal,
   resourceQuery,
   setResourceQuery,
-  kind,
   disabled,
   run,
   refresh,
@@ -39,6 +64,7 @@ export function ResourcesTab({
   const [template, setTemplate] = useState<PromptTemplateInput>();
   const [original, setOriginal] = useState<PromptTemplateDocument>();
   const [deleting, setDeleting] = useState<PromptTemplateDocument>();
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all');
   const edit = (value: PromptTemplateInput, document?: PromptTemplateDocument) => {
     setTemplate(value);
     setOriginal(document);
@@ -50,30 +76,72 @@ export function ResourcesTab({
     setOriginal(undefined);
     setFormDirty(false);
   };
+  const allResources = catalog?.resources ?? [];
+  const counts = {
+    all: allResources.length,
+    skills: allResources.filter((r) => r.kind === 'skills').length,
+    prompts: allResources.filter((r) => r.kind === 'prompts').length,
+    extensions: allResources.filter((r) => r.kind === 'extensions').length,
+    themes: allResources.filter((r) => r.kind === 'themes').length,
+  };
+  const kindTabs: [KindFilter, string, number][] = [
+    ['all', '全部', counts.all],
+    ['skills', 'Skills', counts.skills],
+    ['prompts', '提示词模板', counts.prompts],
+    ['extensions', '扩展', counts.extensions],
+    ...(counts.themes > 0 || kindFilter === 'themes'
+      ? ([['themes', '主题', counts.themes]] as [KindFilter, string, number][])
+      : []),
+  ];
+  const byKind = kindFilter === 'all' ? allResources : allResources.filter((r) => r.kind === kindFilter);
+  const enabledCount = byKind.filter((r) => r.enabled).length;
+  const query = resourceQuery.trim().toLowerCase();
+  const filteredResources = byKind.filter((r) => {
+    if (!query) return true;
+    const displayName = resourceDisplayName(r);
+    const kindLabel = kindLabels[r.kind] ?? r.kind;
+    const scopeLabel = scopeLabels[r.metadata.scope] ?? r.metadata.scope;
+    return [
+      displayName,
+      r.description ?? '',
+      r.argumentHint ?? '',
+      r.kind,
+      kindLabel,
+      r.metadata.scope,
+      scopeLabel,
+      r.metadata.source ?? '',
+      r.path,
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(query);
+  });
   return (
     <>
       <div className="settings-heading">
         <h3>Skills、扩展与提示词模板</h3>
-        <button disabled={disabled || !!template} onClick={() => void run(refresh)}>
-          <RefreshCw size={14} />
-          刷新
-        </button>
+        <div className="resource-header-actions">
+          <button
+            disabled={disabled || !!template}
+            onClick={() =>
+              edit({
+                name: '',
+                description: '',
+                argumentHint: '',
+                body: '',
+                scope: session.projectId ? 'project' : 'global',
+              })
+            }
+          >
+            <Plus size={14} />
+            新建提示词模板
+          </button>
+          <button disabled={disabled || !!template} onClick={() => void run(refresh)}>
+            <RefreshCw size={14} />
+            刷新
+          </button>
+        </div>
       </div>
-      <button
-        disabled={disabled || !!template}
-        onClick={() =>
-          edit({
-            name: '',
-            description: '',
-            argumentHint: '',
-            body: '',
-            scope: session.projectId ? 'project' : 'global',
-          })
-        }
-      >
-        <Plus size={14} />
-        新建提示词模板
-      </button>
       {template && (
         <form
           className="prompt-editor"
@@ -189,18 +257,36 @@ export function ResourcesTab({
           </div>
         </div>
       )}
+      <div className="resource-toolbar">
+        <div className="segmented" role="radiogroup" aria-label="资源分类">
+          {kindTabs.map(([id, title, count]) => (
+            <button key={id} role="radio" aria-checked={kindFilter === id} onClick={() => setKindFilter(id)}>
+              {title} ({count})
+            </button>
+          ))}
+        </div>
+        {byKind.length > 0 && (
+          <small className="resource-summary">
+            已启用 {enabledCount} / {byKind.length}
+          </small>
+        )}
+      </div>
       <input
         className="input"
         aria-label="筛选资源"
-        placeholder="按名称、路径或类型筛选"
+        placeholder="按名称、简介、路径或类型筛选"
         value={resourceQuery}
         onChange={(e) => setResourceQuery(e.target.value)}
       />
       <div className="resource-list">
-        {catalog?.resources
-          .filter((r) => (r.kind + r.path).toLowerCase().includes(resourceQuery.toLowerCase()))
-          .map((r) => (
-            <div className="resource-row" key={r.kind + r.path}>
+        {filteredResources.map((r) => {
+          const displayName = resourceDisplayName(r);
+          const fileName = r.path.split(/[\\/]/).at(-1) ?? r.path;
+          const scopeLabel = scopeLabels[r.metadata.scope] ?? r.metadata.scope;
+          const packageSource =
+            r.metadata.origin === 'package' && r.metadata.source ? r.metadata.source : undefined;
+          return (
+            <div className={'resource-row' + (r.enabled ? '' : ' is-disabled')} key={r.kind + r.path}>
               <input
                 type="checkbox"
                 aria-label={'启用 ' + r.path}
@@ -213,53 +299,86 @@ export function ResourcesTab({
                   })
                 }
               />
-              <span>
-                <strong>
-                  {r.kind === 'skills' && r.path.endsWith('SKILL.md')
-                    ? r.path.split(/[\\/]/).at(-2)
-                    : r.path.split(/[\\/]/).at(-1)}
-                </strong>
-                <small>
-                  {r.kind} · {r.metadata.scope}
-                </small>
-                <code>{r.path}</code>
+              <span className="resource-main">
+                <span className="resource-title-row">
+                  <strong>{displayName}</strong>
+                  {r.kind === 'skills' && <code className="resource-trigger">/skill:{displayName}</code>}
+                  {r.kind === 'prompts' && (
+                    <code className="resource-trigger">
+                      /{displayName}
+                      {r.argumentHint ? ' ' + r.argumentHint : ''}
+                    </code>
+                  )}
+                  <span className="resource-badges">
+                    <i className={'resource-badge kind-' + r.kind}>{kindLabels[r.kind]}</i>
+                    <i className="resource-badge">{scopeLabel}</i>
+                    {packageSource && (
+                      <i className="resource-badge package" title={packageSource}>
+                        {packageSource}
+                      </i>
+                    )}
+                  </span>
+                </span>
+                {r.description && (
+                  <span className="resource-description" title={r.description}>
+                    {r.description}
+                  </span>
+                )}
+                <code className="resource-path" title={r.path}>
+                  {r.path}
+                </code>
               </span>
-              {r.kind === 'prompts' &&
-                (r.promptEditable ? (
-                  <div className="resource-actions">
-                    <button
-                      disabled={disabled || !!template}
-                      aria-label={`编辑模板 ${r.path.split(/[\\/]/).at(-1)}`}
-                      onClick={() =>
-                        void run(async () => {
-                          const document = await api.invoke('promptRead', session.id, r.path);
-                          edit(document, document);
-                        })
-                      }
-                    >
-                      <Pencil size={13} />
-                      编辑
-                    </button>
-                    <button
-                      disabled={disabled || !!template}
-                      aria-label={`删除模板 ${r.path.split(/[\\/]/).at(-1)}`}
-                      onClick={() =>
-                        void run(async () => {
-                          setDeleting(await api.invoke('promptRead', session.id, r.path));
-                        })
-                      }
-                    >
-                      <Trash2 size={13} />
-                      删除
-                    </button>
-                  </div>
-                ) : (
-                  <small className="resource-readonly">只读</small>
-                ))}
+              <div className="resource-actions">
+                {r.kind === 'prompts' &&
+                  (r.promptEditable ? (
+                    <>
+                      <button
+                        disabled={disabled || !!template}
+                        aria-label={`编辑模板 ${fileName}`}
+                        onClick={() =>
+                          void run(async () => {
+                            const document = await api.invoke('promptRead', session.id, r.path);
+                            edit(document, document);
+                          })
+                        }
+                      >
+                        <Pencil size={13} />
+                        编辑
+                      </button>
+                      <button
+                        disabled={disabled || !!template}
+                        aria-label={`删除模板 ${fileName}`}
+                        onClick={() =>
+                          void run(async () => {
+                            setDeleting(await api.invoke('promptRead', session.id, r.path));
+                          })
+                        }
+                      >
+                        <Trash2 size={13} />
+                        删除
+                      </button>
+                    </>
+                  ) : (
+                    <small className="resource-readonly">只读</small>
+                  ))}
+                <button
+                  disabled={disabled}
+                  aria-label={`定位资源 ${displayName}`}
+                  title="在编辑器或文件管理器中打开"
+                  onClick={() => void run(() => api.invoke('openResource', session.id, r.path))}
+                >
+                  <FolderOpen size={13} />
+                  定位
+                </button>
+              </div>
             </div>
-          ))}
+          );
+        })}
       </div>
-      {!catalog?.resources.length && (
+      {allResources.length > 0 && !filteredResources.length && (
+        <p className="settings-copy">没有匹配当前筛选条件的资源。</p>
+      )}
+      {!allResources.length && (
         <p className="settings-copy">尚未发现额外资源。可以安装 npm / Git 包，也可以填写本机资源目录。</p>
       )}
       <h3>安装与管理资源包</h3>
@@ -313,11 +432,11 @@ export function ResourcesTab({
           重新加载
         </button>
       </div>
-      {catalog?.packages.map((p) => (
+      {(catalog?.packages ?? []).map((p) => (
         <div className="option-row" key={p.scope + p.source}>
           <span>
             {p.source}
-            <small> · {p.scope}</small>
+            <small> · {scopeLabels[p.scope] ?? p.scope}</small>
           </span>
           <button
             disabled={disabled}
@@ -333,11 +452,11 @@ export function ResourcesTab({
         </div>
       ))}
       <details>
-        <summary>当前工具（{catalog?.tools.length ?? 0}）</summary>
-        {catalog?.tools.map((t) => (
+        <summary>当前工具（{catalog?.tools?.length ?? 0}）</summary>
+        {(catalog?.tools ?? []).map((t) => (
           <p key={t.name}>
             <strong>{t.name}</strong>
-            <small> {catalog.activeTools.includes(t.name) ? '已启用' : '按需调用'}</small>
+            <small> {(catalog?.activeTools ?? []).includes(t.name) ? '已启用' : '按需调用'}</small>
             <br />
             {t.description.slice(0, 160)}
           </p>

@@ -198,6 +198,17 @@ export function SettingsModal(
                     />
                     <button onClick={() => void chooseSettingPath('agent')}>选择</button>
                   </div>
+                  <div className="button-row">
+                    <button
+                      disabled={!selected || !sessionEnabled || pending || running}
+                      onClick={() => {
+                        setSettingsOpen(false);
+                        setFeatureTab('resources');
+                      }}
+                    >
+                      管理 Skills、扩展与提示词模板
+                    </button>
+                  </div>
                   <details className="setup-guide">
                     <summary>还没有安装 Pi？</summary>
                     <p>在终端安装受支持的版本线，再回到这里重新检测：</p>

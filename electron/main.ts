@@ -32,7 +32,7 @@ import {
   readPromptTemplate,
   savePromptTemplate,
   deletePromptTemplate,
-  promptEditable,
+  describeResource,
   type PromptTemplateContext,
 } from './prompts';
 import type { ResourceCatalog } from '../shared/types';
@@ -240,9 +240,14 @@ function checkpointContext(projectId: string, value: unknown): CheckpointContext
   if (store.session(context.sessionId).projectId !== projectId) throw new Error('该检查点不属于当前项目');
   return { sessionId: context.sessionId, checkpointId: context.checkpointId };
 }
+const sessionResourcePaths = new Map<string, string[]>();
 async function promptContext(id: string): Promise<PromptTemplateContext> {
   const session = store.session(id);
   const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+  sessionResourcePaths.set(
+    id,
+    catalog.resources.map((item) => item.path),
+  );
   return {
     agentDir: agentDirectory(store.state.settings),
     cwd: session.projectId ? store.project(session.projectId).path : undefined,
@@ -859,6 +864,10 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   resources: async (id) => {
     text(id, 100);
     const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+    sessionResourcePaths.set(
+      id,
+      catalog.resources.map((item) => item.path),
+    );
     const session = store.session(id);
     const context: PromptTemplateContext = {
       agentDir: agentDirectory(store.state.settings),
@@ -867,12 +876,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     };
     return {
       ...catalog,
-      resources: await Promise.all(
-        catalog.resources.map(async (resource) => ({
-          ...resource,
-          promptEditable: await promptEditable(context, resource),
-        })),
-      ),
+      resources: await Promise.all(catalog.resources.map((resource) => describeResource(context, resource))),
     };
   },
   promptRead: async (id, file) => {
@@ -1103,6 +1107,22 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const editor = store.state.settings.editorPath;
     if (editor) await openWithApp(editor, file);
     else shell.showItemInFolder(file);
+  },
+  openResource: async (id, target) => {
+    text(id, 100);
+    text(target, 4096);
+    store.session(id);
+    let known = sessionResourcePaths.get(id) ?? [];
+    if (!known.some((item) => samePath(item, target)) && !service.hasPendingWork) {
+      const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+      known = catalog.resources.map((item) => item.path);
+      sessionResourcePaths.set(id, known);
+    }
+    const matched = known.find((item) => samePath(item, target));
+    if (!matched) throw new Error('找不到该资源文件，请刷新资源列表后重试');
+    const editor = store.state.settings.editorPath;
+    if (editor) await openWithApp(editor, matched);
+    else shell.showItemInFolder(matched);
   },
   referenceDropped: async (id, files) => {
     text(id, 100);
@@ -1381,6 +1401,7 @@ else {
             'revealData',
             'openLink',
             'openFile',
+            'openResource',
             'stop',
             'forceStop',
             'quit',
