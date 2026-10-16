@@ -20,6 +20,7 @@
     "test:features-ui": "node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs && node --import tsx scripts/test-approval-ui.mjs && node --import tsx scripts/test-recovery-ui.mjs && node --import tsx scripts/test-compatibility-ui.mjs && node --import tsx scripts/test-update-ui.mjs && node --import tsx scripts/test-model-errors-ui.mjs && node --import tsx scripts/test-model-switch-ui.mjs && npm run test:v014-ui",
     "test:v014-ui": "node --import tsx scripts/test-management-v014-ui.mjs && node --import tsx scripts/test-conversation-v014-ui.mjs && node --import tsx scripts/test-workspace-v014-ui.mjs",
     "test:session-ui": "node --import tsx scripts/test-session-ui.mjs",
+    "test:session-switch-causal": "node --import tsx scripts/test-session-switch-causal.mjs",
     "test:update": "node --import tsx scripts/test-update.ts",
     "package": "npm run build && node scripts/package.mjs",
     "package:dir": "npm run build && node scripts/package.mjs --dir",

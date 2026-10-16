@@ -24,6 +24,7 @@ export function useRuntime(
     let alive = true;
     const unsubscribe = api.onEvent((event) => {
       if (!alive) return;
+      window.__sessionSwitchRecorder?.event(event);
       if (event.type === 'state') setState(event.state);
       else if (event.type === 'storage') setStorage(event.storage);
       else if (event.type === 'update') setUpdate(event.update);

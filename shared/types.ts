@@ -326,13 +326,22 @@ export type RuntimePatch = Omit<Runtime, 'messages' | 'tools'> & {
   tools: ToolActivity[];
   toolCount: number;
 };
-export type AppEvent =
+/** Present only during an explicitly enabled temporary session-switch recording. */
+export interface SessionSwitchEventRecording {
+  eventSeq: number;
+  invocationId?: string;
+  saveId?: number;
+  source: string;
+  snapshotSelectedId?: string;
+}
+export type AppEvent = (
   | { type: 'workspaceChanged'; projectId: string; changedPaths?: string[] }
   | { type: 'state'; state: AppState }
   | { type: 'storage'; storage: StorageStatus }
   | { type: 'update'; update: UpdateState }
   | { type: 'runtime'; runtime: Runtime }
-  | { type: 'runtimePatch'; patch: RuntimePatch };
+  | { type: 'runtimePatch'; patch: RuntimePatch }
+) & { sessionSwitchRecording?: SessionSwitchEventRecording };
 /** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
 export function applyRuntimePatch(previous: Runtime, patch: RuntimePatch): Runtime {
   const { messagesFrom, messages, messageCount, toolsFrom, tools, toolCount, ...rest } = patch;
@@ -367,7 +376,7 @@ export interface ApiMap {
   trustProject: { args: [string]; result: void };
   newSession: { args: [projectId?: string]; result: Session };
   importSession: { args: [projectId?: string]; result: Session | null };
-  selectSession: { args: [string]; result: Message[] };
+  selectSession: { args: [string, recordingId?: string]; result: Message[] };
   renameSession: { args: [string, string]; result: void };
   deleteSession: { args: [string]; result: boolean };
   pinSession: { args: [string, boolean]; result: void };

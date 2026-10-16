@@ -207,6 +207,7 @@ export function useWorkbench() {
     }, 80);
   }, [selected?.id]);
   useEffect(() => {
+    window.__sessionSwitchRecorder?.reactEffect(selected?.id, runtime.sessionId, messages.length);
     if (!thread.current) return;
     if (autoScroll.current) {
       thread.current.scrollTop = thread.current.scrollHeight;
@@ -351,8 +352,18 @@ export function useWorkbench() {
   }
   async function selectSession(s: Session) {
     await action(async () => {
-      const m = await api.invoke('selectSession', s.id);
-      setHistory(m);
+      const recorder = window.__sessionSwitchRecorder;
+      const invocationId = recorder?.invoke(s.id);
+      try {
+        const m = await (invocationId
+          ? api.invoke('selectSession', s.id, invocationId)
+          : api.invoke('selectSession', s.id));
+        recorder?.settled(invocationId!, 'ok');
+        setHistory(m);
+      } catch (error) {
+        recorder?.settled(invocationId!, 'error');
+        throw error;
+      }
     });
     setSearchOpen(false);
   }

@@ -6,6 +6,7 @@ import { load as loadYaml } from 'js-yaml';
 import { PiRpc } from './rpc';
 import { agentDirectory, requireSupportedPi, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
+import { sessionSwitchRecording } from './session-switch-recording';
 import { Workspace, attachmentPrompt } from './workspace';
 import { Configuration } from './configuration';
 import { CheckpointRecorder, type WorkspaceRequest } from './checkpoint-recorder';
@@ -185,9 +186,14 @@ export class AgentService extends EventEmitter {
     this.serialized = new WeakMap();
   }
   private save() {
-    this.store
-      .save()
-      .then(() => this.emit('state', this.store.state))
+    const saving = this.store.save('agent.save');
+    const recording = sessionSwitchRecording?.saveFor(saving);
+    saving
+      .then(() => {
+        // This callback emits current mutable state, not the snapshot captured by this save.
+        if (recording) this.emit('state', this.store.state, recording);
+        else this.emit('state', this.store.state);
+      })
       .catch((e) => {
         this.setError(`本地保存失败：${errorText(e)}`);
         this.publish();
@@ -548,7 +554,11 @@ export class AgentService extends EventEmitter {
     this.publish();
   }
   connect(sessionId: string) {
-    return this.exclusive(() => this.ensureConnected(sessionId));
+    sessionSwitchRecording?.record('connect.exclusive.enqueue', { targetId: sessionId });
+    return this.exclusive(() => {
+      sessionSwitchRecording?.record('connect.exclusive.start', { targetId: sessionId });
+      return this.ensureConnected(sessionId);
+    });
   }
   assertCommandsStopped() {
     if (this.unsafeExit)
@@ -558,10 +568,15 @@ export class AgentService extends EventEmitter {
   }
   private async ensureConnected(sessionId: string) {
     const started = performance.now();
+    sessionSwitchRecording?.record('connect.backend.start', { targetId: sessionId });
     const epoch = this.stopEpoch;
+    sessionSwitchRecording?.record('connect.cleanup.start');
     await this.crashCleanup;
+    sessionSwitchRecording?.record('connect.cleanup.end');
     this.assertCommandsStopped();
+    sessionSwitchRecording?.record('connect.storeFlush.start');
     await this.store.flush();
+    sessionSwitchRecording?.record('connect.storeFlush.end');
     this.store.assertWritable();
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
@@ -572,6 +587,7 @@ export class AgentService extends EventEmitter {
       throw new Error('另一个会话正在运行，请先停止或等待完成');
     if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) {
       await this.syncApprovalMode();
+      sessionSwitchRecording?.record('connect.backend.end', { outcome: 'ok' });
       return;
     }
     const cwd = await this.store.sessionDirectory(sessionId);
@@ -677,6 +693,7 @@ export class AgentService extends EventEmitter {
     this.fullOutput = '';
   }
   private recordSwitch(mode: 'reuse' | 'restart', started: number, reason?: string) {
+    sessionSwitchRecording?.record('connect.backend.end', { mode, outcome: 'ok' });
     this.lastSwitch = {
       mode,
       elapsedMs: Math.round((performance.now() - started) * 10) / 10,

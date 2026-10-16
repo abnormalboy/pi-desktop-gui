@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
+import { sessionSwitchRecording, type SaveRecording } from './session-switch-recording';
 import { AgentService, redact } from './agent';
 import { Workspace, listDirectory, allFiles, previewFile, safePath, attachmentInfo } from './workspace';
 import { WorkspaceWatcher } from './workspace-watch';
@@ -69,8 +70,12 @@ let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
 const appUserModelId = app.isPackaged ? 'io.yeyuproject.pi-desktop' : 'io.yeyuproject.pi-desktop.dev';
-const send = (event: AppEvent) => {
-  if (window && !window.isDestroyed()) window.webContents.send('desktop:event', event);
+const send = (event: AppEvent, origin?: SaveRecording | string) => {
+  if (window && !window.isDestroyed()) {
+    const recording = sessionSwitchRecording?.event(event, origin);
+    window.webContents.send('desktop:event', event);
+    if (recording) sessionSwitchRecording?.record('event.send.end', { ...recording, targetId: undefined });
+  }
   if (event.type === 'state') void watchSelectedProject();
 };
 async function watchSelectedProject() {
@@ -91,8 +96,10 @@ async function watchSelectedProject() {
   else workspaceWatcher = watcher;
 }
 const save = async () => {
-  await store.save();
-  send({ type: 'state', state: store.state });
+  const saving = store.save('main.save');
+  const recording = sessionSwitchRecording?.saveFor(saving);
+  await saving;
+  send({ type: 'state', state: store.state }, recording);
 };
 const attention = { status: '', sessionId: '', dialogs: 0 };
 let lastToast: Notification | undefined;
@@ -429,6 +436,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       else await service.disconnect();
     }
     store.selectSession(s.id);
+    sessionSwitchRecording?.record('selection.applied', { selectedId: store.state.selectedSessionId });
     if (store.storage.writable) await save();
     else send({ type: 'state', state: store.state });
     return service.history(id);
@@ -1309,10 +1317,12 @@ else {
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
       await watchSelectedProject();
       service.on('runtimePatch', (patch) => {
-        send({ type: 'runtimePatch', patch });
+        send({ type: 'runtimePatch', patch }, 'agent.runtimePatch');
         notifyAttention(service.runtime);
       });
-      service.on('state', (state) => send({ type: 'state', state }));
+      service.on('state', (state, recording?: SaveRecording) =>
+        send({ type: 'state', state }, recording ?? 'agent.state'),
+      );
       store.on('storage', (storage) => send({ type: 'storage', storage }));
       const installation = updateInstallation(process.platform, app.isPackaged, process.env);
       const updateEnabled = app.isPackaged && !process.env.PI_DESKTOP_DATA_DIR;
@@ -1349,7 +1359,7 @@ else {
         sessionEnding = true;
         updates.prepareForQuit(false);
       });
-      ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {
+      const invoke = async (event: Electron.IpcMainInvokeEvent, method: string, args: unknown[]) => {
         if (
           !window ||
           event.sender !== window.webContents ||
@@ -1365,6 +1375,7 @@ else {
         let trackedOperation = false;
         let trackedEngineOperation = false;
         let configurationLocked = false;
+        let recordingOutcome: 'ok' | 'error' = 'error';
         try {
           // Late layout cleanup must not create writes after the update's persistence barrier.
           if (updates.state.installing && method === 'saveView') return;
@@ -1482,17 +1493,37 @@ else {
             activeEngineOperations++;
             trackedEngineOperation = true;
             service.assertCommandsStopped();
+            if (method === 'selectSession') sessionSwitchRecording?.record('ipc.terminal.start');
             await assertTerminalClosed();
+            if (method === 'selectSession') sessionSwitchRecording?.record('ipc.terminal.end');
           }
-          return await handlers[method as keyof ApiMap](...args);
+          if (method === 'selectSession' || method === 'diagnostics')
+            sessionSwitchRecording?.record(`ipc.${method}.handler.start`);
+          const result = await handlers[method as keyof ApiMap](...args);
+          if (method === 'selectSession' || method === 'diagnostics')
+            sessionSwitchRecording?.record(`ipc.${method}.handler.end`, { outcome: 'ok' });
+          recordingOutcome = 'ok';
+          return result;
         } catch (e) {
+          if (method === 'selectSession' || method === 'diagnostics')
+            sessionSwitchRecording?.record(`ipc.${method}.error`);
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
         } finally {
+          if (method === 'selectSession') sessionSwitchRecording?.finishInvocation(recordingOutcome);
           if (trackedOperation) activeOperations--;
           if (trackedEngineOperation) activeEngineOperations--;
           if (configurationLocked) updatingConfiguration = false;
         }
-      });
+      };
+      ipcMain.handle(
+        'desktop:invoke',
+        sessionSwitchRecording
+          ? (event, method: string, args: unknown[]) =>
+              method === 'selectSession'
+                ? sessionSwitchRecording!.invoke(args?.[1], args?.[0], () => invoke(event, method, args))
+                : invoke(event, method, args)
+          : invoke,
+      );
       Menu.setApplicationMenu(
         Menu.buildFromTemplate([
           ...(isMac

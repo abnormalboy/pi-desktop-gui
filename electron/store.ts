@@ -7,6 +7,7 @@ import { emptyState, parseState } from './store-state';
 import { compareAppVersions, stableVersion } from '../shared/app-update';
 import { sessionUsage } from './pi/session-usage';
 import type { SessionUsage } from '../shared/usage';
+import { sessionSwitchRecording, type SaveRecording } from './session-switch-recording';
 export { defaultSettings } from './store-state';
 
 const BACKUP_INTERVAL = 10 * 60 * 1000;
@@ -151,20 +152,32 @@ export class Store extends EventEmitter {
     backups.sort((a, b) => b.modified - a.modified);
     for (const backup of backups.slice(3)) await fs.unlink(this.file(backup.name));
   }
-  private async replace(name: string, contents: string) {
+  private async replace(name: string, contents: string, recording?: SaveRecording) {
+    const fileKind = recording
+      ? name === 'state.json'
+        ? 'state'
+        : name.startsWith('state.backup-')
+          ? 'backup'
+          : 'upgrade'
+      : undefined;
+    if (recording) sessionSwitchRecording?.saved('store.replace.start', recording, { fileKind });
     const temporary = this.file(name + '.tmp');
     await fs.writeFile(temporary, contents, { mode: 0o600 });
     for (let attempt = 0; ; attempt++) {
       try {
         await fs.rename(temporary, this.file(name));
+        if (recording)
+          sessionSwitchRecording?.saved('store.replace.end', recording, { fileKind, attempt, outcome: 'ok' });
         return;
       } catch (error) {
+        if (recording && attempt < 3)
+          sessionSwitchRecording?.saved('store.replace.retry', recording, { fileKind, attempt });
         if (attempt >= 3) throw error;
         await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
     }
   }
-  private async backup(contents: string) {
+  private async backup(contents: string, recording?: SaveRecording) {
     const latest = await fs.stat(this.file('state.backup-1.json')).catch((error) => {
       if (error.code !== 'ENOENT') throw error;
       return undefined;
@@ -175,28 +188,43 @@ export class Store extends EventEmitter {
         target = `state.backup-${i + 1}.json`;
       try {
         const stat = await fs.stat(source);
-        await this.replace(target, await fs.readFile(source, 'utf8'));
+        await this.replace(target, await fs.readFile(source, 'utf8'), recording);
         await fs.utimes(this.file(target), stat.atime, stat.mtime);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
-    await this.replace('state.backup-1.json', contents);
+    await this.replace('state.backup-1.json', contents, recording);
   }
-  save() {
+  save(source = 'store.save') {
     if (this.appVersion && this.storage.writable) this.state.appVersion = this.appVersion;
+    const recording = sessionSwitchRecording?.beginSave(source, this.state.selectedSessionId);
+    sessionSwitchRecording?.saved('store.stringify.start', recording);
     const contents = JSON.stringify(this.state, null, 2);
+    sessionSwitchRecording?.saved('store.stringify.end', recording, {
+      contentsLength: contents.length,
+      outcome: 'ok',
+    });
     const write = async () => {
+      sessionSwitchRecording?.saved('store.write.start', recording);
+      if (recording && !this.storage.writable)
+        sessionSwitchRecording?.saved('store.write.end', recording, { outcome: 'error' });
       this.assertWritable();
       try {
-        await this.replace('state.json', contents);
-        await this.backup(contents);
+        await this.replace('state.json', contents, recording);
+        sessionSwitchRecording?.saved('store.backup.start', recording);
+        await this.backup(contents, recording);
+        sessionSwitchRecording?.saved('store.backup.end', recording);
+        sessionSwitchRecording?.saved('store.write.end', recording, { outcome: 'ok' });
       } catch (error) {
+        sessionSwitchRecording?.saved('store.write.end', recording, { outcome: 'error' });
         this.writeFailure(error);
         throw new Error(this.storage.problem, { cause: error });
       }
     };
+    sessionSwitchRecording?.saved('store.enqueue', recording);
     this.writing = this.writing.catch(() => {}).then(write);
+    sessionSwitchRecording?.associateSave(this.writing, recording);
     return this.writing;
   }
   flush() {
