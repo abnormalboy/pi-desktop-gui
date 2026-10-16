@@ -124,6 +124,13 @@ try {
     }, marker);
     await page.getByRole('button', { name: target.title, exact: true }).click();
     const elapsed = await page.evaluate(() => window.switchMeasurement);
+    // Draft state is restored by a React effect after the target messages render.
+    // Wait for correctness separately; keep click-to-message timing unchanged.
+    await page.waitForFunction(
+      (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
+      target.draft,
+      { timeout: 5000 },
+    );
     assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), target.draft);
     const info = (await diagnostic()).sessionSwitch;
     assert.equal(info.mode, 'reuse');
@@ -165,6 +172,11 @@ try {
   const restarted = (await diagnostic()).sessionSwitch;
   assert.equal(restarted.mode, 'restart');
   assert.notEqual(restarted.pid, originalPid);
+  await page.waitForFunction(
+    (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
+    b.draft,
+    { timeout: 5000 },
+  );
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), b.draft);
   console.log('PASS the first sidebar selection after an idle Pi exit reconnects and restores the target');
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
