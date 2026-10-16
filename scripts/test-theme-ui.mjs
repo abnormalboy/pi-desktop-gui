@@ -97,7 +97,7 @@ async function launch() {
   page = await app.firstWindow();
   page.setDefaultTimeout(15000);
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.getByRole('textbox', { name: '任务输入', exact: true }).waitFor();
   await eventually(mainWindowState, (state) => state.visible, 'Application window did not become visible');
   // Preserve production handlers, validation, dialog broker, storage, and native theme.
   // Capture popup dispatch, disposal, and the emergency native-dialog fallback.
@@ -226,13 +226,34 @@ async function checkTheme(source, { changed = false } = {}) {
 }
 
 async function chooseTheme(source) {
-  await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('button', { name: '外观与编辑器', exact: true }).click();
-  await page
+  await page.locator('.sidebar').getByRole('button', { name: '设置', exact: true }).click();
+  const settings = page.getByRole('dialog', { name: '设置', exact: true });
+  await settings.waitFor();
+  await settings
+    .locator('.settings-layout > nav')
+    .getByRole('button', { name: '外观与编辑器', exact: true })
+    .click();
+  const callsBefore = await app.evaluate(() => globalThis.themeUi.calls.length);
+  await settings
+    .locator('.theme-options')
     .getByRole('button', { name: { light: '浅色', dark: '深色', system: '跟随系统' }[source], exact: true })
     .click();
-  await eventually(bootstrap, (value) => value.state.settings.theme === source, 'Appearance did not persist');
-  await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
+  const save = await eventually(
+    () =>
+      app.evaluate(
+        (_electron, { source, after }) =>
+          globalThis.themeUi.calls
+            .slice(after)
+            .findLast((call) => call.method === 'saveSettings' && call.args[0]?.theme === source),
+        { source, after: callsBefore },
+      ),
+    (call) => call?.done,
+    'Appearance save IPC did not finish',
+  );
+  assert.equal(save.error, undefined, 'Appearance save must succeed before its controls are dismissed');
+  assert.equal((await bootstrap()).state.settings.theme, source);
+  await settings.locator(':scope > footer').getByRole('button', { name: '关闭', exact: true }).click();
+  await settings.waitFor({ state: 'hidden' });
   await checkTheme(source, { changed: true });
 }
 
@@ -297,7 +318,7 @@ const beginDelete = async (id) => {
     // Keep the dialog-triggering IPC pending without blocking the Playwright driver.
     void window.desktop.invoke('deleteSession', sessionId).catch(() => {});
   }, id);
-  const box = page.getByRole('dialog', { name: /^删除会话/ });
+  const box = page.locator('[data-app-dialog]').getByRole('dialog', { name: /^删除会话/ });
   await box.waitFor();
   return box;
 };
@@ -358,7 +379,7 @@ try {
         globalThis.themeUi.popupMode = 'native';
       });
       const count = await app.evaluate(() => globalThis.themeUi.popups.length);
-      await page.locator('.native-titlebar').getByRole('button', { name: /^文件/ }).click();
+      await page.locator('.native-titlebar').getByRole('button', { name: '文件', exact: true }).click();
       await eventually(
         () => app.evaluate(() => globalThis.themeUi.popups.length),
         (value) => value > count,
@@ -378,7 +399,7 @@ try {
   );
 
   const beforeShortcut = (await bootstrap()).state.sessions.length;
-  await page.getByRole('textbox', { name: '任务输入' }).focus();
+  await page.getByRole('textbox', { name: '任务输入', exact: true }).focus();
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+n' : 'Control+n');
   await eventually(
     bootstrap,
@@ -388,7 +409,7 @@ try {
   pass('Ctrl/Cmd+N creates exactly one session');
 
   if (process.platform !== 'darwin') {
-    const input = page.getByRole('textbox', { name: '任务输入' });
+    const input = page.getByRole('textbox', { name: '任务输入', exact: true });
     const buttons = page.locator('.native-titlebar button');
     await input.focus();
     await page.keyboard.press('F10');
@@ -478,14 +499,14 @@ try {
 
   // The production native Edit roles operate on the editor selection retained across menu opening.
   // Use Electron's documented role dispatch, not a user-defined click callback or OS mouse claim.
-  const editor = page.getByRole('textbox', { name: '任务输入' });
+  const editor = page.getByRole('textbox', { name: '任务输入', exact: true });
   await editor.fill('before SELECTED after');
   await editor.evaluate((node) => {
     node.focus();
     node.setSelectionRange(7, 15);
   });
   if (process.platform !== 'darwin') {
-    await page.locator('.native-titlebar').getByRole('button', { name: /^编辑/ }).click();
+    await page.locator('.native-titlebar').getByRole('button', { name: '编辑', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.native-titlebar [aria-expanded="true"]'));
     await focused(editor);
     assert.deepEqual(await editor.evaluate((node) => [node.selectionStart, node.selectionEnd]), [7, 15]);
@@ -535,7 +556,7 @@ try {
     const box = await beginDelete(disposable.id);
     await screenshot(`${theme}-delete-${dismiss}`);
     const count = (await bootstrap()).state.sessions.length;
-    await focused(box.getByRole('button', { name: '取消', exact: true }));
+    await focused(box.locator(':scope > footer').getByRole('button', { name: '取消', exact: true }));
     for (const key of ['n', 'k', ','])
       await page.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+${key}`);
     assert.equal(
@@ -559,7 +580,9 @@ try {
     else if (dismiss === 'escape') await page.keyboard.press('Escape');
     else if (dismiss === 'backdrop')
       await page.locator('[data-app-dialog] .modal-backdrop').click({ position: { x: 4, y: 45 } });
-    else await box.getByRole('button', { name: dismiss === 'close' ? '关闭' : '取消', exact: true }).click();
+    else if (dismiss === 'close')
+      await box.locator(':scope > header').getByRole('button', { name: '关闭', exact: true }).click();
+    else await box.locator(':scope > footer').getByRole('button', { name: '取消', exact: true }).click();
     await finishDelete(false);
     assert.ok((await bootstrap()).state.sessions.some((item) => item.id === disposable.id));
     assert.equal(await fs.readFile(disposable.file, 'utf8'), fileContents);
@@ -584,7 +607,10 @@ try {
     /请先完成当前确认/,
   );
   await assert.rejects(page.evaluate((id) => window.desktop.invoke('respondAppDialog', id, -1), firstId));
-  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page
+    .locator('[data-app-dialog] [role="dialog"] > footer')
+    .getByRole('button', { name: '取消', exact: true })
+    .click();
   await page.locator('[data-app-dialog]').waitFor({ state: 'hidden' });
   await beginDelete(second.id);
   const secondId = await app.evaluate(
@@ -596,7 +622,10 @@ try {
     (await bootstrap()).state.sessions.some((item) => item.id === disposable.id),
     'Stale response must not confirm canceled deletion',
   );
-  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page
+    .locator('[data-app-dialog] [role="dialog"] > footer')
+    .getByRole('button', { name: '取消', exact: true })
+    .click();
   await page.locator('[data-app-dialog]').waitFor({ state: 'hidden' });
   assert.ok((await bootstrap()).state.sessions.some((item) => item.id === second.id));
   pass(
@@ -608,13 +637,13 @@ try {
     () => globalThis.themeUi.events.findLast((event) => event.type === 'appDialog').dialog.id,
   );
   await page.reload();
-  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.getByRole('textbox', { name: '任务输入', exact: true }).waitFor();
   await finishDelete(false);
   await page.evaluate((id) => window.desktop.invoke('respondAppDialog', id, 1), pendingId);
   assert.equal(await fs.readFile(disposable.file, 'utf8'), fileContents);
   assert.ok((await bootstrap()).state.sessions.some((item) => item.id === disposable.id));
   const box = await beginDelete(disposable.id);
-  await box.getByRole('button', { name: '删除', exact: true }).click();
+  await box.locator(':scope > footer').getByRole('button', { name: '删除', exact: true }).click();
   await finishDelete(true);
   assert.equal(
     (await bootstrap()).state.sessions.some((item) => item.id === disposable.id),
@@ -677,7 +706,7 @@ try {
 
   await chooseTheme('dark');
   await page.reload();
-  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.getByRole('textbox', { name: '任务输入', exact: true }).waitFor();
   await checkTheme('dark');
   await app.close();
   app = undefined;
@@ -707,7 +736,9 @@ try {
     await app.evaluate(({ app }) => {
       app.quit();
     });
-    const exit = page.getByRole('dialog', { name: 'Pi 仍在执行任务', exact: true });
+    const exit = page
+      .locator('[data-app-dialog]')
+      .getByRole('dialog', { name: 'Pi 仍在执行任务', exact: true });
     await exit.waitFor();
     await eventually(
       mainWindowState,
@@ -715,7 +746,7 @@ try {
       'Quit confirmation must restore/show the app',
     );
     await screenshot(`busy-quit-${state}`);
-    await exit.getByRole('button', { name: '留在窗口', exact: true }).click();
+    await exit.locator(':scope > footer').getByRole('button', { name: '留在窗口', exact: true }).click();
     await exit.waitFor({ state: 'hidden' });
     assert.equal((await bootstrap()).runtime.status, 'running');
   }
@@ -767,7 +798,7 @@ try {
       });
     else {
       await page.reload();
-      await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+      await page.getByRole('textbox', { name: '任务输入', exact: true }).waitFor();
     }
   }
   pass(
@@ -777,10 +808,12 @@ try {
   await app.evaluate(({ app }) => {
     app.quit();
   });
-  const finalExit = page.getByRole('dialog', { name: 'Pi 仍在执行任务', exact: true });
+  const finalExit = page
+    .locator('[data-app-dialog]')
+    .getByRole('dialog', { name: 'Pi 仍在执行任务', exact: true });
   await finalExit.waitFor();
   const closed = app.waitForEvent('close');
-  await finalExit.getByRole('button', { name: '停止并退出', exact: true }).click();
+  await finalExit.locator(':scope > footer').getByRole('button', { name: '停止并退出', exact: true }).click();
   await closed;
   app = undefined;
   pass('explicit Stop and Quit stops the deterministic task and exits Electron');
