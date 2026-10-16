@@ -1,23 +1,30 @@
 # README 视觉素材
 
-这组素材于 2026-10-14 使用 Codex 内置 `image_gen` 工具生成，供仓库 README 展示。统一使用森林绿 `#386e5a`、深灰和米白 `#fafbf9`。
+README 使用两类素材：`screenshots/` 中的真实界面截图，以及 2026-10-14 使用 Codex 内置 `image_gen` 工具生成的概念插图（统一使用森林绿 `#386e5a`、深灰和米白 `#fafbf9`）。
 
 | 文件 | 用途 | 构图 |
 | --- | --- | --- |
-| [hero-banner.png](hero-banner.png) | README 首屏品牌海报 | 约 16:9 横版 |
+| [screenshots/demo.gif](screenshots/demo.gif) | README 首屏演示：@ 引用文件 → 发送 → 工具调用与 Diff → 撤销本轮 | 1280 × 800，15 fps，约 27 秒 |
+| [screenshots/workspace-light.png](screenshots/workspace-light.png) | 对话、工具调用与内联 Diff（静态） | 1440 × 900 @2x |
+| [screenshots/workspace-dark.png](screenshots/workspace-dark.png) | 深色主题 | 1440 × 900 @2x |
+| [screenshots/approval.png](screenshots/approval.png) | 确认模式下的命令审批卡片 | 1440 × 900 @2x |
+| [hero-banner.png](hero-banner.png) | 早期首屏品牌海报，README 已改用真实截图，保留为历史素材 | 约 16:9 横版 |
 | [architecture-bridge.png](architecture-bridge.png) | 本机 GUI 与 Pi CLI 通信关系 | 约 16:9 横版 |
-| [features-bento.png](features-bento.png) | 六项能力的卡片概览 | 约 16:9 横版 |
+| [features-bento.png](features-bento.png) | 早期六项能力概览，保留为历史素材 | 约 16:9 横版 |
 | [logo.png](logo.png) | 早期 README π 图标，保留为历史素材 | 1:1，图标外透明 |
 
 ## 使用说明
 
-- 海报、架构图与能力概览为 AI 生成的概念插图，海报中的界面是示意。
+- 首次生成素材前运行 `npx playwright install chromium --only-shell` 安装无头浏览器；Linux 可加 `--with-deps` 安装系统依赖。两个脚本只在 `127.0.0.1` 提供 `dist` 内的构建文件。
+- 截图由 `npm run screenshots`（`scripts/readme-screenshots.mjs`）生成：用模拟的 `window.desktop` 渲染构建后的真实界面，数据为虚构的示例项目，不含真实会话、路径或凭据。界面改动后先 `npm run build` 再重新生成。
+- 演示 GIF 由 `npm run demo-gif`（`scripts/readme-demo.mjs`）录制：同样使用模拟数据，脚本按时间线推送运行事件，并用 Playwright 驱动真实的输入、点击和滚动；无头浏览器不绘制鼠标，脚本在页面内画了一个跟随指针。需要本机安装 `ffmpeg`。
+- 海报、架构图与能力概览为 AI 生成的概念插图，海报中的界面是示意。README 目前只使用其中的架构图。
 - E2E 验收截图由测试脚本写入 Git 忽略的 `test-results/`。README 展示素材单独维护，避免混入测试会话、临时路径和验收模型名称。
 - 架构图省略了 Electron 内部 IPC 和桌面适配扩展，重点表示 GUI 通过本机 stdio 上的 Pi RPC（JSONL）驱动 CLI。它不表示标准 JSON-RPC 2.0。
 - 图中的模型服务、MCP 服务表示可连接的资源；模型和 MCP 可以部署在本机或远程，联网情况取决于用户配置。“Local Workspace”不表示离线推理或系统沙箱。
 - 图中的 Undo 指受运行基线支持的文件撤销，不表示撤销命令造成的外部操作。
 - v0.6.1 起 README 顶部与应用统一使用 `build/` 内的新图标；原图及生成提示词见 `build/icon-source-v2.png` 和 `build/icon-source-v2.prompt.txt`。`logo.png` 保留为历史素材。
-- 修改能力标签时，同步更新 README 的文字说明与图片 alt，确保图片无法显示时仍能了解产品。
+- 修改能力标签时，同步更新 `README.md` 与 `README.zh-CN.md` 的文字说明与图片 alt，确保图片无法显示时仍能了解产品。
 
 ## 生成提示词
 

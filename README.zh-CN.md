@@ -1,0 +1,183 @@
+<div align="center">
+
+<img src="build/icon-mac.png" width="96" height="96" alt="Pi Desktop 图标" />
+
+# Pi Desktop
+
+**为 [Pi Coding Agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 打造的本地桌面工作台。**<br />
+终端的自由，桌面的直觉。
+
+[![Release](https://img.shields.io/github/v/release/yeyuProject/pi-desktop-gui?style=flat-square&color=386e5a)](https://github.com/yeyuProject/pi-desktop-gui/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/yeyuProject/pi-desktop-gui/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/yeyuProject/pi-desktop-gui/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/github/downloads/yeyuProject/pi-desktop-gui/total?style=flat-square)](https://github.com/yeyuProject/pi-desktop-gui/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0f172a?style=flat-square)](#安装)
+[![License](https://img.shields.io/github/license/yeyuProject/pi-desktop-gui?style=flat-square)](LICENSE)
+
+[English](README.md) · **简体中文**
+
+[特性](#特性) · [安装](#安装) · [使用](#使用) · [常见问题](#常见问题) · [参与贡献](#参与贡献)
+
+<br />
+
+<img src="docs/assets/screenshots/demo.gif" width="100%" alt="演示：用 @ 引用文件并发送任务，Pi 修改两个文件并运行测试，在工作区查看 Diff，最后撤销整轮修改" />
+
+</div>
+
+## 为什么需要 Pi Desktop？
+
+命令行编程智能体效率高、可组合，但在审查大段 Diff、并行探索多种方案、粘贴截图，或配置 MCP 与 Skills 时，纯终端界面往往显得局促。Pi Desktop 在你已经安装的 Pi CLI 之上提供桌面界面：
+
+- **在本机运行。** 通过本地 `stdio` 上的 RPC（按行传输 JSON，即 JSONL）驱动你机器上的 `pi`，桌面与智能体之间没有额外的中转服务。
+- **与终端共用一切。** 会话、模型凭据和扩展都与 Pi 相同。通过「在 Pi 终端继续」把会话交给终端，也可以在桌面打开终端创建的会话。
+- **对话优先，审查随行。** 保持简洁的对话流；需要时展开工作区查看变更与 Diff，并可撤销文件修改。
+
+会话与工作区保存在本机；模型请求沿用 Pi 的供应商配置，远程 MCP 也可能联网。「本地工作台」不代表所有推理都在本机完成。
+
+## 特性
+
+- **可视化智能体工作流**：实时显示思考过程、工具调用参数与退出状态，每次修改都有内联 Diff，并显示上下文用量、Token 与费用。
+- **按轮次撤销**：在 Git 项目中，每次运行前建立快照（存放在应用数据目录，不改动项目的 `.git`），可撤销整轮修改或单独回滚文件。命令产生的外部副作用不在撤销范围内。
+- **工具审批**：每个会话可选「全自动」「确认修改」或「只读」。可以允许一次、本会话总是允许，或填写原因拒绝。
+- **分支对话**：编辑并重发任意消息、Fork 新分支，或克隆当前分支，围绕同一问题尝试不同方案。
+- **生态控制中心**：图形化管理模型供应商（API Key / OAuth / 任意 OpenAI 兼容接口）、MCP 服务器、Skills、扩展和提示词模板，无需手写配置文件。
+- **随手提问或深度工程**：无需打开仓库即可开始独立对话；打开项目则自动挂载文件树、Git 变更与快照。
+- **运行中补充要求**：在运行途中补充要求（Steer）或追加后续队列，连按两次 <kbd>Esc</kbd> 停止全部任务。
+- **键盘优先**：跨会话全局搜索、会话内查找，各个面板都有快捷键。
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/approval.png" width="100%" alt="确认模式：Pi 执行 npm test 前请求批准，可选择允许、本会话允许 npm test 开头或拒绝" /></td>
+    <td width="50%"><img src="docs/assets/screenshots/workspace-dark.png" width="100%" alt="深色主题下的同一工作区" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>执行命令和修改文件前先确认</sub></td>
+    <td align="center"><sub>浅色与深色主题</sub></td>
+  </tr>
+</table>
+
+各版本的变化见 [发布说明](docs/releases/)。
+
+## 安装
+
+### 1. 安装 Pi
+
+Pi Desktop 依赖 Node.js（`>= 22.19`）与 Pi Coding Agent CLI：
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+完整回归基准为 Pi **1.1.0**。其他可识别的版本也能连接，会显示“未验证”提示。Pi Desktop 不会自动安装或升级 Pi。
+
+> [!IMPORTANT]
+> Windows 用户请先安装 [Git for Windows](https://git-scm.com/download/win)，Pi 需要用其中的 Git Bash 执行命令。
+
+### 2. 下载 Pi Desktop
+
+前往 [最新版本](https://github.com/yeyuProject/pi-desktop-gui/releases/latest) 下载对应系统的安装包。每个版本都提供 `SHA256SUMS.txt`，用于核对下载文件。
+
+| 平台        | 架构                  | 格式                                                     |
+| :---------- | :-------------------- | :------------------------------------------------------- |
+| **Windows** | x64                   | `-setup.exe` 安装版（推荐，支持自动更新）· `.exe` 便携版 |
+| **macOS**   | Apple Silicon · Intel | `.dmg` · `.zip`                                          |
+| **Linux**   | x86_64                | `.AppImage`（支持自动更新）· `.deb`                      |
+
+Windows 安装版和 Linux AppImage 会在后台自动更新（可在 **设置 → 关于与更新** 关闭）；其他格式在有新版本时提示手动下载。
+
+### 3. 连接模型并开始
+
+1. 启动 Pi Desktop，应用会在 `PATH` 以及常见的 `nvm` / Homebrew 路径中查找 `pi`。
+2. 打开 **Pi 功能 → 供应商与登录** 配置模型服务商。若终端中已配置过 `~/.pi`，会自动识别。
+3. 在输入框中选择模型与推理深度，即可开始对话或打开本地项目。
+
+## 使用
+
+### 输入框指令
+
+| 前缀 | 作用                                                    | 示例                              |
+| :--: | :------------------------------------------------------ | :-------------------------------- |
+| `@`  | 引用项目文件（也可以直接把文件或图片拖进输入框）        | `@src/App.tsx 优化这里的渲染性能` |
+| `/`  | 打开命令菜单，调用 Skills、提示词模板与扩展命令         | `/commit`                         |
+| `//` | 绕过桌面同名命令，直接调用 Pi 原生斜杠命令              | `//compact`                       |
+| `!`  | 在工作目录执行 Shell 命令，并把输出加入对话上下文       | `!npm test`                       |
+| `!!` | 执行 Shell 命令，仅在本地显示结果，**不占用**模型上下文 | `!!git status`                    |
+
+### 快捷键
+
+| 功能                         |             Windows / Linux              |                 macOS                  |
+| :--------------------------- | :--------------------------------------: | :------------------------------------: |
+| 新建对话                     |       <kbd>Ctrl</kbd> <kbd>N</kbd>       |       <kbd>⌘</kbd> <kbd>N</kbd>        |
+| 搜索会话与历史消息           |       <kbd>Ctrl</kbd> <kbd>K</kbd>       |       <kbd>⌘</kbd> <kbd>K</kbd>        |
+| 在当前会话中查找             |       <kbd>Ctrl</kbd> <kbd>F</kbd>       |       <kbd>⌘</kbd> <kbd>F</kbd>        |
+| 展开 / 收起侧栏              |       <kbd>Ctrl</kbd> <kbd>B</kbd>       |       <kbd>⌘</kbd> <kbd>B</kbd>        |
+| 展开 / 收起工作区            |       <kbd>Ctrl</kbd> <kbd>J</kbd>       |       <kbd>⌘</kbd> <kbd>J</kbd>        |
+| 切换变更 / 文件 / 输出页签   | <kbd>Alt</kbd> <kbd>1</kbd>–<kbd>3</kbd> | <kbd>⌥</kbd> <kbd>1</kbd>–<kbd>3</kbd> |
+| 打开设置                     |       <kbd>Ctrl</kbd> <kbd>,</kbd>       |       <kbd>⌘</kbd> <kbd>,</kbd>        |
+| 快捷键速查                   |       <kbd>Ctrl</kbd> <kbd>/</kbd>       |       <kbd>⌘</kbd> <kbd>/</kbd>        |
+| 翻阅发送历史（输入框为空时） |       <kbd>↑</kbd> / <kbd>↓</kbd>        |      <kbd>↑</kbd> / <kbd>↓</kbd>       |
+| 关闭面板并聚焦输入框         |              <kbd>Esc</kbd>              |             <kbd>Esc</kbd>             |
+| **停止全部正在执行的任务**   |      <kbd>Esc</kbd> <kbd>Esc</kbd>       |     <kbd>Esc</kbd> <kbd>Esc</kbd>      |
+
+## 工作原理
+
+<img src="docs/assets/architecture-bridge.png" width="100%" alt="架构图：Pi Desktop GUI 通过本机 stdio RPC（JSONL）连接 Pi CLI，Pi 使用 Skills、扩展与本地 Git 工作区，并连接模型服务和 MCP" />
+
+Electron 主进程以 RPC 模式启动 `pi`，并注入一个小型桥接扩展，补充 RPC 未覆盖的能力（工具审批、会话树导航、登录等）。React 渲染进程只通过带类型的 IPC 接口与主进程通信。模块边界与恢复机制见 [架构说明](docs/architecture.md)。
+
+## 常见问题
+
+<details>
+<summary><b>macOS 提示「无法验证开发者」或「已损坏」？</b></summary>
+
+macOS 版本目前尚未签名。按住 <kbd>Control</kbd> 点击应用并选择「打开」，或在终端解除隔离属性：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Pi Desktop.app"
+```
+
+Windows 安装包目前也未签名，首次运行可能出现 SmartScreen 提示。更新下载会校验 SHA-512。
+</details>
+
+<details>
+<summary><b>只读模式是沙箱吗？</b></summary>
+
+不是。审批模式控制的是通过 Pi 发起的工具调用：只读模式仅放行内置的读取与搜索工具，也会拦截手动 `!` / `!!` 命令。它不能限制已安装扩展自身运行的代码。
+</details>
+
+<details>
+<summary><b>撤销能恢复什么？</b></summary>
+
+Git 项目中的文件内容（包括二进制文件、原始换行符和 POSIX 文件权限），受文件数量、单文件 50 MiB 和快照总容量限制。撤销本轮新建的文件会移入回收站。命令造成的外部副作用（网络请求、数据库、安装的依赖等）无法撤销。
+</details>
+
+<details>
+<summary><b>数据存在哪里？崩溃后会怎样？</b></summary>
+
+对话就是 Pi 自己的 JSONL 会话文件。桌面端的索引（项目、草稿、设置）保存在应用数据目录，轮换保留三份备份，每次升级前另存一份旧索引。Pi 崩溃后不会自动重发提问，尚未执行的队列会回到草稿。
+</details>
+
+<details>
+<summary><b>Windows 安装版和便携版可以互相切换吗？</b></summary>
+
+可以。两者使用同一个数据目录，会话、草稿和设置都会保留。v0.7.0 及更早版本需要先手动安装一次当前版本，之后才能使用应用内更新。
+</details>
+
+## 参与贡献
+
+欢迎提交 Issue 与 Pull Request！开发环境、测试命令和发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；报告安全漏洞请见 [SECURITY.md](SECURITY.md)。
+
+```bash
+git clone https://github.com/yeyuProject/pi-desktop-gui.git
+cd pi-desktop-gui
+npm ci
+npm run dev
+```
+
+## 致谢
+
+- 核心智能体引擎基于 [@earendil-works/pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)。
+- 本项目为社区驱动的独立桌面客户端，并非 Pi 官方发行版本。
+
+## 许可证
+
+[MIT](LICENSE) © yeyuProject

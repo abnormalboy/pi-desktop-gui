@@ -1,0 +1,58 @@
+name: Bug report / 问题反馈
+description: Something doesn't work as expected / 功能异常或报错
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please search existing issues first. Security issues → see SECURITY.md, not here.
+        感谢反馈！请先搜索已有 Issue。安全问题请按 SECURITY.md 私下报告。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / 问题描述
+      description: What did you do, what did you expect, and what happened instead? / 你做了什么、预期结果、实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    id: version
+    attributes:
+      label: Pi Desktop version / 应用版本
+      description: Settings → About / 设置 → 关于与更新
+      placeholder: 0.14.0
+    validations:
+      required: true
+  - type: input
+    id: pi
+    attributes:
+      label: Pi CLI version / Pi 版本
+      description: Output of `pi --version`
+      placeholder: 1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - Windows (installer / 安装版)
+        - Windows (portable / 便携版)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (AppImage)
+        - Linux (deb)
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics / 诊断信息
+      description: Settings → export diagnostics, or screenshots. Remove API keys and private paths first. / 可在设置中导出诊断，或附截图；请先移除密钥和隐私路径。

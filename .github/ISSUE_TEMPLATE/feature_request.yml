@@ -1,0 +1,20 @@
+name: Feature request / 功能建议
+description: Suggest an idea or improvement / 提出新功能或改进
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 遇到的问题
+      description: What are you trying to do, and what gets in the way? / 你想完成什么，目前哪里不方便？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 期望的方案
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / 替代方案
+      description: Workarounds you use today, or how other tools handle it. / 目前的变通做法，或其他工具的做法。

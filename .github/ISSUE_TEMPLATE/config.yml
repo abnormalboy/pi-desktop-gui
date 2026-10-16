@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability / 报告安全漏洞
+    url: https://github.com/yeyuProject/pi-desktop-gui/security/advisories/new
+    about: Please report security issues privately. / 请私下报告安全问题。
+  - name: Pi CLI issues / Pi CLI 本身的问题
+    url: https://www.npmjs.com/package/@earendil-works/pi-coding-agent
+    about: Model behavior, built-in tools and CLI bugs belong upstream. / 模型行为、内置工具和 CLI 问题请向上游反馈。
