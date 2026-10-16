@@ -225,8 +225,13 @@ try {
   if (app) {
     // A failed assertion during a run must not leave the exit confirmation blocking cleanup.
     await app
-      .evaluate(({ dialog }) => {
-        dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+      .evaluate(({ BrowserWindow }) => {
+        return BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+          `void window.desktop.onEvent(event => {
+            if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
+              event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
+          })`,
+        );
       })
       .catch(() => {});
     await app.close();

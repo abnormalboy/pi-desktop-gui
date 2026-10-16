@@ -40,7 +40,7 @@ export function useShortcuts({
   const [stopArmed, setStopArmed] = useState(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
+      if (e.isComposing || document.querySelector('[data-app-dialog]')) return;
       if (mod(e) && e.key.toLowerCase() === 'f' && !document.querySelector('[role="dialog"]')) {
         e.preventDefault();
         if (compact && inspector) setInspector(false);

@@ -25,6 +25,7 @@ export function ProvidersTab({
   modelIds,
   setModelIds,
   disabled,
+  configEditingDisabled,
   run,
   refresh,
   addJson,
@@ -55,6 +56,7 @@ export function ProvidersTab({
   | 'modelIds'
   | 'setModelIds'
   | 'disabled'
+  | 'configEditingDisabled'
   | 'run'
   | 'refresh'
   | 'addJson'
@@ -88,6 +90,13 @@ export function ProvidersTab({
       <div className="button-row">
         <button
           disabled={disabled || !providers.find((p) => p.id === provider)?.oauth}
+          title={
+            !provider
+              ? '请先选择供应商'
+              : !providers.find((p) => p.id === provider)?.oauth
+                ? '此供应商不支持浏览器登录，请使用其支持的凭据方式'
+                : ''
+          }
           onClick={() =>
             void run(async () => {
               await api.invoke('login', session.id, provider, 'oauth');
@@ -100,6 +109,13 @@ export function ProvidersTab({
         </button>
         <button
           disabled={disabled || !providers.find((p) => p.id === provider)?.apiKey}
+          title={
+            !provider
+              ? '请先选择供应商'
+              : !providers.find((p) => p.id === provider)?.apiKey
+                ? '此供应商不支持 API Key 登录'
+                : ''
+          }
           onClick={() =>
             void run(async () => {
               await api.invoke('login', session.id, provider, 'api_key');
@@ -112,6 +128,7 @@ export function ProvidersTab({
         </button>
         <button
           disabled={disabled || !provider}
+          title={!provider ? '请先选择要退出的供应商' : ''}
           onClick={() =>
             void run(async () => {
               await api.invoke('logout', session.id, provider);
@@ -123,6 +140,13 @@ export function ProvidersTab({
           退出登录
         </button>
       </div>
+      <p className="settings-copy">
+        {provider
+          ? `所选供应商支持：${[providers.find((p) => p.id === provider)?.oauth && '浏览器登录', providers.find((p) => p.id === provider)?.apiKey && 'API Key'].filter(Boolean).join('、') || '请使用下方自定义配置'}。`
+          : providers.length
+            ? '先选择供应商，再使用其支持的登录方式。'
+            : '连接 Pi 后加载登录供应商列表；自定义供应商配置可在下方编辑。'}
+      </p>
       <details>
         <summary>添加自定义供应商</summary>
         <label className="field-label">供应商标识</label>
@@ -181,7 +205,8 @@ export function ProvidersTab({
           />
         </label>
         <button
-          disabled={disabled || !document}
+          disabled={configEditingDisabled}
+          title={!document ? '请先读取供应商配置' : ''}
           onClick={() =>
             void run(async () => {
               if (!/^https?:\/\//.test(baseUrl) || !modelIds.trim()) throw new Error('请填写接口地址和模型');

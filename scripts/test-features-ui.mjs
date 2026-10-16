@@ -105,6 +105,23 @@ try {
       .then((t) => t.includes('ui-test-key'))),
   );
   await page.screenshot({ path: path.join(output, 'features-providers.png'), animations: 'disabled' });
+  // Real Electron + real Pi read paths complement the delayed-IPC renderer tests.
+  for (const title of ['完整 Pi 设置', '供应商与登录', 'MCP 服务器']) {
+    const tab = modal.getByRole('button', { name: title, exact: true });
+    await tab.click();
+    const editor = modal.getByRole('textbox', { name: 'Pi 配置 JSON' });
+    await editor.waitFor();
+    await page.waitForFunction(() => {
+      const editor = document.querySelector('textarea[aria-label="Pi 配置 JSON"]');
+      return editor && !editor.disabled;
+    });
+    const before = await editor.inputValue();
+    JSON.parse(before);
+    await tab.click();
+    assert.equal(await editor.inputValue(), before, `${title}: selecting current tab retains content`);
+    assert.equal(await editor.isDisabled(), false);
+  }
+  console.log('PASS real Pi settings/models/MCP same-tab selection retains editable configuration');
   await modal.getByRole('button', { name: 'MCP 服务器', exact: true }).click();
   await modal
     .getByRole('textbox', { name: 'Pi 配置 JSON' })

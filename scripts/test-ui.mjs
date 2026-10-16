@@ -60,7 +60,10 @@ try {
   await page.getByRole('button', { name: '查看工作区变更', exact: true }).click();
   await page.getByRole('button', { name: '刷新变更', exact: true }).click();
   await page.locator('.change-row').filter({ hasText: '输出结果.txt' }).click();
-  await page.locator('.inspector .diff-row.added').getByText('真实 Pi 工具执行成功', { exact: true }).waitFor();
+  await page
+    .locator('.inspector .diff-row.added')
+    .getByText('真实 Pi 工具执行成功', { exact: true })
+    .waitFor();
   assert.equal(await page.locator('.tool-card.error').count(), 0);
   await page.screenshot({ path: path.join(output, 'workspace-completed.png'), animations: 'disabled' });
   console.log('PASS UI real Pi task, attachment, tools and diff');
@@ -185,8 +188,13 @@ try {
 } finally {
   if (app) {
     await app
-      .evaluate(({ dialog }) => {
-        dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+      .evaluate(({ BrowserWindow }) => {
+        return BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+          `void window.desktop.onEvent(event => {
+            if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
+              event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
+          })`,
+        );
       })
       .catch(() => {});
     await app.close();

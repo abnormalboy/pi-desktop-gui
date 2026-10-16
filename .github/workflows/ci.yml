@@ -46,6 +46,25 @@ jobs:
       - name: Install Linux desktop test dependencies
         if: matrix.os == 'ubuntu-latest'
         run: npx playwright install-deps chromium
+      - name: Install Linux appearance test tools
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npx playwright install chromium --only-shell
+          sudo apt-get install -y openbox
+      - name: Test native desktop appearance and confirmation lifecycle
+        if: matrix.os != 'ubuntu-latest'
+        run: npm run test:theme-ui
+      - name: Test native Linux appearance and confirmation lifecycle
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          PI_DESKTOP_REQUIRE_WINDOW_MANAGER: '1'
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" sh -c 'openbox >/tmp/pi-openbox.log 2>&1 & npm run test:theme-ui'
+      - name: Test isolated Pi settings races
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run test:pi-settings-ui
+      - name: Capture updated README appearance previews
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run screenshots -- output/playwright/readme
       - name: Test desktop layout and interactions
         if: matrix.os == 'ubuntu-latest'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" npm run test:ui

@@ -266,10 +266,11 @@ try {
     'PASS native project template create/edit/delete refreshes commands and usage shows its accounting basis',
   );
 
-  await app.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 1 });
-  });
   await page.getByRole('button', { name: '清理空会话', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: /清理 .* 个空会话/ })
+    .getByRole('button', { name: '清理空会话', exact: true })
+    .click();
   await until((value) => !value.state.sessions.some((session) => session.title === '可清理空会话'));
   const after = await snapshot();
   assert.ok(after.state.sessions.some((session) => session.id === draftId));
@@ -285,8 +286,13 @@ try {
 } finally {
   if (app) {
     await app
-      .evaluate(({ dialog }) => {
-        dialog.showMessageBox = async () => ({ response: 1 });
+      .evaluate(({ BrowserWindow }) => {
+        return BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+          `void window.desktop.onEvent(event => {
+            if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
+              event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
+          })`,
+        );
       })
       .catch(() => {});
     await app.close();

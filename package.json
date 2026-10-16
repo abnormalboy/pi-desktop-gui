@@ -25,7 +25,9 @@
     "package:dir": "npm run build && node scripts/package.mjs --dir",
     "screenshots": "node scripts/readme-screenshots.mjs",
     "demo-gif": "node scripts/readme-demo.mjs",
-    "format": "prettier --write electron shared src tests scripts vite.config.ts"
+    "format": "prettier --write electron shared src tests scripts vite.config.ts",
+    "test:theme-ui": "node --import tsx scripts/test-theme-ui.mjs",
+    "test:pi-settings-ui": "node --import tsx scripts/test-pi-settings-ui.mjs"
   },
   "build": {
     "appId": "io.yeyuproject.pi-desktop",

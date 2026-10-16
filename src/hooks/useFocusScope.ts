@@ -12,7 +12,10 @@ export function useFocusScope(
     const old = document.activeElement as HTMLElement;
     const selector =
       'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],summary';
-    ref.current.querySelector<HTMLElement>(selector)?.focus();
+    (
+      ref.current.querySelector<HTMLElement>('[data-autofocus]') ??
+      ref.current.querySelector<HTMLElement>(selector)
+    )?.focus();
     const key = (e: KeyboardEvent) => {
       if ([...document.querySelectorAll('[role="dialog"]')].at(-1) !== ref.current) return;
       if (e.key === 'Escape' && !e.defaultPrevented) {

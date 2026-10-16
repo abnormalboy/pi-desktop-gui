@@ -7,6 +7,7 @@ import {
   clipboard,
   ClipboardItem,
   nativeImage,
+  nativeTheme,
   Menu,
   Notification,
   screen,
@@ -14,6 +15,8 @@ import {
   powerMonitor,
   type Rectangle,
 } from 'electron';
+import { AppDialogRequests, type DialogOptions } from './app-dialogs';
+import { windowTheme } from '../shared/window-theme';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -70,9 +73,35 @@ if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(proces
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
 const appUserModelId = app.isPackaged ? 'io.yeyuproject.pi-desktop' : 'io.yeyuproject.pi-desktop.dev';
 const send = (event: AppEvent) => {
-  if (window && !window.isDestroyed()) window.webContents.send('desktop:event', event);
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+    window.webContents.send('desktop:event', event);
   if (event.type === 'state') void watchSelectedProject();
 };
+let appDialogsReady = false;
+let rendererResponsive = true;
+const appDialogs = new AppDialogRequests((value) => send({ type: 'appDialog', dialog: value }));
+function cancelAppDialogs() {
+  appDialogs.cancelAll();
+  send({ type: 'appDialogsCancelled' });
+}
+function showAppDialog(options: DialogOptions, allowNativeFallback = false) {
+  const unavailable = !appDialogsReady || !rendererResponsive;
+  if (!window || window.isDestroyed() || (unavailable && !allowNativeFallback))
+    return Promise.resolve({ response: options.cancelId ?? 0 });
+  // Quit from the dock/menu must not leave confirmation in a hidden/minimized window.
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  // A crashed/hung renderer must not trap a running Pi process in an unquittable app.
+  // Only the close flow opts in; ordinary business operations fail closed.
+  return unavailable ? dialog.showMessageBox(window, options) : appDialogs.show(options);
+}
+function updateWindowTheme() {
+  if (!window || window.isDestroyed()) return;
+  const { background, ...overlay } = windowTheme(nativeTheme.shouldUseDarkColors);
+  window.setBackgroundColor(background);
+  if (!isMac) window.setTitleBarOverlay(overlay);
+}
 async function watchSelectedProject() {
   if (!store || quitting) return;
   const selected = store.state.sessions.find((session) => session.id === store.state.selectedSessionId);
@@ -197,6 +226,20 @@ async function newSession(projectId?: string) {
   await save();
   return s;
 }
+async function newSessionFromMenu() {
+  if (appDialogs.size || closing || quitting || updates.state.installing) return;
+  try {
+    store.assertWritable();
+    activeOperations++;
+    try {
+      await newSession();
+    } finally {
+      activeOperations--;
+    }
+  } catch (error) {
+    await showAppDialog({ message: '无法新建对话', detail: String(error) });
+  }
+}
 function sessionRoots() {
   return [path.join(agentDirectory(store.state.settings), 'sessions'), path.join(store.dir, 'sessions')];
 }
@@ -314,6 +357,31 @@ async function saveText(title: string, contents: string, defaultName: string) {
   return picked.filePath;
 }
 const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
+  appDialogsReady: () => {
+    appDialogsReady = true;
+    rendererResponsive = true;
+  },
+  respondAppDialog: (id, response) => {
+    text(id, 100);
+    appDialogs.respond(id, response);
+  },
+  showAppMenu: (id, x, y) => {
+    if (isMac || !['file', 'edit', 'view'].includes(id)) throw new Error('无效菜单');
+    if (![x, y].every((value) => Number.isFinite(value) && value >= 0)) throw new Error('无效菜单位置');
+    if (!window || window.isDestroyed() || appDialogs.size || closing) return;
+    const menu = Menu.getApplicationMenu()?.getMenuItemById(id)?.submenu;
+    if (!menu) return;
+    const zoom = window.webContents.getZoomFactor();
+    const [width, height] = window.getContentSize();
+    return new Promise<void>((resolve) =>
+      menu.popup({
+        window,
+        x: Math.round(Math.min(width, x * zoom)),
+        y: Math.round(Math.min(height, y * zoom)),
+        callback: resolve,
+      }),
+    );
+  },
   bootstrap: async () => {
     const environment = await detectEnvironment(store.state.settings, developmentRoot);
     service.resync();
@@ -366,7 +434,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (busy(service.runtime.status) && store.session(service.runtime.sessionId!).projectId === id)
       throw new Error('请先停止该项目的任务');
     const p = store.project(id);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `从列表移除 ${p.name}？`,
       detail: '磁盘项目和 Pi 会话文件将保留。',
@@ -392,7 +460,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     const p = store.project(id);
     if (p.trusted) return;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `启用项目 ${p.name}`,
       detail: `Pi 将使用当前用户权限读取、修改文件并执行命令。\n\n${p.path}`,
@@ -455,7 +523,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const s = store.session(id);
     if (service.runtime.sessionId === id && busy(service.runtime.status))
       throw new Error('请先停止这个会话的任务');
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message: `删除会话“${s.title}”？`,
       detail: s.file ? 'Pi 会话文件会移到回收站，可从回收站恢复。' : '这个会话还没有内容，将直接移除。',
@@ -464,6 +532,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return false;
+    if (!store.state.sessions.includes(s)) return false;
+    if (service.runtime.sessionId === id && busy(service.runtime.status))
+      throw new Error('请先停止这个会话的任务');
     if (service.runtime.sessionId === id) {
       await service.disconnect();
       service.runtime = emptyRuntime();
@@ -504,7 +575,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       )
     ).filter((id): id is string => !!id);
     if (!candidates.length) return 0;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: `清理 ${candidates.length} 个空会话？`,
       detail:
@@ -639,7 +710,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     );
     if (!pending.length) return [];
     const created = pending.filter((f) => f.status === '新增').length;
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message:
         only?.length === 1 ? `撤销对 ${only[0]} 的修改？` : `撤销本轮 ${pending.length} 个文件的修改？`,
@@ -771,6 +842,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     }
     store.state.settings = next;
     await save();
+    nativeTheme.themeSource = next.theme;
+    updateWindowTheme();
     updates.configure(next.autoDownloadUpdates);
   },
   connect: async (id) => {
@@ -844,7 +917,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.connect(id);
     const out = path.join(store.dir, 'share-preview.html');
     await service.exportHtml(id, out);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'question',
       message: '分享完整会话到 GitHub Gist？',
       detail:
@@ -975,9 +1048,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     text(document?.text);
     text(document?.revision, 100);
-    await service.disconnect();
-    await new Configuration(store).save(id, kind, local, document);
-    await service.connect(id);
+    return new Configuration(store).saveAndApply(id, kind, local, document, service);
   },
   revealSessionDirectory: async (id) => {
     text(id, 100);
@@ -1007,7 +1078,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const file = path.join(store.dir, 'draft-' + encodeURIComponent(id) + '.txt');
     await fs.writeFile(file, composeDraftText(s.draft, s.draftSnippets ?? []), 'utf8');
     await openTextEditor(file, store.state.settings.editorPath || undefined);
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'info',
       message: '在外部编辑器中编辑草稿',
       detail: '编辑并保存文件后，点击“导入已保存内容”。',
@@ -1028,7 +1099,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   stop: () => service.stop(),
   clearQueue: () => service.clearQueue(),
   forceStop: async () => {
-    const result = await dialog.showMessageBox(window!, {
+    const result = await showAppDialog({
       type: 'warning',
       message: '强制结束当前 Pi 会话进程？',
       detail: '正在执行的命令将被终止。已写入的项目文件将保留。',
@@ -1195,6 +1266,7 @@ async function createWindow() {
         ? path.join(process.resourcesPath, 'icon.ico')
         : path.join(app.getAppPath(), 'build', 'icon.ico')
       : path.join(app.getAppPath(), 'build', 'icon.png');
+  const { background, ...titleBarOverlay } = windowTheme(nativeTheme.shouldUseDarkColors);
   window = new BrowserWindow({
     width: saved.bounds?.width ?? 1440,
     height: saved.bounds?.height ?? 900,
@@ -1203,15 +1275,38 @@ async function createWindow() {
     minHeight: 700,
     title: 'Pi Desktop',
     icon: windowIconPath,
-    backgroundColor: '#f8f9f7',
+    backgroundColor: background,
     show: false,
-    ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } } : {}),
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } }
+      : { titleBarStyle: 'hidden' as const, titleBarOverlay }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  if (!isMac) {
+    // Retain the Menu for native roles/accelerators; never setMenu(null).
+    window.setAutoHideMenuBar(false);
+    window.setMenuBarVisibility(false);
+  }
+  const rendererLost = () => {
+    appDialogsReady = false;
+    cancelAppDialogs();
+  };
+  window.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) rendererLost();
+  });
+  window.webContents.on('render-process-gone', rendererLost);
+  window.webContents.on('destroyed', rendererLost);
+  window.on('unresponsive', () => {
+    rendererResponsive = false;
+    cancelAppDialogs();
+  });
+  window.on('responsive', () => {
+    rendererResponsive = true;
   });
   if (process.platform === 'win32') {
     const executable = (app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE) || app.getPath('exe');
@@ -1243,6 +1338,10 @@ async function createWindow() {
     if (quitting) return;
     event.preventDefault();
     if (updates.state.installing) return;
+    if (appDialogs.size) {
+      cancelAppDialogs();
+      if (!appQuitRequested) return;
+    }
     if (isMac && !appQuitRequested) {
       window?.hide();
       return;
@@ -1252,22 +1351,28 @@ async function createWindow() {
     void (async () => {
       try {
         if (busy(service.runtime.status)) {
-          const result = await dialog.showMessageBox(window!, {
-            type: 'question',
-            message: 'Pi 仍在执行任务',
-            detail: '停止并退出会清空后续队列，已写入文件将保留。',
-            buttons: ['留在窗口', '停止并退出'],
-            defaultId: 0,
-            cancelId: 0,
-          });
+          const result = await showAppDialog(
+            {
+              type: 'question',
+              message: 'Pi 仍在执行任务',
+              detail: '停止并退出会清空后续队列，已写入文件将保留。',
+              buttons: ['留在窗口', '停止并退出'],
+              defaultId: 0,
+              cancelId: 0,
+            },
+            true,
+          );
           if (result.response !== 1) return;
           try {
             await service.stop();
           } catch {
-            await dialog.showMessageBox(window!, {
-              type: 'error',
-              message: '任务尚未停止，请先使用强制结束。',
-            });
+            await showAppDialog(
+              {
+                type: 'error',
+                message: '任务尚未停止，请先使用强制结束。',
+              },
+              true,
+            );
             return;
           }
         }
@@ -1296,6 +1401,7 @@ else {
   app.on('second-instance', () => {
     if (window) {
       if (window.isMinimized()) window.restore();
+      window.show();
       window.focus();
     }
   });
@@ -1306,6 +1412,8 @@ else {
       await loadLoginShellPath();
       store = new Store(app.getPath('userData'), app.getVersion());
       await store.load();
+      nativeTheme.themeSource = store.state.settings.theme;
+      nativeTheme.on('updated', updateWindowTheme);
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
         const initial = store.state.sessions[0] ?? store.createSession();
         store.selectSession(initial.id);
@@ -1377,9 +1485,15 @@ else {
         try {
           // Late layout cleanup must not create writes after the update's persistence barrier.
           if (updates.state.installing && method === 'saveView') return;
-          if (updates.state.installing && !['bootstrap', 'diagnostics', 'copy'].includes(method))
+          if (
+            updates.state.installing &&
+            !['bootstrap', 'diagnostics', 'copy', 'respondAppDialog', 'appDialogsReady'].includes(method)
+          )
             throw new Error('正在准备重启更新，请稍候');
           const readOnlyMethods: (keyof ApiMap)[] = [
+            'appDialogsReady',
+            'respondAppDialog',
+            'showAppMenu',
             'bootstrap',
             'checkUpdate',
             'downloadUpdate',
@@ -1417,6 +1531,25 @@ else {
           ];
           if (!store.storage.writable && !readOnlyMethods.includes(method as keyof ApiMap))
             store.assertWritable();
+          // A renderer modal must block the same application commands as a native modal.
+          // Autosaves already scheduled before it opened may still finish safely.
+          if (
+            appDialogs.size &&
+            ![
+              'appDialogsReady',
+              'respondAppDialog',
+              'bootstrap',
+              'diagnostics',
+              'copy',
+              'copyImage',
+              'saveDraft',
+              'saveView',
+              'readHistory',
+              'stop',
+              'quit',
+            ].includes(method)
+          )
+            throw new Error('请先完成当前确认');
           const settingPatch =
             method === 'saveSettings' && args[0] && typeof args[0] === 'object'
               ? (args[0] as Record<string, unknown>)
@@ -1535,6 +1668,7 @@ else {
               ]
             : []),
           {
+            id: 'file',
             label: '文件',
             submenu: [
               {
@@ -1542,7 +1676,7 @@ else {
                 accelerator: 'CmdOrCtrl+N',
                 registerAccelerator: false,
                 click: () => {
-                  void newSession().catch((error) => dialog.showErrorBox('无法新建对话', String(error)));
+                  void newSessionFromMenu();
                 },
               },
               { type: 'separator' },
@@ -1550,6 +1684,7 @@ else {
             ],
           },
           {
+            id: 'edit',
             label: '编辑',
             submenu: [
               { role: 'undo', label: '撤销' },
@@ -1562,6 +1697,7 @@ else {
             ],
           },
           {
+            id: 'view',
             label: '视图',
             submenu: [
               { role: 'resetZoom', label: '重置缩放' },

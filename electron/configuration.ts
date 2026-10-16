@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { agentDirectory } from './environment';
-import type { ConfigDocument, ConfigKind } from '../shared/types';
+import type { ConfigDocument, ConfigKind, ConfigSaveResult } from '../shared/types';
+import { redact } from '../shared/errors';
 import type { Store } from './store';
 const hidden = '[已保存的密钥]';
 const sensitive = /api.?key|token|password|secret|authorization|headers|env|auth/i;
@@ -52,6 +53,23 @@ export class Configuration {
     const file = await this.file(id, kind, local),
       raw = await this.raw(file);
     return { text: JSON.stringify(mask(JSON.parse(raw)), null, 2), revision: revision(raw), path: file };
+  }
+  async saveAndApply(
+    id: string,
+    kind: ConfigKind,
+    local: boolean,
+    document: ConfigDocument,
+    service: { disconnect: () => Promise<void>; connect: (id: string) => Promise<unknown> },
+  ): Promise<ConfigSaveResult> {
+    await service.disconnect();
+    await this.save(id, kind, local, document);
+    try {
+      await service.connect(id);
+      return { applied: true };
+    } catch (error) {
+      // The file is already persisted. A failed reconnect must not be reported as a failed write.
+      return { applied: false, warning: redact(error instanceof Error ? error.message : String(error)) };
+    }
   }
   async save(id: string, kind: ConfigKind, local: boolean, document: ConfigDocument) {
     const file = await this.file(id, kind, local),

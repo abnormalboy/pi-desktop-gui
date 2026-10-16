@@ -16,6 +16,7 @@ export function McpTab({
   serverArgs,
   setServerArgs,
   disabled,
+  configEditingDisabled,
   run,
   addJson,
   configEditor,
@@ -36,6 +37,7 @@ export function McpTab({
   | 'serverArgs'
   | 'setServerArgs'
   | 'disabled'
+  | 'configEditingDisabled'
   | 'run'
   | 'addJson'
   | 'configEditor'
@@ -70,7 +72,7 @@ export function McpTab({
                         aria-label={'启用 MCP ' + name}
                         type="checkbox"
                         checked={v.enabled !== false}
-                        disabled={disabled}
+                        disabled={configEditingDisabled}
                         onChange={(e) => change({ enabled: e.target.checked })}
                       />
                     </label>
@@ -78,7 +80,7 @@ export function McpTab({
                       工具暴露{' '}
                       <select
                         aria-label={'MCP 工具暴露 ' + name}
-                        disabled={disabled}
+                        disabled={configEditingDisabled}
                         value={v.exposure ?? 'codemode'}
                         onChange={(e) => change({ exposure: e.target.value })}
                       >
@@ -156,7 +158,8 @@ export function McpTab({
           />
         )}
         <button
-          disabled={disabled || !document}
+          disabled={configEditingDisabled}
+          title={!document ? '请先读取 MCP 配置' : ''}
           onClick={() =>
             void run(async () => {
               if (!/^[\w-]+$/.test(serverName) || !serverTarget) throw new Error('请输入名称和地址');
@@ -181,6 +184,7 @@ export function McpTab({
       </p>
       {configEditor('mcp')}
       <label className="field-label">服务器名称（用于登录、退出或重连）</label>
+      <p className="settings-copy">填写已配置的服务器名称后可操作；登录还需要服务器支持 OAuth。</p>
       <input
         className="input"
         aria-label="操作 MCP 服务器"
@@ -196,6 +200,7 @@ export function McpTab({
           <button
             key={cmd}
             disabled={disabled || !/^[\w-]+$/.test(serverName)}
+            title={!/^[\w-]+$/.test(serverName) ? '请填写服务器名称，仅限字母、数字、下划线或连字符' : ''}
             onClick={() =>
               void run(async () => {
                 await api.invoke('send', session.id, `/mcp ${cmd} ${serverName}`, [], 'steer');
