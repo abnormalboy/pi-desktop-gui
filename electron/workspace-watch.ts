@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from 'node:fs';
+import { watch, type WatchEventType } from 'node:fs';
 import path from 'node:path';
 import type { Project } from '../shared/types';
 import type { WorkspaceChangedEvent } from '../shared/workspace';
@@ -20,9 +20,19 @@ export function watchedPath(name: string) {
   return !parts.some((part) => ignored.has(part) || part === '.git');
 }
 
+type WatchHandle = {
+  close(): void;
+  on(event: 'error', listener: () => void): unknown;
+};
+type WatchFactory = (
+  root: string,
+  options: { recursive: true },
+  listener: (event: WatchEventType, file: string | null) => void,
+) => WatchHandle;
+
 /** One native recursive watcher per selected project, with no Git processes while idle. */
 export class WorkspaceWatcher {
-  private watcher?: FSWatcher;
+  private watcher?: WatchHandle;
   private debounce?: ReturnType<typeof setTimeout>;
   private changed = new Set<string>();
   private unknown = false;
@@ -33,10 +43,14 @@ export class WorkspaceWatcher {
     private notify: (event: WorkspaceChangedEvent) => void,
   ) {}
 
-  static async watch(project: Project, notify: (event: WorkspaceChangedEvent) => void) {
+  static async watch(
+    project: Project,
+    notify: (event: WorkspaceChangedEvent) => void,
+    watchFactory: WatchFactory = watch,
+  ) {
     const instance = new WorkspaceWatcher(project, notify);
     try {
-      instance.watcher = watch(project.path, { recursive: true }, (_event, file) => {
+      instance.watcher = watchFactory(project.path, { recursive: true }, (_event, file) => {
         if (file && !watchedPath(String(file))) return;
         instance.changedPath(file ? String(file).split(path.sep).join('/') : undefined);
       });
