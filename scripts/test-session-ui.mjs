@@ -58,8 +58,24 @@ const launch = async () => {
   page.setDefaultTimeout(30000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    // Measure foreground latency even when the desktop gives another app focus during the test.
+    window.webContents.setBackgroundThrottling(false);
+    window.focus();
+  });
   await page.bringToFront();
+  await page.evaluate(() => {
+    window.otherSessionBannerCount = 0;
+    new MutationObserver(() => {
+      if (
+        [...document.querySelectorAll('.banner')].some((banner) =>
+          banner.textContent.includes('另一个会话正在执行'),
+        )
+      )
+        window.otherSessionBannerCount++;
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
 };
 try {
   await launch();
@@ -151,6 +167,8 @@ try {
   assert.notEqual(restarted.pid, originalPid);
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), b.draft);
   console.log('PASS the first sidebar selection after an idle Pi exit reconnects and restores the target');
+  assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
+  console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
 
   assert.deepEqual(errors, []);
 } catch (error) {
