@@ -356,6 +356,39 @@ test('observed target state can belong to an older save without rewriting its ow
   assert.equal(result.phases[0].firstTargetStateReceipt.selectedId, 'b');
 });
 
+test('first target state can come from main.selection before persistence without a save owner', () => {
+  const block = completeRecordedBlock();
+  const send = block.main.events.find((event) => event.phase === 'event.send' && event.eventSeq === 2);
+  const end = block.main.events.find((event) => event.phase === 'event.send.end' && event.eventSeq === 2);
+  const receipt = block.renderer.events.find(
+    (event) => event.phase === 'state.receive' && event.eventSeq === 2,
+  );
+  for (const event of [send, end, receipt]) {
+    event.invocationId = 'new-invoke';
+    event.source = 'main.selection';
+    delete event.saveId;
+    delete event.snapshotSelectedId;
+  }
+  receipt.sampleIndex = 1;
+  block.main.events.splice(-1, 0, {
+    phase: 'store.write.end',
+    at: 1009,
+    invocationId: 'new-invoke',
+    saveId: 8,
+    source: 'main.save',
+    snapshotSelectedId: 'b',
+    outcome: 'ok',
+  });
+  const result = summarizeCausalBlock(block);
+  assert.equal(result.observationValid, true);
+  assert.deepEqual(result.phases[0].missingAssociations, []);
+  assert.equal(result.phases[0].firstTargetStateReceipt.eventSeq, 2);
+  assert.equal(result.phases[0].firstTargetStateReceipt.invocationId, 'new-invoke');
+  assert.equal(result.phases[0].firstTargetStateReceipt.saveId, undefined);
+  assert.equal(result.phases[0].firstTargetStateReceipt.snapshotSelectedId, undefined);
+  assert.equal(result.phases[0].targetStateReceiptToMoMs, 12);
+});
+
 test('overflow and observer failure invalidate analysis without dropping the raw samples', () => {
   const block = completeRecordedBlock();
   assert.equal(summarizeCausalBlock(block).observationValid, true);

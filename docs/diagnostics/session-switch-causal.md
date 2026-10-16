@@ -10,8 +10,10 @@ measurement of React rendering or IPC latency.
 
 The source baseline for this experiment is main
 `f424091846431c82eec936e74c8607e189ed66d5`, including the concurrent resource
-settings changes. This branch does not change the product's persistence or
-session-switch scheduling and is not intended for release or wholesale merge.
+settings changes. The original diagnostic baseline left product persistence and
+session-switch scheduling unchanged. The targeted post-fix comparison below
+adds only the independently tested selection-visibility fix. This branch is
+not intended for release or wholesale merge.
 
 ## Questions and competing explanations
 
@@ -87,4 +89,56 @@ the launched Electron app enables it in B. Snapshot export is outside the
 timed loop. An event's owning invocation/save can be older than the sample
 during which it is received: choose the first target selected-state receipt
 after the current click by renderer time and selectedId, then trace eventSeq
-back to its original save. Never rewrite that save's snapshot provenance.
+back to its original send and, when present, save. Never rewrite that save's
+snapshot provenance or assign save ownership to an early selection send.
+
+## Targeted post-fix comparison
+
+The pre-fix diagnostic baseline is
+`dada46d5a00ff3e903eeb1a368e5424ab435503f`, captured by
+[run 38896540671](https://github.com/yeyuProject/pi-desktop-gui/actions/runs/38896540671).
+The product fix being compared is
+`78afb4ea328a7bb178226b523b3d6b1a9b201083` on
+`fix/session-selection-visibility`, based on the exact main source baseline
+above. This diagnostic successor applies the equivalent selection handler
+change; its exact diagnostic commit and run are recorded in each artifact's
+`provenance.testCommit` and `provenance.githubRunId`. The product branch stays
+separate and contains no recorder changes.
+
+All 36 recorded macOS baseline samples first received target selected state
+from an `agent.save` completion. The captured 236.2 ms warmup in block `03-B`
+contained 136.9 ms backend work on the main clock; renderer-clock intervals
+were 74.2 ms from target runtime receipt to target-state receipt, 9.2 ms from
+state receipt to DOM observation, and 14.0 ms from DOM observation to rAF.
+These observations establish a persistence visibility gate in the captured
+execution. They do not explain the historical 619.8 ms event, nor identify the
+underlying causes of backend, main-process, or operating-system delays.
+
+Run exactly one post-fix bounded comparison using the same predetermined
+A-B-B-A-A-B macOS blocks and Windows B compatibility block, original cadence,
+two warmups plus ten formal samples per block, and unchanged 200 ms target.
+There is no extra sampling or repeat-until-green. Both arms contain the same
+product fix; A/B continues to compare recorder-off/on behavior, not product
+before/after. The pre/post product comparison uses separate CI runs, so host
+and load differences remain confounders for distribution changes.
+
+When the connected target runtime is ready, selection now queues the existing
+serialized `main.save`, sends state immediately with source `main.selection`,
+and still awaits that same save in `finally` before returning. Early sends
+carry their invocation and event sequence but no save ownership. Existing
+queued-save records retain their save ID and snapshot metadata. The fallback
+selection path and recorder implementation are unchanged; no promise chain,
+timer, loop wait, or diagnostic polling is added.
+
+For every recorded sample, keep the first target-state receipt after its click
+regardless of invocation or save ownership, then use `eventSeq` to find the
+actual send. On the main clock, compare that send with `selection.applied`
+only when both belong to the same invocation, and check whether it precedes
+that invocation's queued `main.save` completion. Do not substitute a later
+owned save for the first observed event. On the renderer clock, compare target
+runtime receipt to target-state receipt, state receipt to DOM observation,
+and DOM observation to rAF; preserve signed runtime/state ordering. Report
+all totals, formal distributions and warmups separately, including any
+remaining over-budget samples and invalid associations. The success criterion
+is removal of the captured persistence gate for the ready-runtime path, not a
+claim that every slow switch or the historical spike has been fixed.

@@ -437,8 +437,17 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     }
     store.selectSession(s.id);
     sessionSwitchRecording?.record('selection.applied', { selectedId: store.state.selectedSessionId });
-    if (store.storage.writable) await save();
-    else send({ type: 'state', state: store.state });
+    if (store.storage.writable) {
+      if (service.runtime.connected && service.runtime.sessionId === s.id) {
+        // The loaded runtime can render now; completion still waits for persistence.
+        const saving = store.save('main.save');
+        try {
+          send({ type: 'state', state: store.state }, 'main.selection');
+        } finally {
+          await saving;
+        }
+      } else await save();
+    } else send({ type: 'state', state: store.state });
     return service.history(id);
   },
   renameSession: async (id, name) => {
