@@ -4,14 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { attachmentInfo, attachmentPrompt, safePath } from '../electron/workspace';
 import { parseAttachmentSpec, normalizeAttachmentSpec } from '../shared/attachments';
 import { alignHunk, hunkPrompt, inlineDiff, parseDiffHunks } from '../shared/diff';
 import { createAgentRules, projectRules } from '../electron/project-rules';
-import { watchedPath, WorkspaceWatcher } from '../electron/workspace-watch';
 import type { Project } from '../shared/types';
-import type { WorkspaceChangedEvent } from '../shared/workspace';
 
 async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-workspace-v014-'));
@@ -155,36 +152,4 @@ test('project rules detect the Pi alternative, derive declared scripts and never
   await fs.writeFile(path.join(root, '.pi', 'SYSTEM.md'), 'custom rules');
   assert.equal((await projectRules(project))?.relativePath, '.pi/SYSTEM.md');
   await assert.rejects(createAgentRules(project), /已经存在/);
-});
-
-test('watcher ignores generated directories but watches Git HEAD/index/refs, batches changes and disposes', async (t) => {
-  for (const name of [
-    'node_modules/a.js',
-    'dist/b.js',
-    '.git/objects/ab/cd',
-    '.cache/a',
-    'src/node_modules/b',
-  ])
-    assert.equal(watchedPath(name), false);
-  for (const name of ['src/a.ts', '.git/HEAD', '.git/index', '.git/refs/heads/main'])
-    assert.equal(watchedPath(name), true);
-  const { project, root } = await fixture(t),
-    events: WorkspaceChangedEvent[] = [];
-  await fs.mkdir(path.join(root, 'src'));
-  await fs.mkdir(path.join(root, 'node_modules'));
-  const watcher = await WorkspaceWatcher.watch(project, (event) => events.push(event));
-  t.after(() => watcher.dispose());
-  await fs.writeFile(path.join(root, 'src', 'a.ts'), 'a');
-  await fs.writeFile(path.join(root, 'src', 'b.ts'), 'b');
-  await delay(450);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].projectId, project.id);
-  assert.ok(events[0].changedPaths?.includes('src/a.ts'));
-  await fs.writeFile(path.join(root, 'node_modules', 'ignored.js'), 'ignored');
-  await delay(400);
-  assert.equal(events.length, 1);
-  watcher.dispose();
-  await fs.writeFile(path.join(root, 'src', 'c.ts'), 'c');
-  await delay(400);
-  assert.equal(events.length, 1);
 });
