@@ -429,8 +429,17 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       else await service.disconnect();
     }
     store.selectSession(s.id);
-    if (store.storage.writable) await save();
-    else send({ type: 'state', state: store.state });
+    if (store.storage.writable) {
+      if (service.runtime.connected && service.runtime.sessionId === s.id) {
+        // The loaded runtime can render now; completion still waits for persistence.
+        const saving = store.save();
+        try {
+          send({ type: 'state', state: store.state });
+        } finally {
+          await saving;
+        }
+      } else await save();
+    } else send({ type: 'state', state: store.state });
     return service.history(id);
   },
   renameSession: async (id, name) => {
