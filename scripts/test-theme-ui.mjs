@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../electron/store.ts';
+import { hexColor } from './theme-colors.mjs';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-theme-ui-'));
 const output = path.resolve('test-results');
@@ -188,8 +189,8 @@ async function checkTheme(source, { changed = false } = {}) {
   assert.equal(native.source, source, 'Saved appearance must control Electron nativeTheme');
   if (source !== 'system') assert.equal(native.dark, source === 'dark');
   const expected = palette[native.dark ? 'dark' : 'light'];
-  // Electron may return #AARRGGBB rather than #RRGGBB.
-  assert.equal(native.background.toLowerCase().replace(/^#ff(?=[\da-f]{6}$)/, '#'), expected.background);
+  // Electron's native background has ARGB alpha order; CSS hex tokens below use RGBA.
+  assert.equal(hexColor(native.background, 'electron'), hexColor(expected.background));
   await page.waitForFunction(
     (dark) => matchMedia('(prefers-color-scheme: dark)').matches === dark,
     native.dark,
@@ -208,9 +209,9 @@ async function checkTheme(source, { changed = false } = {}) {
     };
   });
   assert.equal(renderer.scheme, native.dark ? 'dark' : 'light');
-  assert.equal(renderer.rail, expected.color);
-  assert.equal(renderer.ink, expected.symbolColor);
-  assert.equal(renderer.background, expected.background);
+  assert.equal(hexColor(renderer.rail), hexColor(expected.color));
+  assert.equal(hexColor(renderer.ink), hexColor(expected.symbolColor));
+  assert.equal(hexColor(renderer.background), hexColor(expected.background));
   if (process.platform !== 'darwin') {
     assert.equal(renderer.titlebar.background, rgb(expected.color));
     assert.equal(renderer.titlebar.color, rgb(expected.symbolColor));
