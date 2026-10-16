@@ -118,13 +118,16 @@ try {
   await page.locator('.test-result').filter({ hasText: 'OK' }).waitFor({ timeout: 25000 });
   await page.getByRole('button', { name: '关闭', exact: true }).last().click();
   const input = page.getByRole('textbox', { name: '任务输入' });
-  await input.fill('@普通消息：不打开工作区也能聊。');
+  const first = (await waitForSaved((state) => !!state.sessions[0]?.id)).sessions[0];
+  assert.equal(first.title, '新对话');
+  const firstPrompt = '@普通消息：不打开工作区也能聊。';
+  await input.fill(firstPrompt);
   assert.equal(await page.locator('.file-picker').count(), 0);
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
   await page.locator('.message').filter({ hasText: 'OK' }).waitFor();
   assert.ok(provider.requests.at(-1).tools?.length > 0);
-  const first = (await waitForSaved((state) => !!state.sessions[0]?.file)).sessions[0];
+  await waitForSaved((state) => !!state.sessions.find((s) => s.id === first.id)?.file);
   await input.fill('独立对话未发送草稿');
   await waitForSaved(
     (state) => state.sessions.find((s) => s.id === first.id)?.draft === '独立对话未发送草稿',
@@ -137,7 +140,12 @@ try {
   await input.fill('第二条独立对话');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
-  await page.locator('.standalone-sessions').getByRole('button', { name: first.title, exact: true }).click();
+  // A saved session file can precede the automatic title update. Select the same session
+  // by its stable ID and also verify that its title caught up, without reusing a stale title.
+  const firstRow = page.locator(`.standalone-sessions .session-row[data-session-id="${first.id}"]`);
+  await firstRow.getByRole('button', { name: firstPrompt, exact: true }).waitFor();
+  await firstRow.locator(':scope > button').first().click();
+  await waitForSaved((state) => state.selectedSessionId === first.id);
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '独立对话未发送草稿');
   assert.equal(await page.locator('.message').filter({ hasText: '第二条独立对话' }).count(), 0);
   await page.screenshot({ path: path.join(output, 'standalone-conversation.png'), animations: 'disabled' });

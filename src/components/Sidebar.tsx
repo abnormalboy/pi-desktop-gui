@@ -123,6 +123,7 @@ export function Sidebar(
         'session-row ' + (s.id === selected?.id ? 'active' : '') + (menuId === s.id ? ' menu-open' : '')
       }
       key={s.id}
+      data-session-id={s.id}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuId(s.id);

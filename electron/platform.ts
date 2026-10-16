@@ -322,8 +322,25 @@ async function killPosixTree(pid: number) {
   }
 }
 
+/** taskkill could not find its root PID; this does not prove its descendants stopped. */
+export class WindowsProcessNotFoundError extends Error {
+  constructor(
+    readonly pid: number,
+    cause: unknown,
+  ) {
+    super(`taskkill could not find process ${pid}`, { cause });
+    this.name = 'WindowsProcessNotFoundError';
+  }
+}
+
 export async function terminateProcessTree(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('无效的进程编号');
-  if (isWindows) await exec('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
-  else await killPosixTree(pid);
+  if (isWindows) {
+    try {
+      await exec('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    } catch (error) {
+      if ((error as { code?: number }).code === 128) throw new WindowsProcessNotFoundError(pid, error);
+      throw error;
+    }
+  } else await killPosixTree(pid);
 }

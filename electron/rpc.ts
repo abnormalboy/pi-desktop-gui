@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
-import { isWindows, terminateProcessTree } from './platform';
+import { isWindows, terminateProcessTree, WindowsProcessNotFoundError } from './platform';
 import { incompatible, validateRpcResult, validateBridgeResult, type RpcResult } from './pi/protocol';
 import { DESKTOP_BRIDGE_COMMAND } from '../shared/pi-bridge';
 
@@ -189,7 +189,19 @@ export class PiRpc extends EventEmitter {
     if (!this.child || this.closed) return;
     this.child.stdin.end();
     await this.waitExit(2000);
-    if (!this.closed) await this.killTree();
+    if (!this.closed) {
+      try {
+        await this.killTree();
+      } catch (error) {
+        // Pi can finish its graceful shutdown after the timeout but before taskkill runs.
+        // Only close may accept that exit: failed tree termination must remain unconfirmed,
+        // so a running tool still blocks recovery even when the root process is gone.
+        if (!(error instanceof WindowsProcessNotFoundError) || error.pid !== this.child.pid) throw error;
+        // Node can deliver taskkill's result before the original child's exit event.
+        await this.waitExit(5000);
+        if (!this.closed) throw error;
+      }
+    }
   }
   private waitExit(ms: number) {
     if (this.closed) return Promise.resolve();
