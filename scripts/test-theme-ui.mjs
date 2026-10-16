@@ -91,6 +91,8 @@ async function launch() {
   app = await electron.launch({
     executablePath: process.env.PI_DESKTOP_EXE,
     args: process.env.PI_DESKTOP_EXE ? [] : [path.resolve('.')],
+    // Playwright defaults to light emulation; nativeTheme must own this media query.
+    colorScheme: null,
     env: { ...process.env, PI_DESKTOP_DATA_DIR: dir, PI_OFFLINE: '1' },
     timeout: 30000,
   });
