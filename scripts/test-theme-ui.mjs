@@ -83,7 +83,7 @@ const eventually = async (read, predicate, message, timeout = 15000) => {
 };
 const screenshot = async (name) => {
   const filename = `theme-${process.platform}-${name}.png`;
-  await page.screenshot({ path: path.join(output, filename) });
+  await page.screenshot({ path: path.join(output, filename), animations: 'disabled' });
   report.screenshots.push(filename);
 };
 
@@ -154,8 +154,9 @@ async function launch() {
       return { response: 0, checkboxChecked: false };
     };
     shell.trashItem = async (file) => {
-      const fs = await import('node:fs/promises');
-      const path = await import('node:path');
+      // CDP callbacks cannot rely on a dynamic-import loader or an ambient require.
+      const fs = process.getBuiltinModule('node:fs/promises');
+      const path = process.getBuiltinModule('node:path');
       if (path.dirname(file) !== dataDir) throw new Error('Refusing to trash outside isolated fixture');
       const sink = path.join(dataDir, 'recycle-bin');
       await fs.mkdir(sink, { recursive: true });

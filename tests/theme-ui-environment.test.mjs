@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const script = fs.readFileSync(new URL('../scripts/test-theme-ui.mjs', import.meta.url), 'utf8');
 const start = script.indexOf('async function launch() {');
@@ -52,4 +54,65 @@ test('native appearance still checks actual media against nativeTheme without pe
   );
   assert.match(script, /assert\.equal\(native\.source, source,/);
   assert.match(script, /assert\.equal\(native\.dark, source === 'dark'\)/);
+});
+
+test('native appearance screenshots finish finite entrance animations before capture', async () => {
+  const begin = script.indexOf('const screenshot = async (name) => {');
+  const end = script.indexOf('\nasync function launch()', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const captures = [];
+  const report = { screenshots: [] };
+  const screenshot = new Function(
+    'page',
+    'path',
+    'output',
+    'process',
+    'report',
+    `${script.slice(begin, end)}; return screenshot;`,
+  )(
+    { screenshot: async (options) => captures.push(options) },
+    path,
+    '/screenshots',
+    { platform: 'darwin' },
+    report,
+  );
+  await screenshot('dark-delete');
+  assert.deepEqual(captures, [
+    { path: path.join('/screenshots', 'theme-darwin-dark-delete.png'), animations: 'disabled' },
+  ]);
+  assert.deepEqual(report.screenshots, ['theme-darwin-dark-delete.png']);
+});
+
+test('actual recycle stub moves only fixture files without a VM import callback or global require', async () => {
+  const begin = script.indexOf('    shell.trashItem = async (file) => {');
+  const end = script.indexOf('\n    ipcMain.removeHandler(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pi-theme-recycle-test-'));
+  try {
+    const dataDir = path.join(root, 'data');
+    await fs.promises.mkdir(dataDir);
+    const file = path.join(dataDir, '中文 fixture.jsonl');
+    const outside = path.join(root, 'outside.jsonl');
+    await fs.promises.writeFile(file, 'session fixture\n');
+    await fs.promises.writeFile(outside, 'untouched\n');
+    const fixture = { trash: [] };
+    // The CDP-evaluated closure has process, but no ESM loader or ambient require.
+    const context = vm.createContext({ process, shell: {}, fixture, dataDir });
+    assert.equal(vm.runInContext('typeof require', context), 'undefined');
+    const trashItem = vm.runInContext(`${script.slice(begin, end)}; shell.trashItem`, context);
+    await assert.rejects(trashItem(outside), /Refusing to trash outside isolated fixture/);
+    assert.equal(await fs.promises.readFile(outside, 'utf8'), 'untouched\n');
+    assert.deepEqual(fixture.trash, []);
+    await trashItem(file);
+    await assert.rejects(fs.promises.access(file), { code: 'ENOENT' });
+    assert.equal(
+      await fs.promises.readFile(path.join(dataDir, 'recycle-bin', path.basename(file)), 'utf8'),
+      'session fixture\n',
+    );
+    assert.deepEqual(fixture.trash, [file]);
+    await assert.rejects(trashItem(file), { code: 'ENOENT' });
+    assert.deepEqual(fixture.trash, [file], 'Failed moves must not be recorded as successful disposal');
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
 });

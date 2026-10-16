@@ -464,7 +464,27 @@ try {
   );
   await mount({ projectEnabled: false });
   await readyJson('settings');
-  await expect(modal.locator('option[value="project"]')).toBeDisabled();
+  const scope = modal.getByRole('combobox', { name: '配置范围' });
+  const projectOption = scope.locator('option[value="project"]');
+  // Playwright 1.64 disabled-state checks follow the enclosing label to its enabled select.
+  // Inspect the option itself, then exercise the browser's native keyboard selection instead.
+  await expect(projectOption).toHaveAttribute('disabled', '');
+  await expect(projectOption).toHaveJSProperty('disabled', true);
+  await expect(scope).toBeEnabled();
+  await expect(scope).toHaveValue('user');
+  const projectReads = await page.evaluate(
+    () => window.mock.calls.filter((call) => call.method === 'configRead' && call.args[2] === true).length,
+  );
+  await scope.press('ArrowDown');
+  await scope.press('End');
+  await scope.press('Tab');
+  await expect(scope).toHaveValue('user');
+  assert.equal(
+    await page.evaluate(
+      () => window.mock.calls.filter((call) => call.method === 'configRead' && call.args[2] === true).length,
+    ),
+    projectReads,
+  );
   await json.fill('{"personalOfflineEdit":true}');
   await expect(modal.getByRole('button', { name: '保存并应用', exact: true })).toBeEnabled();
   console.log(
