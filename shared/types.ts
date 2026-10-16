@@ -329,7 +329,7 @@ export type AppEvent =
   | { type: 'storage'; storage: StorageStatus }
   | { type: 'update'; update: UpdateState }
   | { type: 'runtime'; runtime: Runtime }
-  | { type: 'runtimePatch'; patch: RuntimePatch };
+  | { type: 'runtimePatch'; patch: RuntimePatch; switchId?: string };
 /** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
 export function applyRuntimePatch(previous: Runtime, patch: RuntimePatch): Runtime {
   const { messagesFrom, messages, messageCount, toolsFrom, tools, toolCount, ...rest } = patch;
@@ -364,7 +364,7 @@ export interface ApiMap {
   trustProject: { args: [string]; result: void };
   newSession: { args: [projectId?: string]; result: Session };
   importSession: { args: [projectId?: string]; result: Session | null };
-  selectSession: { args: [string]; result: Message[] };
+  selectSession: { args: [string, string?]; result: Message[] };
   renameSession: { args: [string, string]; result: void };
   deleteSession: { args: [string]; result: boolean };
   pinSession: { args: [string, boolean]; result: void };

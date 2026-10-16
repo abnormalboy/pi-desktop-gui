@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import type { SessionSwitchTrace } from '../shared/session-switch-trace';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -97,6 +98,7 @@ export class AgentService extends EventEmitter {
   private unsafeExit = false;
   private switchEvents?: any[];
   private switchStarted = false;
+  private activeSwitchTrace?: SessionSwitchTrace;
   lastSwitch?: {
     mode: 'reuse' | 'restart';
     elapsedMs: number;
@@ -106,6 +108,7 @@ export class AgentService extends EventEmitter {
     // Wall-clock phases within elapsedMs; rebindPhasesMs subdivides phasesMs.rebind.
     phasesMs?: Record<string, number>;
     rebindPhasesMs?: Record<string, number>;
+    trace?: SessionSwitchTrace;
   };
   recentModelErrors: { kind: ModelErrorKind; at: number }[] = [];
   private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
@@ -178,15 +181,21 @@ export class AgentService extends EventEmitter {
     const toolsFrom = changedFrom(r.tools, this.sent.tools, tools, this.serialized);
     this.sent = { sessionId: r.sessionId, messages, tools };
     const { messages: _m, tools: _t, ...rest } = r;
-    this.emit('runtimePatch', {
-      ...structuredClone(rest),
-      messagesFrom,
-      messages: messages.slice(messagesFrom).map((s) => JSON.parse(s)),
-      messageCount: messages.length,
-      toolsFrom,
-      tools: tools.slice(toolsFrom).map((s) => JSON.parse(s)),
-      toolCount: tools.length,
-    });
+    this.emit(
+      'runtimePatch',
+      {
+        ...structuredClone(rest),
+        messagesFrom,
+        messages: messages.slice(messagesFrom).map((s) => JSON.parse(s)),
+        messageCount: messages.length,
+        toolsFrom,
+        tools: tools.slice(toolsFrom).map((s) => JSON.parse(s)),
+        toolCount: tools.length,
+      },
+      this.activeSwitchTrace && this.activeSwitchTrace.sessionId === r.sessionId
+        ? this.activeSwitchTrace.switchId
+        : undefined,
+    );
   }
   /** Next patch carries the whole runtime, e.g. after the window reloads. */
   resync() {
@@ -556,8 +565,19 @@ export class AgentService extends EventEmitter {
     }
     this.publish();
   }
-  connect(sessionId: string) {
-    return this.exclusive(() => this.ensureConnected(sessionId));
+  connect(sessionId: string, trace?: SessionSwitchTrace) {
+    if (!trace) return this.exclusive(() => this.ensureConnected(sessionId));
+    if (trace.sessionId !== sessionId) throw new Error('会话切换诊断目标不匹配');
+    trace.points.connectEnqueued = performance.now();
+    return this.exclusive(async () => {
+      trace.points.connectStarted = performance.now();
+      this.activeSwitchTrace = trace;
+      try {
+        return await this.ensureConnected(sessionId);
+      } finally {
+        this.activeSwitchTrace = undefined;
+      }
+    });
   }
   assertCommandsStopped() {
     if (this.unsafeExit)
@@ -567,6 +587,7 @@ export class AgentService extends EventEmitter {
   }
   private async ensureConnected(sessionId: string) {
     const started = performance.now();
+    if (this.activeSwitchTrace) this.activeSwitchTrace.points.backendStarted = started;
     const epoch = this.stopEpoch;
     await this.crashCleanup;
     const cleaned = performance.now();
@@ -711,14 +732,17 @@ export class AgentService extends EventEmitter {
     phasesMs?: Record<string, number>,
     rebindPhasesMs?: Record<string, number>,
   ) {
+    const finished = performance.now();
+    if (this.activeSwitchTrace) this.activeSwitchTrace.points.backendFinished = finished;
     this.lastSwitch = {
       mode,
-      elapsedMs: Math.round((performance.now() - started) * 10) / 10,
+      elapsedMs: Math.round((finished - started) * 10) / 10,
       reason,
       pid: this.rpc?.child?.pid,
       sessionId: this.runtime.sessionId,
       phasesMs,
       rebindPhasesMs,
+      trace: this.activeSwitchTrace,
     };
   }
   private installRpcHandlers(rpc: PiRpc) {

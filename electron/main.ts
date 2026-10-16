@@ -15,6 +15,7 @@ import {
   type Rectangle,
 } from 'electron';
 import fs from 'node:fs/promises';
+import { createSessionSwitchTrace, type SessionSwitchTrace } from '../shared/session-switch-trace';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -415,7 +416,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (!file) return null;
     return adoptSessionFile(file, p?.id);
   },
-  selectSession: async (id) => {
+  selectSession: async (id, trace?: SessionSwitchTrace) => {
     text(id, 100);
     const s = store.session(id);
     if (
@@ -424,12 +425,14 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       !busy(service.runtime.status) &&
       service.runtime.sessionId !== id
     ) {
-      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id);
+      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id, trace);
       else await service.disconnect();
     }
     store.selectSession(s.id);
+    if (trace) trace.points.saveAndStateStarted = performance.now();
     if (store.storage.writable) await save();
     else send({ type: 'state', state: store.state });
+    if (trace) trace.points.saveAndStateFinished = performance.now();
     return service.history(id);
   },
   renameSession: async (id, name) => {
@@ -1292,8 +1295,8 @@ else {
       if (store.storage.writable) await workspace.cleanup();
       service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
       await watchSelectedProject();
-      service.on('runtimePatch', (patch) => {
-        send({ type: 'runtimePatch', patch });
+      service.on('runtimePatch', (patch, switchId?: string) => {
+        send({ type: 'runtimePatch', patch, switchId });
         notifyAttention(service.runtime);
       });
       service.on('state', (state) => send({ type: 'state', state }));
@@ -1334,6 +1337,10 @@ else {
         updates.prepareForQuit(false);
       });
       ipcMain.handle('desktop:invoke', async (event, method: string, args: unknown[]) => {
+        const received =
+          method === 'selectSession' && Array.isArray(args) && args[1] !== undefined
+            ? performance.now()
+            : undefined;
         if (
           !window ||
           event.sender !== window.webContents ||
@@ -1346,6 +1353,12 @@ else {
           args.length > 6
         )
           throw new Error('无效请求');
+        let switchTrace: SessionSwitchTrace | undefined;
+        if (received !== undefined) {
+          text(args[0], 100);
+          if (args.length > 2) throw new Error('无效会话切换诊断参数');
+          switchTrace = createSessionSwitchTrace(args[1], args[0] as string, received);
+        }
         let trackedOperation = false;
         let trackedEngineOperation = false;
         let configurationLocked = false;
@@ -1465,12 +1478,21 @@ else {
             activeEngineOperations++;
             trackedEngineOperation = true;
             service.assertCommandsStopped();
+            if (switchTrace) switchTrace.points.terminalGuardStarted = performance.now();
             await assertTerminalClosed();
+            if (switchTrace) switchTrace.points.terminalGuardFinished = performance.now();
           }
-          return await handlers[method as keyof ApiMap](...args);
+          if (switchTrace) switchTrace.points.handlerStarted = performance.now();
+          const result = await (switchTrace
+            ? handlers.selectSession(args[0], switchTrace)
+            : handlers[method as keyof ApiMap](...args));
+          if (switchTrace) switchTrace.outcome = 'fulfilled';
+          return result;
         } catch (e) {
+          if (switchTrace) switchTrace.outcome = 'rejected';
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
         } finally {
+          if (switchTrace) switchTrace.points.handlerFinished = performance.now();
           if (trackedOperation) activeOperations--;
           if (trackedEngineOperation) activeEngineOperations--;
           if (configurationLocked) updatingConfiguration = false;

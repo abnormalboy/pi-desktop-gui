@@ -1,4 +1,5 @@
 import { _electron as electron } from 'playwright';
+import { installSessionSwitchProbe, summarizeSessionSwitchProbe } from './session-switch-probe.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -45,9 +46,28 @@ if (packaged && !executablePath)
       : path.resolve(
           `release/mac${process.arch === 'arm64' ? '-arm64' : ''}/Pi Desktop.app/Contents/MacOS/Pi Desktop`,
         );
-let app, page;
+let app, page, buildInfo;
 const errors = [];
 const modes = [];
+const measurementContract = {
+  schemaVersion: 2,
+  ci: {
+    commitSha: process.env.GITHUB_SHA,
+    runId: process.env.GITHUB_RUN_ID,
+    runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+    runnerOs: process.env.RUNNER_OS,
+    runnerArch: process.env.RUNNER_ARCH,
+    imageOs: process.env.ImageOS,
+    imageVersion: process.env.ImageVersion,
+  },
+  legacyMetric: 'document-bubble click to next requestAnimationFrame callback; not paint',
+  targetMetric: 'captureToTargetDomObservedMs',
+  budgetEnforcement:
+    'legacy metric remains the hard 200ms gate; capture-to-DOM is additionally reported against 200ms',
+  clockPolicy: 'Intervals are process-local and may overlap; never subtract renderer and main timestamps',
+  samplingPolicy:
+    'Diagnostics reads begin only after invoke settlement and target DOM/rAF observation; legacy endpoints remain, but added probes and this cadence differ from schema v1 and distributions are not evidence of improvement',
+};
 const launch = async () => {
   app = await electron.launch({
     executablePath,
@@ -80,7 +100,7 @@ const launch = async () => {
 };
 try {
   await launch();
-  const buildInfo = await app.evaluate(({ app }) => ({
+  buildInfo = await app.evaluate(({ app }) => ({
     version: app.getVersion(),
     packaged: app.isPackaged,
   }));
@@ -97,6 +117,14 @@ try {
   assert.deepEqual(Object.keys(lightweight), ['sessionSwitch']);
   assert.deepEqual(lightweight.sessionSwitch, full.sessionSwitch);
   await assert.rejects(diagnostic('invalid'), /无效诊断范围/);
+  for (const badId of ['not-a-uuid', {}, 'x'.repeat(1000)])
+    await assert.rejects(
+      page.evaluate(({ id, badId }) => window.desktop.invoke('selectSession', id, badId), {
+        id: a.id,
+        badId,
+      }),
+      /无效会话切换诊断 ID/,
+    );
   const previewFile = path.join(f.dataDir, 'diagnostic-preview.txt');
   await app.evaluate(({ dialog }, file) => {
     const original = dialog.showSaveDialog;
@@ -107,8 +135,9 @@ try {
   }, previewFile);
   assert.equal(await page.evaluate(() => window.desktop.invoke('exportDiagnostics')), previewFile);
   assert.deepEqual(JSON.parse(await fs.readFile(previewFile, 'utf8')), full);
-  // Keep the original observer workload as a baseline, then isolate environment
-  // detection. Each mode retains two warmups and ten measured alternating switches.
+  // Retain legacy timing endpoints, with the same full/light observation order.
+  // Extra probes and completion waiting mean overhead is not identical to schema v1.
+  // Each mode retains two warmups and ten measured alternating switches.
   for (const diagnosticsScope of ['full', 'session-switch']) {
     await diagnostic(diagnosticsScope);
     const durations = [],
@@ -119,36 +148,19 @@ try {
     for (let i = 0; i < 12; i++) {
       const target = i % 2 ? a : b,
         marker = i % 2 ? 'SESSION_A_ONLY' : 'SESSION_B_ONLY';
-      await page.evaluate((marker) => {
-        window.switchMeasurement = new Promise((resolve, reject) => {
-          let started;
-          const timeout = setTimeout(() => {
-            observer.disconnect();
-            reject(new Error('Target messages did not appear'));
-          }, 10000);
-          const observer = new MutationObserver(() => {
-            if (started === undefined || !document.querySelector('.thread')?.textContent.includes(marker))
-              return;
-            observer.disconnect();
-            clearTimeout(timeout);
-            requestAnimationFrame(() => resolve(performance.now() - started));
-          });
-          document.addEventListener(
-            'click',
-            () => {
-              started = performance.now();
-            },
-            { once: true },
-          );
-          observer.observe(document.querySelector('.thread'), {
-            subtree: true,
-            childList: true,
-            characterData: true,
-          });
-        });
-      }, marker);
-      await page.getByRole('button', { name: target.title, exact: true }).click();
-      const elapsed = await page.evaluate(() => window.switchMeasurement);
+      const targetButton = page.getByRole('button', { name: target.title, exact: true });
+      await targetButton.evaluate(installSessionSwitchProbe, { sessionId: target.id, marker });
+      await targetButton.click();
+      const rendererTrace = await page.evaluate(() => window.switchMeasurement);
+      const elapsed = rendererTrace.points.rafCallback - rendererTrace.points.legacyClickBubble;
+      const sample = {
+        iteration: i,
+        warmup: i < 2,
+        sessionId: target.id,
+        switchId: rendererTrace.switchId,
+        rendererTrace,
+      };
+      samples.push(sample);
       // Draft state is restored by a React effect after the target messages render.
       // Wait for correctness separately; keep click-to-message timing unchanged.
       await page.waitForFunction(
@@ -165,17 +177,28 @@ try {
       await wait(async () => {
         diagnosticReads++;
         info = (await diagnostic(diagnosticsScope)).sessionSwitch;
-        return info.sessionId === target.id;
+        return info.sessionId === target.id && info.trace?.switchId === rendererTrace.switchId;
       });
       const diagnosticWaitMs = performance.now() - readStarted;
-      samples.push({
-        iteration: i,
-        warmup: i < 2,
-        uiMs: elapsed,
-        ...info,
+      sample.mainTrace = info.trace;
+      const trace = summarizeSessionSwitchProbe(rendererTrace, info.trace);
+      const { trace: _rawMainTrace, ...switchInfo } = info;
+      Object.assign(sample, {
+        uiMs: elapsed, // Schema v1 compatibility: legacy document-bubble to rAF callback.
+        ...switchInfo,
+        ...trace,
+        captureToTargetDomWithin200Ms: trace.captureToTargetDomObservedMs <= 200,
         diagnosticWaitMs,
         diagnosticReads,
       });
+      delete sample.rendererTrace;
+      delete sample.mainTrace;
+      assert.equal(trace.renderer.outcome, 'fulfilled');
+      assert.equal(trace.main.outcome, 'fulfilled');
+      assert.ok(Number.isFinite(trace.renderer.pointsMs.targetMessagesEventReceived));
+      assert.ok(trace.renderer.pointsMs.invoke >= 0);
+      assert.ok(trace.queueWaitMs >= 0);
+      assert.ok(Math.abs(trace.backendMs - info.elapsedMs) <= 0.051);
       assert.equal(info.mode, 'reuse');
       assert.equal(info.pid, originalPid);
       if (i >= 2) {
@@ -186,6 +209,7 @@ try {
     mode.maxMs = Math.max(...durations);
   }
   const measurement = {
+    ...measurementContract,
     platform: process.platform,
     ...buildInfo,
     modeOrder: modes.map((mode) => mode.diagnosticsScope),
@@ -204,8 +228,13 @@ try {
   // Collect both modes before failing so a baseline outlier cannot hide the control.
   for (const mode of modes)
     for (const [index, elapsed] of mode.durations.entries())
-      assert.ok(elapsed <= 200, `${mode.diagnosticsScope} switch ${index + 1} exceeded 200 ms: ${elapsed}`);
-  console.log('PASS ten UI switches per diagnostics mode retain PID and drafts within 200 ms');
+      assert.ok(
+        elapsed <= 200,
+        `${mode.diagnosticsScope} legacy bubble-to-rAF switch ${index + 1} exceeded 200 ms: ${elapsed}`,
+      );
+  console.log(
+    'PASS ten switches per mode retain PID and drafts; legacy bubble-to-rAF callbacks stay within 200 ms',
+  );
 
   process.kill(originalPid);
   await page.waitForFunction(async () => {
@@ -235,10 +264,26 @@ try {
   assert.deepEqual(errors, []);
 } catch (error) {
   if (modes.length) {
+    const failedProbe =
+      page && !page.isClosed()
+        ? await page.evaluate(() => window.switchMeasurementSnapshot).catch(() => undefined)
+        : undefined;
     await fs.mkdir('test-results', { recursive: true });
     await fs.writeFile(
       `test-results/session-ui-partial-${process.platform}.json`,
-      JSON.stringify({ platform: process.platform, complete: false, error: String(error), modes }, null, 2),
+      JSON.stringify(
+        {
+          ...measurementContract,
+          platform: process.platform,
+          ...buildInfo,
+          complete: false,
+          error: String(error),
+          modes,
+          failedProbe,
+        },
+        null,
+        2,
+      ),
     );
   }
   if (page && !page.isClosed()) {

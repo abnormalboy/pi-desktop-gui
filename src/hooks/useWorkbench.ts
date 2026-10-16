@@ -1,4 +1,5 @@
 import { useRuntime } from './useRuntime';
+import { selectSessionWithTrace } from '../../shared/session-switch-trace';
 import { useDraft } from './useDraft';
 import { useShortcuts } from './useShortcuts';
 import { useWorkspace } from './useWorkspace';
@@ -351,7 +352,7 @@ export function useWorkbench() {
   }
   async function selectSession(s: Session) {
     await action(async () => {
-      const m = await api.invoke('selectSession', s.id);
+      const m = await selectSessionWithTrace(api, s.id, window.__sessionSwitchDiagnostic);
       setHistory(m);
     });
     setSearchOpen(false);
