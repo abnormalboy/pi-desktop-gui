@@ -273,7 +273,11 @@ async function exportSession(id: string, format: 'html' | 'jsonl') {
   }
   return chosen.filePath;
 }
-async function diagnostics() {
+async function diagnostics(scope?: 'full' | 'session-switch') {
+  // Keep measurement reads on the regular, sender-validated IPC path without
+  // spawning Pi --version between switches or replacing the export preview.
+  if (scope === 'session-switch') return JSON.stringify({ sessionSwitch: service.lastSwitch });
+  if (scope !== undefined && scope !== 'full') throw new Error('无效诊断范围');
   const environment = await detectEnvironment(store.state.settings, developmentRoot);
   diagnosticPreview = redact(
     JSON.stringify(
@@ -1145,7 +1149,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     ]);
   },
   exportOutput: () => saveText('保存工具输出', service.output(), 'pi-output.txt'),
-  diagnostics: () => diagnostics(),
+  diagnostics: (scope) => diagnostics(scope),
   exportDiagnostics: async () => {
     if (!diagnosticPreview) throw new Error('请先生成诊断预览');
     return saveText('保存已预览的诊断', diagnosticPreview, 'pi-diagnostics.txt');

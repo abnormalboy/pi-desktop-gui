@@ -455,7 +455,7 @@ export interface ApiMap {
   copy: { args: [string]; result: void };
   copyImage: { args: [string]; result: void };
   exportOutput: { args: []; result: string | null };
-  diagnostics: { args: []; result: string };
+  diagnostics: { args: [('full' | 'session-switch')?]; result: string };
   exportDiagnostics: { args: []; result: string | null };
   revealData: { args: []; result: void };
   quit: { args: []; result: void };

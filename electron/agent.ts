@@ -97,7 +97,16 @@ export class AgentService extends EventEmitter {
   private unsafeExit = false;
   private switchEvents?: any[];
   private switchStarted = false;
-  lastSwitch?: { mode: 'reuse' | 'restart'; elapsedMs: number; reason?: string; pid?: number };
+  lastSwitch?: {
+    mode: 'reuse' | 'restart';
+    elapsedMs: number;
+    reason?: string;
+    pid?: number;
+    sessionId?: string;
+    // Wall-clock phases within elapsedMs; rebindPhasesMs subdivides phasesMs.rebind.
+    phasesMs?: Record<string, number>;
+    rebindPhasesMs?: Record<string, number>;
+  };
   recentModelErrors: { kind: ModelErrorKind; at: number }[] = [];
   private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
   private checkpointRecorder: CheckpointRecorder;
@@ -560,8 +569,10 @@ export class AgentService extends EventEmitter {
     const started = performance.now();
     const epoch = this.stopEpoch;
     await this.crashCleanup;
+    const cleaned = performance.now();
     this.assertCommandsStopped();
     await this.store.flush();
+    const flushed = performance.now();
     this.store.assertWritable();
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
@@ -584,9 +595,11 @@ export class AgentService extends EventEmitter {
       this.connecting = true;
       let cancelled = false;
       try {
+        const nativeStarted = performance.now();
         const result = session.file
           ? await this.rpc.request('switch_session', { sessionPath: session.file }, 120000)
           : await this.rpc.request('new_session', {}, 120000);
+        const nativeFinished = performance.now();
         cancelled = result?.cancelled === true;
         if (cancelled) throw new Error('Pi 扩展取消了会话切换，原会话保持不变');
         if (!this.switchStarted) throw new Error('桌面适配扩展未确认新会话已开始');
@@ -596,8 +609,23 @@ export class AgentService extends EventEmitter {
         this.store.session(this.runtime.sessionId!).lastStatus = previousStatus;
         this.resetSession(sessionId, cwd);
         for (const event of events) if (event.type !== 'session_info_changed') this.onEvent(event);
-        await this.rebindSession(sessionId, resuming);
-        this.recordSwitch('reuse', started);
+        const rebindStarted = performance.now();
+        const rebindPhasesMs: Record<string, number> = {};
+        await this.rebindSession(sessionId, resuming, rebindPhasesMs);
+        this.recordSwitch(
+          'reuse',
+          started,
+          undefined,
+          {
+            crashCleanup: cleaned - started,
+            storeFlush: flushed - cleaned,
+            prepare: nativeStarted - flushed,
+            nativeSwitch: nativeFinished - nativeStarted,
+            resetAndEvents: rebindStarted - nativeFinished,
+            rebind: performance.now() - rebindStarted,
+          },
+          rebindPhasesMs,
+        );
         return;
       } catch (error) {
         if (cancelled) {
@@ -676,12 +704,21 @@ export class AgentService extends EventEmitter {
     this.stopRequested = false;
     this.fullOutput = '';
   }
-  private recordSwitch(mode: 'reuse' | 'restart', started: number, reason?: string) {
+  private recordSwitch(
+    mode: 'reuse' | 'restart',
+    started: number,
+    reason?: string,
+    phasesMs?: Record<string, number>,
+    rebindPhasesMs?: Record<string, number>,
+  ) {
     this.lastSwitch = {
       mode,
       elapsedMs: Math.round((performance.now() - started) * 10) / 10,
       reason,
       pid: this.rpc?.child?.pid,
+      sessionId: this.runtime.sessionId,
+      phasesMs,
+      rebindPhasesMs,
     };
   }
   private installRpcHandlers(rpc: PiRpc) {
@@ -768,7 +805,13 @@ export class AgentService extends EventEmitter {
       this.status('interrupted');
     });
   }
-  private async rebindSession(sessionId: string, resuming: boolean) {
+  private async rebindSession(sessionId: string, resuming: boolean, phasesMs?: Record<string, number>) {
+    let phaseStarted = performance.now();
+    const mark = (phase: string) => {
+      const now = performance.now();
+      if (phasesMs) phasesMs[phase] = now - phaseStarted;
+      phaseStarted = now;
+    };
     const rpc = this.rpc!;
     const epoch = this.stopEpoch;
     const assertActive = () => {
@@ -777,11 +820,13 @@ export class AgentService extends EventEmitter {
     };
     const session = this.store.session(sessionId);
     let state = await rpc.request('get_state', {}, 120000);
+    mark('getState');
     assertActive();
     if (state.sessionFile) session.file = state.sessionFile;
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
     const [messages] = await Promise.all([rpc.request('get_messages'), this.refreshCapabilities()]);
+    mark('messagesAndCapabilities');
     this.runtime.messages = messages.messages.map(redactMessageError);
     this.runtime.autoCompaction = state.autoCompactionEnabled;
     this.runtime.steeringMode = state.steeringMode;
@@ -824,7 +869,9 @@ export class AgentService extends EventEmitter {
       );
       state = await rpc.request('get_state');
     }
+    mark('restoreToolsAndModel');
     await this.loadThinkingLevels(rpc);
+    mark('thinkingLevels');
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
     // New sessions use Pi's effective default (including project overrides).
@@ -834,14 +881,18 @@ export class AgentService extends EventEmitter {
       await rpc.request('set_thinking_level', { level: thinking });
       this.runtime.thinking = thinking;
     }
+    mark('restoreThinking');
     try {
       this.updateStats(sessionStats(await rpc.request('get_session_stats')));
     } catch {}
+    mark('sessionStats');
     assertActive();
     this.runtime.status = 'idle';
     this.runtime.connected = true;
     await this.syncApprovalMode();
+    mark('approval');
     if (state.sessionName !== session.title) await rpc.request('set_session_name', { name: session.title });
+    mark('sessionName');
     assertActive();
     this.runtime.crash = undefined;
     session.model = this.runtime.model
@@ -849,6 +900,7 @@ export class AgentService extends EventEmitter {
       : undefined;
     session.thinking = this.runtime.thinking;
     this.status('idle');
+    mark('publish');
   }
   send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
     const epoch = this.stopEpoch;

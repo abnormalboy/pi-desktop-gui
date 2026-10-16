@@ -47,6 +47,7 @@ if (packaged && !executablePath)
         );
 let app, page;
 const errors = [];
+const modes = [];
 const launch = async () => {
   app = await electron.launch({
     executablePath,
@@ -87,65 +88,111 @@ try {
   if (packaged) assert.equal(buildInfo.packaged, true);
   await page.evaluate((id) => window.desktop.invoke('connect', id), a.id);
   await page.locator('.thread').getByText('SESSION_A_ONLY', { exact: true }).waitFor();
-  const diagnostic = async () => JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics')));
-  const originalPid = (await diagnostic()).sessionSwitch.pid;
-  const durations = [],
-    backendDurations = [];
-  for (let i = 0; i < 12; i++) {
-    const target = i % 2 ? a : b,
-      marker = i % 2 ? 'SESSION_A_ONLY' : 'SESSION_B_ONLY';
-    await page.evaluate((marker) => {
-      window.switchMeasurement = new Promise((resolve, reject) => {
-        let started;
-        const timeout = setTimeout(() => {
-          observer.disconnect();
-          reject(new Error('Target messages did not appear'));
-        }, 10000);
-        const observer = new MutationObserver(() => {
-          if (started === undefined || !document.querySelector('.thread')?.textContent.includes(marker))
-            return;
-          observer.disconnect();
-          clearTimeout(timeout);
-          requestAnimationFrame(() => resolve(performance.now() - started));
+  const diagnostic = async (scope) =>
+    JSON.parse(await page.evaluate((scope) => window.desktop.invoke('diagnostics', scope), scope));
+  const full = await diagnostic();
+  assert.ok(full.environment && full.piCompatibility, 'default diagnostics retain environment detection');
+  const originalPid = full.sessionSwitch.pid;
+  const lightweight = await diagnostic('session-switch');
+  assert.deepEqual(Object.keys(lightweight), ['sessionSwitch']);
+  assert.deepEqual(lightweight.sessionSwitch, full.sessionSwitch);
+  await assert.rejects(diagnostic('invalid'), /无效诊断范围/);
+  const previewFile = path.join(f.dataDir, 'diagnostic-preview.txt');
+  await app.evaluate(({ dialog }, file) => {
+    const original = dialog.showSaveDialog;
+    dialog.showSaveDialog = async () => {
+      dialog.showSaveDialog = original;
+      return { canceled: false, filePath: file };
+    };
+  }, previewFile);
+  assert.equal(await page.evaluate(() => window.desktop.invoke('exportDiagnostics')), previewFile);
+  assert.deepEqual(JSON.parse(await fs.readFile(previewFile, 'utf8')), full);
+  // Keep the original observer workload as a baseline, then isolate environment
+  // detection. Each mode retains two warmups and ten measured alternating switches.
+  for (const diagnosticsScope of ['full', 'session-switch']) {
+    await diagnostic(diagnosticsScope);
+    const durations = [],
+      backendDurations = [],
+      samples = [];
+    const mode = { diagnosticsScope, durations, backendDurations, samples, budgetMs: 200 };
+    modes.push(mode);
+    for (let i = 0; i < 12; i++) {
+      const target = i % 2 ? a : b,
+        marker = i % 2 ? 'SESSION_A_ONLY' : 'SESSION_B_ONLY';
+      await page.evaluate((marker) => {
+        window.switchMeasurement = new Promise((resolve, reject) => {
+          let started;
+          const timeout = setTimeout(() => {
+            observer.disconnect();
+            reject(new Error('Target messages did not appear'));
+          }, 10000);
+          const observer = new MutationObserver(() => {
+            if (started === undefined || !document.querySelector('.thread')?.textContent.includes(marker))
+              return;
+            observer.disconnect();
+            clearTimeout(timeout);
+            requestAnimationFrame(() => resolve(performance.now() - started));
+          });
+          document.addEventListener(
+            'click',
+            () => {
+              started = performance.now();
+            },
+            { once: true },
+          );
+          observer.observe(document.querySelector('.thread'), {
+            subtree: true,
+            childList: true,
+            characterData: true,
+          });
         });
-        document.addEventListener(
-          'click',
-          () => {
-            started = performance.now();
-          },
-          { once: true },
-        );
-        observer.observe(document.querySelector('.thread'), {
-          subtree: true,
-          childList: true,
-          characterData: true,
-        });
+      }, marker);
+      await page.getByRole('button', { name: target.title, exact: true }).click();
+      const elapsed = await page.evaluate(() => window.switchMeasurement);
+      // Draft state is restored by a React effect after the target messages render.
+      // Wait for correctness separately; keep click-to-message timing unchanged.
+      await page.waitForFunction(
+        (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
+        target.draft,
+        { timeout: 5000 },
+      );
+      assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), target.draft);
+      const readStarted = performance.now();
+      let info,
+        diagnosticReads = 0;
+      // Messages can publish before rebind finishes. Do not pair this UI sample
+      // with the previous switch, especially when the diagnostic read is cheap.
+      await wait(async () => {
+        diagnosticReads++;
+        info = (await diagnostic(diagnosticsScope)).sessionSwitch;
+        return info.sessionId === target.id;
       });
-    }, marker);
-    await page.getByRole('button', { name: target.title, exact: true }).click();
-    const elapsed = await page.evaluate(() => window.switchMeasurement);
-    // Draft state is restored by a React effect after the target messages render.
-    // Wait for correctness separately; keep click-to-message timing unchanged.
-    await page.waitForFunction(
-      (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
-      target.draft,
-      { timeout: 5000 },
-    );
-    assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), target.draft);
-    const info = (await diagnostic()).sessionSwitch;
-    assert.equal(info.mode, 'reuse');
-    assert.equal(info.pid, originalPid);
-    if (i >= 2) {
-      durations.push(elapsed);
-      backendDurations.push(info.elapsedMs);
+      const diagnosticWaitMs = performance.now() - readStarted;
+      samples.push({
+        iteration: i,
+        warmup: i < 2,
+        uiMs: elapsed,
+        ...info,
+        diagnosticWaitMs,
+        diagnosticReads,
+      });
+      assert.equal(info.mode, 'reuse');
+      assert.equal(info.pid, originalPid);
+      if (i >= 2) {
+        durations.push(elapsed);
+        backendDurations.push(info.elapsedMs);
+      }
     }
+    mode.maxMs = Math.max(...durations);
   }
   const measurement = {
     platform: process.platform,
     ...buildInfo,
-    durations,
-    backendDurations,
-    maxMs: Math.max(...durations),
+    modeOrder: modes.map((mode) => mode.diagnosticsScope),
+    iterationsPerMode: 12,
+    warmupsPerMode: 2,
+    modes,
+    maxMs: Math.max(...modes.map((mode) => mode.maxMs)),
     budgetMs: 200,
   };
   await fs.mkdir('test-results', { recursive: true });
@@ -154,8 +201,11 @@ try {
     JSON.stringify(measurement, null, 2),
   );
   console.log('Session click-to-message measurement:', JSON.stringify(measurement));
-  assert.ok(measurement.maxMs <= 200, `Session switching exceeded 200 ms: ${measurement.maxMs}`);
-  console.log('PASS ten UI switches retain PID and drafts, with target messages painted within 200 ms');
+  // Collect both modes before failing so a baseline outlier cannot hide the control.
+  for (const mode of modes)
+    for (const [index, elapsed] of mode.durations.entries())
+      assert.ok(elapsed <= 200, `${mode.diagnosticsScope} switch ${index + 1} exceeded 200 ms: ${elapsed}`);
+  console.log('PASS ten UI switches per diagnostics mode retain PID and drafts within 200 ms');
 
   process.kill(originalPid);
   await page.waitForFunction(async () => {
@@ -184,6 +234,13 @@ try {
 
   assert.deepEqual(errors, []);
 } catch (error) {
+  if (modes.length) {
+    await fs.mkdir('test-results', { recursive: true });
+    await fs.writeFile(
+      `test-results/session-ui-partial-${process.platform}.json`,
+      JSON.stringify({ platform: process.platform, complete: false, error: String(error), modes }, null, 2),
+    );
+  }
   if (page && !page.isClosed()) {
     await fs.mkdir('test-results', { recursive: true });
     await page.screenshot({ path: `test-results/session-ui-failure-${process.platform}.png` });
