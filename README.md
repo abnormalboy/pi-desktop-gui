@@ -94,7 +94,7 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 2. Open **Pi features → Providers & login** to set up a model provider. If you already configured Pi in the terminal (`~/.pi`), it is picked up automatically.
 3. Pick a model and reasoning level in the composer, then start a chat or open a project folder.
 
-New chats use a saved model preference or Pi's defaults. Once available models have been loaded, a new chat shows **Pi 默认模型** (Pi default model) when no preference is saved, without repeating model setup or displaying the previous chat's model and reasoning level.
+With Pi and a model provider configured, a new empty chat connects automatically and shows the actual selected model and reasoning level before you send a message. It uses your saved model preference or Pi's effective defaults, including project settings. Initialization waits while another task is running, and projects still require trust before Pi starts.
 
 ## Usage
 

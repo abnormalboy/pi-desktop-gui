@@ -126,6 +126,12 @@ try {
   await launch(empty.dataDir);
   await page.getByRole('alert', { name: '本地数据状态' }).waitFor();
   assert.match(await page.getByRole('alert', { name: '本地数据状态' }).innerText(), /未找到可用备份/);
+  const reset = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  assert.equal(
+    reset.runtime.sessionId,
+    undefined,
+    'a reset index must not automatically start Pi with default settings',
+  );
   assert.deepEqual(errors, []);
   console.log('PASS an index with no usable backup starts with instructions to reopen Pi history');
   await app.close();

@@ -47,6 +47,8 @@ try {
   await page.bringToFront();
   const send = async (text) => {
     await input.fill(text);
+    // Enter can submit only after automatic model initialization enables sending.
+    await page.getByRole('button', { name: '发送任务', exact: true }).click({ trial: true });
     await input.press('Enter');
     await page.waitForFunction((text) => {
       const prompt = [...document.querySelectorAll('.message.user')].at(-1);
@@ -160,6 +162,16 @@ try {
     'PASS multi-turn restore dialog leaves manual edits unchecked and separately returns to the original message',
   );
 } finally {
+  await app
+    ?.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+        `void window.desktop.onEvent(event => {
+          if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
+            event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
+        })`,
+      ),
+    )
+    .catch(() => {});
   await app?.close();
   await provider.close();
 }

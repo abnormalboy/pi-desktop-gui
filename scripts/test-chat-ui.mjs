@@ -51,6 +51,23 @@ const waitForSaved = async (predicate) => {
   }
   throw new Error('Conversation state was not saved');
 };
+const expectSelectedModel = async (model) => {
+  await page.waitForFunction(
+    (name) => document.querySelector('.model-pill > span')?.textContent === name,
+    model.name,
+    { timeout: 25000 },
+  );
+  const { state, runtime } = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  assert.equal(runtime.connected, true);
+  assert.equal(runtime.sessionId, state.selectedSessionId);
+  assert.equal(runtime.model.id, model.id);
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  const current = page.locator('.model-list [aria-current="true"]');
+  assert.equal(await current.count(), 1, 'the actual Pi model must be checked before sending a message');
+  assert.ok((await current.textContent()).includes(model.name));
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
+};
 try {
   await launch();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
@@ -136,22 +153,33 @@ try {
   // Pi can choose its native default without a desktop model preference being saved.
   await page.evaluate(() => window.desktop.invoke('saveSettings', { provider: '', modelId: '' }));
   await waitForSaved((state) => !state.settings.modelId && !state.settings.provider);
+  const piSettingsFile = path.join(fixture.agentDir, 'settings.json');
+  const piSettings = JSON.parse(await fs.readFile(piSettingsFile, 'utf8'));
+  await fs.writeFile(piSettingsFile, JSON.stringify({ ...piSettings, defaultModel: lastModel.id }));
+  const requestsBeforeNewChat = provider.requests.length;
   await page.keyboard.press(`${modifier}+n`);
   await page.waitForFunction(
     () => document.querySelectorAll('.standalone-sessions .session-row').length === 2,
   );
   assert.equal(await input.inputValue(), '');
+  await expectSelectedModel(lastModel);
   assert.equal(
     await page.locator('.readiness').count(),
     0,
     'a new chat with known available models must not repeat first-run model setup',
   );
-  assert.equal(await page.locator('.model-pill > span').textContent(), 'Pi 默认模型');
-  assert.equal(await page.locator('.model-pill > em').count(), 0);
-  console.log('PASS new chat uses Pi defaults without stale model/thinking or repeated setup');
+  assert.equal(
+    provider.requests.length,
+    requestsBeforeNewChat,
+    'model initialization must not send a prompt',
+  );
+  console.log(
+    'PASS new chat automatically selects the actual Pi default without repeated setup or a model request',
+  );
   await input.fill('第二条独立对话');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
+  assert.equal(provider.requests.at(-1).model, lastModel.id);
   // A saved session file can precede the automatic title update. Select the same session
   // by its stable ID and also verify that its title caught up, without reusing a stale title.
   const firstRow = page.locator(`.standalone-sessions .session-row[data-session-id="${first.id}"]`);
@@ -186,12 +214,9 @@ try {
     .getByRole('option', { name: /第二条独立对话/ })
     .click();
   await page.getByRole('heading', { level: 1, name: '第二条独立对话' }).waitFor();
-  // Restart clears the registry cache. Load real Pi models before the button-path
-  // regression, which covers an already-configured app with known available models.
-  await page.evaluate(async () => {
-    const { state } = await window.desktop.invoke('bootstrap');
-    await window.desktop.invoke('connect', state.selectedSessionId);
-  });
+  // Restart clears the registry cache. A new chat must resolve Pi's actual default
+  // without a desktop preference, a warm connection, or a model-picker click.
+  await fs.writeFile(piSettingsFile, JSON.stringify({ ...piSettings, defaultModel: baseModel.id }));
   // Native picker is supplied a temporary test project; no user folders or settings are touched.
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
@@ -200,11 +225,13 @@ try {
   await page.locator('.trust-banner').waitFor();
   await page.getByRole('textbox', { name: '任务输入' }).fill('项目仍然需要启用');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
+  const untrusted = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  assert.equal(untrusted.runtime.connected, false, 'an untrusted project must not start Pi automatically');
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.trust-banner, .workspace-toggle').count(), 0);
+  await expectSelectedModel(baseModel);
   assert.equal(await page.locator('.readiness').count(), 0);
-  assert.equal(await page.locator('.model-pill > span').textContent(), 'Pi 默认模型');
   await page.getByRole('textbox', { name: '任务输入' }).fill('从项目中直接新建独立对话');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isEnabled(), true);
   assert.equal(await page.locator('.project-row').count(), 1);
@@ -248,6 +275,32 @@ try {
     .waitFor({ state: 'detached' });
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 2);
   console.log('PASS IME session search and deletion after the session file is missing');
+
+  await page.getByRole('button', { name: /^新建对话/ }).click();
+  await expectSelectedModel(baseModel);
+  await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW 新会话不能中断当前回复');
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await page.getByText('开始流式回复。', { exact: true }).waitFor();
+  const active = (await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime;
+  const requestsDuringReply = provider.requests.length;
+  await page.getByRole('button', { name: /^新建对话/ }).click();
+  await page.getByText('有什么想聊的？', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  assert.equal(await page.getByRole('option').first().isDisabled(), true);
+  await page.keyboard.press('Escape');
+  const duringReply = (await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime;
+  assert.equal(duringReply.sessionId, active.sessionId);
+  assert.equal(duringReply.status, 'running', 'creating a chat must not interrupt the current response');
+  assert.equal(await page.locator('.error-banner').count(), 0);
+  await page.evaluate(() => window.desktop.invoke('stop'));
+  await expectSelectedModel(baseModel);
+  assert.equal(await page.locator('.error-banner').count(), 0);
+  assert.equal(
+    provider.requests.length,
+    requestsDuringReply,
+    'deferred initialization must not send a prompt',
+  );
+  console.log('PASS new chat waits for the running response before initializing its model');
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'chat-ui-result.json'),
@@ -264,7 +317,10 @@ try {
           'plain @ text',
           'real Pi response with tools available',
           'Ctrl/Cmd+N',
-          'new chat native defaults without stale model/thinking or repeated setup',
+          'new chat automatically selects the actual Pi default before the first prompt',
+          'cold new chat model initialization and checked picker item',
+          'model initialization sends no provider request and respects project trust',
+          'model initialization waits for the running response',
           'independent histories',
           'draft/history restart',
           'search',
