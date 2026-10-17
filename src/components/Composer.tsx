@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Lightbox } from './Lightbox';
 import { Modal } from './Modal';
 import { SearchHighlight } from './conversation/SearchHighlight';
+import { sessionModelState } from '../lib/session-model';
 import { PromptArguments } from './conversation/PromptArguments';
 import { parseArgumentHint, parsePromptArguments } from '../lib/prompt-arguments';
 import { shouldCollapsePaste, textBytes, textLines } from '../lib/draft-snippets';
@@ -148,6 +149,7 @@ export function Composer(props: ComposerProps) {
     setThinking,
     inspectFile,
   } = props;
+  const modelState = sessionModelState(runtime, selected, state.settings);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null),
     [snippetId, setSnippetId] = useState('');
@@ -547,8 +549,8 @@ export function Composer(props: ComposerProps) {
             <ModelPicker
               open={modelPickerOpen}
               setOpen={setModelPickerOpen}
-              runtime={ownRuntime ? runtime : { ...runtime, connected: false }}
-              fallback={state.settings.modelId}
+              runtime={modelState.runtime}
+              fallback={modelState.label}
               locked={modelLocked}
               thinkingLocked={running || pending || !sessionEnabled}
               canConnect={sessionEnabled && !running && !pending}

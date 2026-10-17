@@ -7,7 +7,7 @@ export function ReadinessChecklist({
   environment,
   runtime,
   ownRuntime,
-  savedModel,
+  modelLabel,
   canConnect,
   checkEnvironment,
   connect,
@@ -16,7 +16,7 @@ export function ReadinessChecklist({
   environment?: Environment;
   runtime: Runtime;
   ownRuntime: boolean;
-  savedModel: string;
+  modelLabel: string;
   canConnect: boolean;
   checkEnvironment: () => void;
   connect: () => void;
@@ -25,7 +25,7 @@ export function ReadinessChecklist({
   if (!environment) return null;
   const connected = ownRuntime && runtime.connected;
   const piReady = environment.supported;
-  const modelReady = connected ? Boolean(runtime.model) : Boolean(savedModel);
+  const modelReady = connected ? Boolean(runtime.model) : Boolean(modelLabel);
   if (piReady && modelReady) return <PiCompatibilityNotice environment={environment} />;
   const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();
   const steps: { done: boolean; title: string; detail: string; action?: [string, () => void] }[] = [
@@ -41,7 +41,7 @@ export function ReadinessChecklist({
     },
     {
       done: modelReady,
-      title: modelReady ? `模型：${(connected && runtime.model?.name) || savedModel}` : '选择一个模型',
+      title: modelReady ? `模型：${(connected && runtime.model?.name) || modelLabel}` : '选择一个模型',
       detail: !piReady
         ? '找到 Pi 后读取可用模型'
         : !connected

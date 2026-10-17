@@ -24,6 +24,7 @@ modelConfig.providers['local-e2e'].models.push(...extraModels);
 await fs.writeFile(modelsPath, JSON.stringify(modelConfig));
 await fixture.store.save();
 const output = path.resolve('test-results');
+const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
 await fs.mkdir(output, { recursive: true });
 const errors = [];
 let app, page;
@@ -132,11 +133,22 @@ try {
   await waitForSaved(
     (state) => state.sessions.find((s) => s.id === first.id)?.draft === '独立对话未发送草稿',
   );
-  await page.keyboard.press('Control+n');
+  // Pi can choose its native default without a desktop model preference being saved.
+  await page.evaluate(() => window.desktop.invoke('saveSettings', { provider: '', modelId: '' }));
+  await waitForSaved((state) => !state.settings.modelId && !state.settings.provider);
+  await page.keyboard.press(`${modifier}+n`);
   await page.waitForFunction(
     () => document.querySelectorAll('.standalone-sessions .session-row').length === 2,
   );
   assert.equal(await input.inputValue(), '');
+  assert.equal(
+    await page.locator('.readiness').count(),
+    0,
+    'a new chat with known available models must not repeat first-run model setup',
+  );
+  assert.equal(await page.locator('.model-pill > span').textContent(), 'Pi 默认模型');
+  assert.equal(await page.locator('.model-pill > em').count(), 0);
+  console.log('PASS new chat uses Pi defaults without stale model/thinking or repeated setup');
   await input.fill('第二条独立对话');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .status.completed').waitFor({ timeout: 25000 });
@@ -156,9 +168,9 @@ try {
   await page.locator('.message').filter({ hasText: 'OK' }).waitFor();
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 2);
   assert.equal(await page.locator('.project-row').count(), 0);
-  console.log('PASS fresh startup, model selection/probe, send, Ctrl+N, separate histories and restart');
+  console.log('PASS fresh startup, model selection/probe, send, Ctrl/Cmd+N, separate histories and restart');
 
-  await page.keyboard.press('Control+k');
+  await page.keyboard.press(`${modifier}+k`);
   const sessionSearch = page.getByRole('textbox', { name: '搜索项目和会话' });
   await sessionSearch.fill('第二条独立对话');
   await page.getByRole('option', { name: /第二条独立对话/ }).waitFor();
@@ -174,6 +186,12 @@ try {
     .getByRole('option', { name: /第二条独立对话/ })
     .click();
   await page.getByRole('heading', { level: 1, name: '第二条独立对话' }).waitFor();
+  // Restart clears the registry cache. Load real Pi models before the button-path
+  // regression, which covers an already-configured app with known available models.
+  await page.evaluate(async () => {
+    const { state } = await window.desktop.invoke('bootstrap');
+    await window.desktop.invoke('connect', state.selectedSessionId);
+  });
   // Native picker is supplied a temporary test project; no user folders or settings are touched.
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
@@ -185,6 +203,8 @@ try {
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.trust-banner, .workspace-toggle').count(), 0);
+  assert.equal(await page.locator('.readiness').count(), 0);
+  assert.equal(await page.locator('.model-pill > span').textContent(), 'Pi 默认模型');
   await page.getByRole('textbox', { name: '任务输入' }).fill('从项目中直接新建独立对话');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isEnabled(), true);
   assert.equal(await page.locator('.project-row').count(), 1);
@@ -243,7 +263,8 @@ try {
           'model picker current model visible after reopening',
           'plain @ text',
           'real Pi response with tools available',
-          'Ctrl+N',
+          'Ctrl/Cmd+N',
+          'new chat native defaults without stale model/thinking or repeated setup',
           'independent histories',
           'draft/history restart',
           'search',

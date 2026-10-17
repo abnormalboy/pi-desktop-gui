@@ -12,6 +12,7 @@ import { limitForMessage, searchSession } from '../lib/session-search';
 import { conversationTurns, groupConversation } from '../lib/conversation-layout';
 import { ToolGroupCard } from './conversation/ToolGroupCard';
 import { SearchHighlight } from './conversation/SearchHighlight';
+import { sessionModelState } from '../lib/session-model';
 import '../styles/conversation-v014.css';
 export function Conversation(
   props: Pick<
@@ -95,6 +96,7 @@ export function Conversation(
     [jumpIndex, setJumpIndex] = useState<number | null>(null);
   const findInput = useRef<HTMLInputElement>(null);
   const tools = ownRuntime ? runtime.tools : [];
+  const modelState = sessionModelState(runtime, selected, state.settings);
   const matches = useMemo(
     () => searchSession(messages, tools, findOpen ? query : ''),
     [messages, runtime.tools, ownRuntime, findOpen, query],
@@ -320,9 +322,9 @@ export function Conversation(
             <p>{project ? '描述一个目标，或者从下面开始。' : '直接提问、整理思路，或一起打磨一个想法。'}</p>
             <ReadinessChecklist
               environment={environment}
-              runtime={runtime}
+              runtime={modelState.runtime}
               ownRuntime={ownRuntime}
-              savedModel={selected?.model?.id || state.settings.modelId}
+              modelLabel={modelState.label}
               canConnect={sessionEnabled && !running && !pending}
               checkEnvironment={() => openSettings('environment')}
               connect={() => void connect()}
