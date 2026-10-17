@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../electron/store.ts';
+import { busy } from '../shared/types.ts';
 import { hexColor } from './theme-colors.mjs';
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-theme-ui-'));
@@ -85,6 +86,15 @@ const screenshot = async (name) => {
   const filename = `theme-${process.platform}-${name}.png`;
   await page.screenshot({ path: path.join(output, filename), animations: 'disabled' });
   report.screenshots.push(filename);
+};
+const modelInitialized = async () => {
+  await eventually(
+    bootstrap,
+    ({ state, runtime }) =>
+      runtime.sessionId === state.selectedSessionId && runtime.connected && !busy(runtime.status),
+    'Automatic model initialization did not settle',
+  );
+  await page.waitForFunction(() => !!document.querySelector('.run-meta .status.idle'));
 };
 
 async function launch() {
@@ -179,6 +189,7 @@ async function launch() {
       }
     });
   }, dir);
+  await modelInitialized();
 }
 
 async function checkTheme(source, { changed = false } = {}) {
@@ -409,6 +420,7 @@ try {
     (value) => value.state.sessions.length === beforeShortcut + 1,
     'New-session accelerator did not create exactly one session',
   );
+  await modelInitialized();
   pass('Ctrl/Cmd+N creates exactly one session');
 
   if (process.platform !== 'darwin') {
@@ -538,6 +550,7 @@ try {
     'Native Cut did not edit the focused textarea',
   );
   assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), 'SELECTED');
+  assert.deepEqual(await editor.evaluate((node) => [node.selectionStart, node.selectionEnd]), [7, 7]);
   await editRole('paste');
   await eventually(
     () => editor.inputValue(),
@@ -597,6 +610,7 @@ try {
 
   // Native-modal equivalence: a second business action cannot run behind a pending dialog.
   const second = await page.evaluate(() => window.desktop.invoke('newSession'));
+  await modelInitialized();
   await beginDelete(disposable.id);
   const firstId = await app.evaluate(
     () => globalThis.themeUi.events.findLast((event) => event.type === 'appDialog').dialog.id,
