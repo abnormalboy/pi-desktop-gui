@@ -274,7 +274,31 @@ export async function readSessionFile(
   return {
     cwd: header.cwd,
     name: entries.findLast((e) => e.type === 'session_info')?.name,
-    messages: branch.filter((e) => e.type === 'message' && e.message).map((e) => e.message),
+    messages: branch.flatMap((e): Message[] => {
+      if (e.type === 'message' && e.message) return [e.message];
+      if (e.type === 'custom_message')
+        return [
+          {
+            role: 'custom',
+            customType: e.customType,
+            content: e.content ?? [],
+            display: e.display,
+            details: e.details,
+            timestamp: new Date(e.timestamp).getTime(),
+          },
+        ];
+      if (e.type === 'branch_summary' && e.summary)
+        return [
+          {
+            role: 'branchSummary',
+            content: [],
+            summary: e.summary,
+            fromId: e.fromId,
+            timestamp: new Date(e.timestamp).getTime(),
+          },
+        ];
+      return [];
+    }),
     stats: sessionUsage(entries),
   };
 }

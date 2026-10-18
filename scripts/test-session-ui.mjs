@@ -205,5 +205,6 @@ try {
   await provider.close();
 }
 
-// Reuse the same --packaged target for image input checks in the native CI jobs.
+// Reuse the same --packaged target for image and transcript checks in the native CI jobs.
 await import('./test-image-input-ui.mjs');
+await import('./test-transcript-ui.mjs');

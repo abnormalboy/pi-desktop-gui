@@ -56,9 +56,13 @@ try {
   provider.release();
   await page.locator('.run-meta .completed').waitFor();
   await page.locator('.retry-banner').waitFor({ state: 'detached' });
+  await page.locator('.message.assistant').getByText('RECOVERED', { exact: true }).waitFor();
+  assert.equal(await page.locator('.runtime-notices').evaluate((node) => node.open), false);
+  await page.locator('.runtime-notices summary').filter({ hasText: '历史运行记录' }).waitFor();
   await page.locator('.runtime-notices summary').click();
   assert.equal(await page.locator('.runtime-notices p').count(), 2);
   assert.equal(await page.locator('.runtime-notices p').filter({ hasText: '重试已恢复' }).count(), 2);
+  assert.equal(await page.locator('.runtime-notices p').filter({ hasText: '继续执行' }).count(), 0);
   assert.equal(provider.count, 4);
   await page.screenshot({ path: path.join(output, 'recovered.png'), animations: 'disabled' });
   console.log('PASS retry banner persists while waiting; recovered records replace active wording');
@@ -69,6 +73,7 @@ try {
   await page.locator('.retry-banner').getByRole('button', { name: '取消重试' }).click();
   await page.locator('.run-meta .stopped').waitFor();
   await page.locator('.retry-banner').waitFor({ state: 'detached' });
+  await page.locator('.runtime-notices summary').click();
   await wait(() => provider.requests.at(-1).closed);
   assert.match(await page.locator('.runtime-notices p').last().innerText(), /^重试已取消/);
   assert.equal(provider.count, 2);
@@ -79,6 +84,8 @@ try {
   await send('RETRY_EXHAUST');
   await page.locator('.run-meta .error').waitFor();
   await page.locator('.retry-banner').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.runtime-notices').evaluate((node) => node.open), false);
+  await page.locator('.runtime-notices summary').click();
   assert.match(await page.locator('.runtime-notices p').last().innerText(), /^重试失败（2\/2）/);
   assert.equal(provider.count, 3);
   assert.deepEqual(errors, []);

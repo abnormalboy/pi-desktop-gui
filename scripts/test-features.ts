@@ -116,6 +116,14 @@ try {
   const result = await s.compact(f.sessionId, '保留重要内容');
   assert.ok(result.summary);
   assert.ok(result.tokensBefore > 0);
+  assert.ok(
+    s.runtime.messages.some((m) => messageText(m).includes('BRANCHED_MESSAGE')),
+    'compaction must preserve the complete visible conversation',
+  );
+  await s.send(f.sessionId, 'AFTER_COMPACTION_FINAL_SUMMARY', [], 'steer');
+  await until(() => !s.hasPendingWork);
+  assert.equal(messageText(s.runtime.messages.findLast((m) => m.role === 'assistant')!), 'OK');
+  assert.ok(s.runtime.messages.some((m) => messageText(m).includes('BRANCHED_MESSAGE')));
   console.log('PASS real HTML export and model-backed manual compaction');
   const chat = f.store.createSession();
   await s.connect(chat.id);

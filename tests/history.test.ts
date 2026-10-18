@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { listPiSessions, searchSessionContents } from '../electron/history';
+import { readSessionFile } from '../electron/store';
 import { pathKey } from '../electron/platform';
 import type { Session } from '../shared/types';
 
@@ -11,6 +12,41 @@ async function sandbox() {
   await fs.mkdir(root, { recursive: true });
   return fs.mkdtemp(path.join(root, 'history-'));
 }
+
+test('native transcript preserves visible extension messages and branch summaries', async () => {
+  const dir = await sandbox(),
+    file = path.join(dir, 'native.jsonl');
+  const timestamp = '2026-10-19T00:00:00.000Z';
+  await fs.writeFile(
+    file,
+    [
+      { type: 'session', cwd: dir },
+      { type: 'message', id: 'a', parentId: null, message: { role: 'user', content: 'question' } },
+      {
+        type: 'custom_message',
+        id: 'b',
+        parentId: 'a',
+        timestamp,
+        customType: 'extension-status',
+        content: 'extension output',
+        display: true,
+      },
+      { type: 'branch_summary', id: 'c', parentId: 'b', timestamp, fromId: 'old', summary: 'branch context' },
+      { type: 'message', id: 'd', parentId: 'c', message: { role: 'assistant', content: 'final reply' } },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n') + '\n',
+  );
+  const { messages } = await readSessionFile(file);
+  assert.deepEqual(
+    messages.map((message) => message.role),
+    ['user', 'custom', 'branchSummary', 'assistant'],
+  );
+  assert.equal(messages[1].content, 'extension output');
+  assert.equal(messages[1].timestamp, Date.parse(timestamp));
+  assert.equal(messages[2].summary, 'branch context');
+  assert.equal(messages[3].content, 'final reply');
+});
 
 test('content search matches decoded Windows paths and quoted text', async () => {
   const dir = await sandbox();

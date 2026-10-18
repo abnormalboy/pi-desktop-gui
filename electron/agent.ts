@@ -274,7 +274,7 @@ export class AgentService extends EventEmitter {
     const retry = this.runtime.retry;
     if (!retry) return;
     const label = {
-      recovered: '重试已恢复，继续执行',
+      recovered: '重试已恢复',
       failed: '重试失败',
       cancelled: '重试已取消',
       interrupted: '重试已中断',
@@ -584,9 +584,24 @@ export class AgentService extends EventEmitter {
       this.save();
     }
     if (!busy(this.runtime.status)) {
-      const messages = await rpc.request('get_messages');
-      if (this.rpc === rpc && this.runtime === runtime && !this.switchEvents)
-        this.runtime.messages = messages.messages.map(redactMessageError);
+      const before = runtime.messages,
+        count = before.length,
+        last = before.at(-1);
+      const context = await rpc.request('get_messages');
+      const messages = await this.readTranscript(state.sessionFile, context.messages);
+      if (
+        this.rpc === rpc &&
+        this.runtime === runtime &&
+        !this.switchEvents &&
+        !busy(runtime.status) &&
+        runtime.messages === before &&
+        before.length === count &&
+        before.at(-1) === last
+      ) {
+        runtime.messages = messages;
+        // Completion is a reconciliation point: also repair a renderer that missed a live patch.
+        this.resync();
+      }
       try {
         const stats = await rpc.request('get_session_stats');
         if (this.rpc === rpc && this.runtime === runtime && !this.switchEvents)
@@ -594,6 +609,16 @@ export class AgentService extends EventEmitter {
       } catch {}
     }
     this.publish();
+  }
+  private async readTranscript(file: string | undefined, fallback: Message[]): Promise<Message[]> {
+    if (file) {
+      try {
+        return (await readSessionFile(file)).messages.map(redactMessageError);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return fallback.map(redactMessageError);
   }
   connect(sessionId: string) {
     return this.exclusive(() => this.ensureConnected(sessionId));
@@ -840,7 +865,9 @@ export class AgentService extends EventEmitter {
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
     const [messages] = await Promise.all([rpc.request('get_messages'), this.refreshCapabilities()]);
-    this.runtime.messages = messages.messages.map(redactMessageError);
+    const transcript = await this.readTranscript(session.file, messages.messages);
+    assertActive();
+    this.runtime.messages = transcript;
     this.runtime.autoCompaction = state.autoCompactionEnabled;
     this.runtime.steeringMode = state.steeringMode;
     this.runtime.followUpMode = state.followUpMode;
@@ -1463,14 +1490,9 @@ export class AgentService extends EventEmitter {
   }
   async history(id: string): Promise<Message[]> {
     const s = this.store.session(id);
-    if (this.runtime.sessionId === id && this.runtime.messages.length) return this.runtime.messages;
-    if (!s.file) return [];
-    try {
-      return (await readSessionFile(s.file)).messages.map(redactMessageError);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw e;
-    }
+    const live = this.runtime.sessionId === id ? this.runtime.messages : [];
+    if (busy(this.runtime.status) && this.runtime.sessionId === id) return live;
+    return this.readTranscript(s.file, live);
   }
   async dispose() {
     this.shutdown = true;

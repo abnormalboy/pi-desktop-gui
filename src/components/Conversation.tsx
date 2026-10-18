@@ -428,8 +428,10 @@ export function Conversation(
           ))}
         {props.recovery}
         {ownRuntime && runtime.notices.length > 0 && (
-          <details className="runtime-notices">
-            <summary>运行记录 · {runtime.notices.length}</summary>
+          <details className="runtime-notices" key={`${runtime.sessionId}:${running ? 'active' : 'settled'}`}>
+            <summary>
+              {running ? '运行记录' : '历史运行记录'} · {runtime.notices.length}
+            </summary>
             {runtime.notices.map((n, i) => (
               <p key={i}>{n}</p>
             ))}
