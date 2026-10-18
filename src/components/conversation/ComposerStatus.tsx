@@ -39,9 +39,9 @@ export function ComposerFeedback(
           <RefreshCw size={14} className="spin" />
           <span>
             第 {runtime.retry.attempt}/{runtime.retry.maxAttempts} 次重试
-            {runtime.retry.delayMs > 0 &&
-              Date.now() < runtime.retry.startedAt + runtime.retry.delayMs &&
-              `，${Math.ceil((runtime.retry.startedAt + runtime.retry.delayMs - Date.now()) / 1000)} 秒后开始`}
+            {runtime.retry.phase === 'requesting'
+              ? `，等待模型响应（${Math.max(0, Math.floor((Date.now() - (runtime.retry.requestedAt ?? runtime.retry.startedAt)) / 1000))} 秒）`
+              : `，${Math.max(0, Math.ceil((runtime.retry.startedAt + runtime.retry.delayMs - Date.now()) / 1000))} 秒后开始`}
             {runtime.retry.error && <small>{runtime.retry.error}</small>}
           </span>
           <button onClick={() => void attempt(() => api.invoke('abortRetry'))}>取消重试</button>

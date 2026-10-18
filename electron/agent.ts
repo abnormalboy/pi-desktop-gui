@@ -83,6 +83,8 @@ export class AgentService extends EventEmitter {
   private operation = Promise.resolve();
   private pendingOperations = 0;
   private stopRequested = false;
+  private retryNotice?: number;
+  private retryCancelled = false;
   private connecting = false;
   private shutdown = false;
   private fullOutput = '';
@@ -194,6 +196,10 @@ export class AgentService extends EventEmitter {
       });
   }
   private status(status: RunStatus) {
+    if (!busy(status))
+      this.finishRetry(
+        status === 'completed' ? 'recovered' : status === 'stopped' ? 'cancelled' : 'interrupted',
+      );
     this.runtime.status = status;
     if (this.runtime.sessionId) {
       const s = this.store.session(this.runtime.sessionId);
@@ -257,6 +263,28 @@ export class AgentService extends EventEmitter {
     this.dialogTimers.clear();
     this.runtime.dialogs = [];
   }
+  private updateRetryNotice(text: string) {
+    const notices = this.runtime.notices;
+    if (this.retryNotice === undefined) {
+      this.retryNotice = notices.length;
+      notices.push(redact(text));
+    } else notices[this.retryNotice] = redact(text);
+  }
+  private finishRetry(outcome: 'recovered' | 'failed' | 'cancelled' | 'interrupted') {
+    const retry = this.runtime.retry;
+    if (!retry) return;
+    const label = {
+      recovered: '重试已恢复，继续执行',
+      failed: '重试失败',
+      cancelled: '重试已取消',
+      interrupted: '重试已中断',
+    }[outcome];
+    this.updateRetryNotice(
+      `${label}（${retry.attempt}/${retry.maxAttempts}）${retry.error ? `：${retry.error}` : ''}`,
+    );
+    this.runtime.retry = undefined;
+    this.retryNotice = undefined;
+  }
   private onEvent(record: any) {
     const r = this.runtime;
     switch (record.type) {
@@ -274,7 +302,14 @@ export class AgentService extends EventEmitter {
         break;
       }
       case 'agent_start':
-        if (!this.stopRequested) this.status('running');
+        if (r.retry) {
+          r.retry.phase = 'requesting';
+          r.retry.requestedAt = Date.now();
+          this.updateRetryNotice(
+            `正在重试 ${r.retry.attempt}/${r.retry.maxAttempts}，等待模型响应${r.retry.error ? `：${r.retry.error}` : ''}`,
+          );
+        } else this.retryCancelled = false;
+        if (!this.stopRequested) this.status(r.retry ? 'retrying' : 'running');
         break;
       case 'message_start':
         r.messages.push(redactMessageError(record.message));
@@ -373,34 +408,40 @@ export class AgentService extends EventEmitter {
           this.status(record.reason === 'manual' && !record.willRetry ? 'idle' : 'running');
         break;
       case 'auto_retry_start':
-        r.notices.push(
-          redact(`正在重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`),
+        this.updateRetryNotice(
+          `等待重试 ${record.attempt}/${record.maxAttempts}：${record.errorMessage ?? ''}`,
         );
         r.retry = {
           attempt: record.attempt,
           maxAttempts: record.maxAttempts,
           delayMs: record.delayMs ?? 0,
           startedAt: Date.now(),
+          phase: 'delay',
           error: record.errorMessage ? redact(record.errorMessage) : undefined,
         };
         if (!this.stopRequested) this.status('retrying');
         break;
-      case 'auto_retry_end':
-        r.retry = undefined;
-        if (!record.success && record.finalError) this.modelError(record.finalError, false);
+      case 'auto_retry_end': {
+        const cancelled =
+          this.stopRequested || this.retryCancelled || record.finalError === 'Retry cancelled';
+        if (cancelled) this.retryCancelled = true;
+        this.finishRetry(cancelled ? 'cancelled' : record.success ? 'recovered' : 'failed');
+        if (!record.success && !cancelled && record.finalError) this.modelError(record.finalError, false);
         if (!this.stopRequested) this.status('running');
         break;
+      }
       case 'agent_settled': {
-        r.retry = undefined;
-        if (this.stopRequested) break;
+        const aborted = record.aborted || this.retryCancelled;
         const last = r.messages.findLast((m) => m.role === 'assistant');
         const failed = last?.stopReason === 'error';
-        if (failed && !record.aborted) this.modelError(last.errorMessage || '模型请求失败', true);
+        this.finishRetry(this.stopRequested || aborted ? 'cancelled' : failed ? 'failed' : 'recovered');
+        if (this.stopRequested) break;
+        if (failed && !aborted) this.modelError(last.errorMessage || '模型请求失败', true);
         else {
           this.setError();
-          if (!record.aborted && r.sessionId) this.errorCounts.delete(r.sessionId);
+          if (!aborted && r.sessionId) this.errorCounts.delete(r.sessionId);
         }
-        this.status(record.aborted ? 'stopped' : failed ? 'error' : 'completed');
+        this.status(aborted ? 'stopped' : failed ? 'error' : 'completed');
         for (const t of r.tools)
           if (t.status === 'running') {
             t.status = 'error';
@@ -427,7 +468,14 @@ export class AgentService extends EventEmitter {
         break;
       // agent_end is deliberately not a terminal state: recovery and queued work may follow.
     }
-    r.notices = r.notices.slice(-20);
+    const dropped = Math.max(0, r.notices.length - 20);
+    if (dropped) {
+      r.notices = r.notices.slice(-20);
+      if (this.retryNotice !== undefined) {
+        this.retryNotice -= dropped;
+        if (this.retryNotice < 0) this.retryNotice = undefined;
+      }
+    }
     if (r.tools.length > 1000) r.tools = r.tools.slice(-1000);
     this.publish();
   }
@@ -680,6 +728,8 @@ export class AgentService extends EventEmitter {
     this.clearDialogs();
     const crash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
     this.runtime = { ...emptyRuntime(), sessionId, cwd, crash };
+    this.retryNotice = undefined;
+    this.retryCancelled = false;
     this.queuedImages = [];
     this.stopRequested = false;
     this.fullOutput = '';
@@ -905,6 +955,7 @@ export class AgentService extends EventEmitter {
     if (shellCommand && isActive) throw new Error('请等待当前任务完成后再执行命令');
     if (!isActive) {
       this.stopRequested = false;
+      this.retryCancelled = false;
       this.setError();
       this.runtime.tools = [];
       this.runtime.startedAt = Date.now();
@@ -1061,9 +1112,9 @@ export class AgentService extends EventEmitter {
   }
   async abortRetry() {
     if (!this.rpc || this.rpc.closed || !this.runtime.retry) return;
-    await this.rpc.request('abort_retry');
-    this.runtime.retry = undefined;
-    this.publish(true);
+    // Pi's abort_retry only cancels backoff. Use the normal stop path for both phases:
+    // the next request may start while the cancellation command is being delivered.
+    return this.stop();
   }
   async revokeApproval(id: string, grantId?: string) {
     this.store.assertWritable();

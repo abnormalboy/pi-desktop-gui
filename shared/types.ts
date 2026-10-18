@@ -228,7 +228,15 @@ export interface Runtime {
     contextWindow?: number;
   };
   notifications?: RuntimeNotification[];
-  retry?: { attempt: number; maxAttempts: number; delayMs: number; startedAt: number; error?: string };
+  retry?: {
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    startedAt: number;
+    phase: 'delay' | 'requesting';
+    requestedAt?: number;
+    error?: string;
+  };
   diagnostic: string[];
   stopStartedAt?: number;
   commands: PiCommand[];
