@@ -13,6 +13,8 @@ import { commandOrder } from '../lib/commands';
 import { readableError } from '../lib/format';
 import { composeDraftText, moveSnippetOffsets, textBytes, type DraftSnippet } from '../lib/draft-snippets';
 import { formatAttachmentSpec, parseAttachmentSpec, type AttachmentInfo } from '../../shared/attachments';
+import { isImageFile, readImageFile } from '../lib/image-files';
+import { imageDataBytes, MAX_IMAGE_COUNT, MAX_IMAGES_BYTES } from '../../shared/images';
 const api = window.desktop;
 interface DraftOptions {
   state: AppState | undefined;
@@ -145,14 +147,23 @@ export function useDraft({
     persistDraft(value, attachments, images, pieces);
     focusComposer();
   };
-  const mergeDraftAttachments = (id: string, files: string[], pictures: ImageAttachment[]) => {
+  const mergeDraftAttachments = (
+    id: string,
+    files: string[],
+    pictures: ImageAttachment[],
+    clearReference = false,
+  ) => {
     if (stateRef.current?.selectedSessionId !== id) return false;
     const latest = composerDraft.current;
-    if (latest.images.length + pictures.length > 8) throw new Error('每条消息最多添加 8 张图片');
+    if (latest.images.length + pictures.length > MAX_IMAGE_COUNT)
+      throw new Error('每条消息最多添加 8 张图片');
+    const nextImages = [...latest.images, ...pictures];
+    if (nextImages.reduce((total, image) => total + imageDataBytes(image.data), 0) > MAX_IMAGES_BYTES)
+      throw new Error('附件总大小不能超过 16 MiB');
     persistDraft(
-      latest.draft,
+      clearReference ? latest.draft.replace(/(^|\s)@[^\s@]*$/, '$1') : latest.draft,
       [...new Set([...latest.attachments, ...files])],
-      [...latest.images, ...pictures],
+      nextImages,
     );
     return true;
   };
@@ -182,46 +193,45 @@ export function useDraft({
           ? { path: spec.path, startLine: typed.startLine, endLine: typed.endLine }
           : spec,
       );
-      await api.invoke('attachmentInfo', project.id, [value]);
-      return value;
+      const image =
+        spec.startLine === undefined && typed?.startLine === undefined
+          ? await api.invoke('projectImage', project.id, spec.path)
+          : null;
+      if (!image) await api.invoke('attachmentInfo', project.id, [value]);
+      return { value, image };
     });
     if (!normalized || stateRef.current?.selectedSessionId !== id) return;
-    const latest = composerDraft.current;
-    const next = [...new Set([...latest.attachments, normalized])];
-    persistDraft(latest.draft.replace(/(^|\s)@[^\s@]*$/, '$1'), next, latest.images);
+    await attempt(async () =>
+      mergeDraftAttachments(
+        id,
+        normalized.image ? [] : [normalized.value],
+        normalized.image ? [normalized.image] : [],
+        true,
+      ),
+    );
     setFileQuery(null);
     focusComposer();
   }
   async function readImages(files: File[]): Promise<ImageAttachment[]> {
-    if (files.length + images.length > 8) throw new Error('每条消息最多添加 8 张图片');
-    return Promise.all(
-      files.map(async (f) => {
-        if (
-          f.size > 8 * 1024 * 1024 ||
-          !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(f.type)
-        )
-          throw new Error('支持 PNG、JPEG、WebP、GIF，单张不超过 8 MiB');
-        const data = await new Promise<string>((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result).split(',')[1]);
-          r.onerror = reject;
-          r.readAsDataURL(f);
-        });
-        return { id: crypto.randomUUID(), name: f.name || '粘贴的图片', mimeType: f.type, data };
-      }),
-    );
+    if (files.length + composerDraft.current.images.length > MAX_IMAGE_COUNT)
+      throw new Error('每条消息最多添加 8 张图片');
+    return Promise.all(files.map(readImageFile));
   }
-  async function acceptImages(files: File[]) {
+  async function chooseImages() {
     if (!selected) return;
     await attempt(async () => {
-      const next = await readImages(files);
-      mergeDraftAttachments(selected.id, [], next);
+      const picked = await api.invoke('pickImages');
+      if (picked.length) mergeDraftAttachments(selected.id, [], picked);
     });
   }
   async function acceptDrop(files: File[]) {
     if (!selected) return;
-    const pictures = files.filter((f) => f.type.startsWith('image/'));
-    const others = files.filter((f) => !f.type.startsWith('image/'));
+    const classified = await attempt(() =>
+      Promise.all(files.map(async (file) => ({ file, image: await isImageFile(file) }))),
+    );
+    if (!classified || stateRef.current?.selectedSessionId !== selected.id) return;
+    const pictures = classified.filter((item) => item.image).map((item) => item.file);
+    const others = classified.filter((item) => !item.image).map((item) => item.file);
     const nextImages = pictures.length ? await attempt(() => readImages(pictures)) : [];
     let nextFiles: string[] = [];
     if (others.length) {
@@ -359,7 +369,7 @@ export function useDraft({
     onDraft,
     focusComposer,
     addAttachment,
-    acceptImages,
+    chooseImages,
     acceptDrop,
   };
 }

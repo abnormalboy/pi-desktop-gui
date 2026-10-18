@@ -110,7 +110,7 @@ export function useWorkbench() {
     onDraft,
     focusComposer,
     addAttachment,
-    acceptImages,
+    chooseImages,
     acceptDrop,
     composeDraft,
     snippets,

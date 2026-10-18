@@ -76,7 +76,7 @@ export type ComposerProps = Pick<
   | 'onDraft'
   | 'addAttachment'
   | 'send'
-  | 'acceptImages'
+  | 'chooseImages'
   | 'acceptDrop'
   | 'openSettings'
   | 'connect'
@@ -141,7 +141,7 @@ export function Composer(props: ComposerProps) {
     onDraft,
     addAttachment,
     send,
-    acceptImages,
+    chooseImages,
     acceptDrop,
     openSettings,
     connect,
@@ -361,10 +361,10 @@ export function Composer(props: ComposerProps) {
             onDraft(e.target.value);
           }}
           onPaste={(e) => {
-            const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+            const files = Array.from(e.clipboardData.files);
             if (files.length) {
               e.preventDefault();
-              void acceptImages(files);
+              void acceptDrop(files);
             } else {
               const text = e.clipboardData.getData('text/plain');
               if (shouldCollapsePaste(text, draft)) {
@@ -494,22 +494,13 @@ export function Composer(props: ComposerProps) {
                 </button>
               ))
             ) : (
-              <p>没有匹配的文本文件</p>
+              <p>没有匹配的文件</p>
             )}
           </div>
         )}
         <div className="composer-toolbar">
           <div>
-            <IconButton
-              title="添加图片"
-              disabled={!selected}
-              onClick={() =>
-                void attempt(async () => {
-                  const picked = await api.invoke('pickImages');
-                  if (picked.length) persistDraft(draft, attachments, [...images, ...picked]);
-                })
-              }
-            >
+            <IconButton title="添加图片" disabled={!selected} onClick={() => void chooseImages()}>
               <ImagePlus size={17} />
             </IconButton>
             {project && (

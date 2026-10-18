@@ -419,6 +419,7 @@ export interface ApiMap {
   testConnection: { args: [string]; result: { elapsed: number; text: string } };
   send: { args: [string, string, string[], SendMode, ImageAttachment[]?]; result: void };
   pickImages: { args: []; result: ImageAttachment[] };
+  projectImage: { args: [string, string]; result: ImageAttachment | null };
   sessionTree: { args: [string]; result: TreeEntry[] };
   branchSession: { args: [string, 'fork' | 'clone' | 'navigate', string?, boolean?, string?]; result: void };
   compact: {

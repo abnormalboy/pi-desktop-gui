@@ -39,6 +39,7 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 ## Features
 
 - **Visible agent workflow** — Streamed thinking, tool calls with arguments and exit status, inline diffs for every edit, plus context usage, tokens and cost.
+- **Image attachments** — Paste or drop images even when the system omits their file type; selecting a project image through `@` also attaches the image. Supports PNG, JPEG, WebP and GIF, up to 8 images, 8 MiB each and 16 MiB combined.
 - **Per-turn undo** — In Git projects, a snapshot is taken before each run (stored outside your repo's `.git`). Undo a whole turn or roll back individual files. Side effects of shell commands are not covered.
 - **Tool approval** — Choose _Auto_, _Confirm changes_ or _Read-only_ per session. Approve once, always allow for the session, or deny with a reason.
 - **Branching conversations** — Edit and resend any message, fork a new branch, or clone the active one to try a different approach.

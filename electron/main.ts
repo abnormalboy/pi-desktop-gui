@@ -24,7 +24,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
 import { AgentService, redact } from './agent';
-import { Workspace, listDirectory, allFiles, previewFile, safePath, attachmentInfo } from './workspace';
+import {
+  Workspace,
+  listDirectory,
+  allFiles,
+  previewFile,
+  safePath,
+  sensitive,
+  attachmentInfo,
+} from './workspace';
 import { WorkspaceWatcher } from './workspace-watch';
 import { projectRules, createAgentRules } from './project-rules';
 import { isEmptySession, fillSessionUsage } from './session-maintenance';
@@ -44,7 +52,7 @@ import { detectEnvironment, requireSupportedPi, resolvePi, agentDirectory } from
 import { Configuration } from './configuration';
 import { UpdateService, updateInstallation, fetchLatestRelease, fetchReleaseNotes } from './updater';
 import { createNativeUpdateDriver } from './update-driver';
-import { validateImages } from './images';
+import { readImageAttachment, validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
 import {
   isMac,
@@ -877,18 +885,22 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     if (picked.filePaths.length > 8) throw new Error('最多选择 8 张图片');
     const images = await Promise.all(
       picked.filePaths.map(async (file) => {
-        if ((await fs.stat(file)).size > 8 * 1024 * 1024) throw new Error('图片超过 8 MiB');
-        const ext = path.extname(file).toLowerCase();
-        return {
-          id: randomUUID(),
-          name: path.basename(file),
-          mimeType: ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/' + ext.slice(1),
-          data: (await fs.readFile(file)).toString('base64'),
-        };
+        const image = await readImageAttachment(file);
+        if (!image) throw new Error('支持 PNG、JPEG、WebP、GIF 图片');
+        return image;
       }),
     );
     validateImages(images);
     return images;
+  },
+  projectImage: async (id, relative) => {
+    text(id, 100);
+    text(relative, 4096);
+    if (sensitive(relative)) throw new Error('凭据文件不在文件预览和引用范围内');
+    const project = store.project(id);
+    const file = await safePath(project.path, relative);
+    if (sensitive(path.relative(project.path, file))) throw new Error('凭据文件不在文件预览和引用范围内');
+    return readImageAttachment(file);
   },
   sessionTree: async (id) => {
     text(id, 100);
@@ -1506,6 +1518,7 @@ else {
             'searchFiles',
             'preview',
             'attachmentInfo',
+            'projectImage',
             'projectRules',
             'editProjectRules',
             'checkpoints',

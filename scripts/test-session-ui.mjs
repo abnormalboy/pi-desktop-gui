@@ -204,3 +204,6 @@ try {
   await app?.close().catch(() => {});
   await provider.close();
 }
+
+// Reuse the same --packaged target for image input checks in the native CI jobs.
+await import('./test-image-input-ui.mjs');

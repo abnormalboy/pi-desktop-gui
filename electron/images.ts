@@ -1,6 +1,45 @@
 import type { ImageAttachment } from '../shared/types';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import {
+  detectImageMimeType,
+  hasImageHint,
+  IMAGE_FORMAT_ERROR,
+  MAX_IMAGE_COUNT,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_BYTES,
+} from '../shared/images';
+
+/** null means this is not an image; the caller can continue normal text-reference checks. */
+export async function readImageAttachment(file: string): Promise<ImageAttachment | null> {
+  const stat = await fs.stat(file);
+  if (!stat.isFile()) throw new Error('只能添加普通文件');
+  const handle = await fs.open(file, 'r');
+  let mimeType: string | undefined;
+  try {
+    const prefix = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(prefix, 0, prefix.length, 0);
+    mimeType = detectImageMimeType(prefix.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+  if (!mimeType) {
+    if (hasImageHint({ name: file, type: '' })) throw new Error(IMAGE_FORMAT_ERROR);
+    return null;
+  }
+  if (stat.size > MAX_IMAGE_BYTES) throw new Error(IMAGE_FORMAT_ERROR);
+  const image = {
+    id: randomUUID(),
+    name: path.basename(file),
+    mimeType,
+    data: (await fs.readFile(file)).toString('base64'),
+  };
+  validateImages([image]);
+  return image;
+}
 export function validateImages(images: unknown): asserts images is ImageAttachment[] {
-  if (!Array.isArray(images) || images.length > 8) throw new Error('每条消息最多添加 8 张图片');
+  if (!Array.isArray(images) || images.length > MAX_IMAGE_COUNT) throw new Error('每条消息最多添加 8 张图片');
   let total = 0;
   for (const img of images) {
     if (
@@ -16,17 +55,9 @@ export function validateImages(images: unknown): asserts images is ImageAttachme
       throw new Error('图片格式无效或超过 8 MiB');
     const bytes = Buffer.from(img.data, 'base64');
     total += bytes.length;
-    const detected = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      ? 'image/png'
-      : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-        ? 'image/jpeg'
-        : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
-          ? 'image/webp'
-          : /^GIF8[79]a/.test(bytes.toString('ascii', 0, 6))
-            ? 'image/gif'
-            : '';
-    if (detected !== img.mimeType || bytes.length > 8 * 1024 * 1024)
+    const detected = detectImageMimeType(bytes);
+    if (detected !== img.mimeType || bytes.length > MAX_IMAGE_BYTES)
       throw new Error('图片内容与格式不匹配，或超过 8 MiB');
   }
-  if (total > 16 * 1024 * 1024) throw new Error('附件总大小不能超过 16 MiB');
+  if (total > MAX_IMAGES_BYTES) throw new Error('附件总大小不能超过 16 MiB');
 }
