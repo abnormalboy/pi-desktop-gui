@@ -576,7 +576,20 @@ export class AgentService extends EventEmitter {
     }
     const cwd = await this.store.sessionDirectory(sessionId);
     let reason = this.rpc?.closed ? 'Pi 进程已退出' : '当前没有 Pi 连接';
-    if (this.rpc && !this.rpc.closed && this.runtime.cwd && samePath(cwd, this.runtime.cwd)) {
+    const outgoing = this.store.state.sessions.find((s) => s.id === this.runtime.sessionId);
+    // Pi's new_session inherits the open file's directory. A legacy desktop
+    // history must remain resumable without sending the next new chat there.
+    const legacyDirectory =
+      !session.file &&
+      outgoing?.file &&
+      samePath(path.dirname(outgoing.file), path.join(this.store.dir, 'sessions'));
+    if (
+      this.rpc &&
+      !this.rpc.closed &&
+      this.runtime.cwd &&
+      samePath(cwd, this.runtime.cwd) &&
+      !legacyDirectory
+    ) {
       const previousStatus = this.runtime.status;
       const events: any[] = [];
       this.switchEvents = events;
@@ -611,7 +624,8 @@ export class AgentService extends EventEmitter {
         this.switchStarted = false;
         this.connecting = false;
       }
-    } else if (this.rpc && !this.rpc.closed) reason = '工作目录不同，重新加载项目环境';
+    } else if (this.rpc && !this.rpc.closed)
+      reason = legacyDirectory ? '新会话使用 Pi 原生目录' : '工作目录不同，重新加载项目环境';
     if (this.rpc) {
       const old = this.rpc;
       this.rpc = undefined;
@@ -628,14 +642,8 @@ export class AgentService extends EventEmitter {
       const rpc = new PiRpc();
       this.rpc = rpc;
       this.installRpcHandlers(rpc);
-      const args = [
-        '--mode',
-        'rpc',
-        '--name',
-        session.title,
-        '--session-dir',
-        path.join(this.store.dir, 'sessions'),
-      ];
+      // Let Pi resolve its native per-cwd directory and any sessionDir override.
+      const args = ['--mode', 'rpc', '--name', session.title];
       if (session.file) args.push('--session', session.file);
       else args.push('--session-id', session.id);
       const bridge = path.join(this.store.dir, 'desktop-bridge.mjs');

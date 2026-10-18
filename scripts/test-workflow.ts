@@ -144,7 +144,7 @@ try {
 
   const matches = await searchSessionContents(f.store.state.sessions, 'workflow_edited');
   assert.ok(matches.some((m) => m.sessionId === original && m.snippet.includes('WORKFLOW_EDITED')));
-  const roots = [path.join(f.dataDir, 'sessions')];
+  const roots = [path.join(f.agentDir, 'sessions'), path.join(f.dataDir, 'sessions')];
   const known = new Set<string>();
   const listed = await listPiSessions(roots, known);
   assert.ok(listed.some((x) => x.preview.includes('WORKFLOW_FIRST')));

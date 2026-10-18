@@ -260,8 +260,12 @@ try {
   const missingFileSession = saved.sessions.find((session) => session.title === '第二条独立对话');
   assert.ok(missingFileSession.file);
   const sessionFile = path.resolve(missingFileSession.file);
-  const sessionDirectory = path.resolve(fixture.dataDir, 'sessions');
-  assert.equal(path.dirname(sessionFile), sessionDirectory, 'only remove the isolated test session file');
+  const sessionDirectory = path.resolve(fixture.agentDir, 'sessions');
+  assert.equal(
+    path.dirname(path.dirname(sessionFile)),
+    sessionDirectory,
+    'only remove the isolated test session file in Pi’s per-cwd directory',
+  );
   await fs.unlink(sessionFile);
   await page.getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true }).click();
   await page.getByRole('menuitem', { name: '删除', exact: true }).click();

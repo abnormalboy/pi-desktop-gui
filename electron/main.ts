@@ -1061,9 +1061,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await service.disconnect();
     const spec = (await resolvePi(store.state.settings, developmentRoot)).spec;
     const s = store.session(id);
-    const args = s.file
-      ? ['--session', s.file]
-      : ['--session-id', s.id, '--session-dir', path.join(store.dir, 'sessions')];
+    const args = s.file ? ['--session', s.file] : ['--session-id', s.id];
     await openTerminal(
       [spec.command, ...spec.args, ...args],
       await store.sessionDirectory(id),

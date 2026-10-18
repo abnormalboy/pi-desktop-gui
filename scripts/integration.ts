@@ -65,11 +65,14 @@ try {
   );
   const file = store.session(sessionId).file;
   assert.ok(file);
+  assert.equal(path.relative(fixture.agentDir, file).split(path.sep)[0], 'sessions');
+  assert.notEqual(path.dirname(file), path.join(dataDir, 'sessions'));
   await waitFor(() => Boolean(store.session(sessionId).file));
   await service.dispose();
   assert.ok((await readSessionFile(file)).messages.some((m) => m.role === 'toolResult'));
   const restored = new Store(dataDir);
   await restored.load();
+  const legacyFile = path.join(dataDir, 'sessions', path.basename(file));
   service = new AgentService(restored, new Workspace(dataDir));
   listen();
   await service.connect(sessionId);
@@ -144,6 +147,7 @@ try {
   await assert.rejects(service.send(chat.id, '不能附加项目文件', ['输入 文件.txt'], 'steer'), /项目会话/);
   const chatFile = chat.file;
   assert.ok(chatFile);
+  assert.equal(path.relative(fixture.agentDir, chatFile).split(path.sep)[0], 'sessions');
   assert.equal((await readSessionFile(chatFile)).cwd, await restored.sessionDirectory(chat.id));
   await service.connect(sessionId);
   assert.ok(service.runtime.messages.some((m) => m.role === 'toolResult'));
@@ -151,6 +155,34 @@ try {
   assert.ok(service.runtime.messages.some((m) => messageText(m).includes('E2E_CHAT')));
   assert.equal(service.runtime.tools.length, 0);
   console.log('PASS standalone chat, model probe, tools/extensions and project/chat history switching');
+  await service.disconnect();
+  await fs.mkdir(path.dirname(legacyFile), { recursive: true });
+  await fs.copyFile(restored.session(sessionId).file!, legacyFile);
+  restored.session(sessionId).file = legacyFile;
+  await restored.save();
+  await service.connect(sessionId);
+  assert.equal(restored.session(sessionId).file, legacyFile);
+  const nativeChat = restored.createSession(projectId);
+  await restored.save();
+  await service.connect(nativeChat.id);
+  assert.ok(nativeChat.file);
+  assert.equal(path.relative(fixture.agentDir, nativeChat.file).split(path.sep)[0], 'sessions');
+  await service.send(nativeChat.id, 'E2E_CHAT：原生目录会话。', [], 'steer');
+  await waitFor(() => ['completed', 'error'].includes(service.runtime.status));
+  assert.equal(service.runtime.status, 'completed', service.runtime.error ?? '');
+  assert.ok((await readSessionFile(nativeChat.file)).messages.some((m) => m.role === 'assistant'));
+  console.log('PASS new project/chat histories use Pi native directories after resuming legacy files');
+  await service.disconnect();
+  const settingsFile = path.join(fixture.agentDir, 'settings.json');
+  const piSettings = JSON.parse(await fs.readFile(settingsFile, 'utf8'));
+  const customDir = path.join(fixture.dir, 'custom-pi-sessions');
+  await fs.writeFile(settingsFile, JSON.stringify({ ...piSettings, sessionDir: customDir }));
+  const customChat = restored.createSession(projectId);
+  await restored.save();
+  await service.connect(customChat.id);
+  assert.ok(customChat.file);
+  assert.equal(path.dirname(customChat.file), customDir);
+  console.log('PASS Pi sessionDir configuration remains effective');
   await fs.writeFile(
     path.join(fixture.dir, 'result.json'),
     JSON.stringify(
@@ -172,6 +204,8 @@ try {
           'standalone chat and connection probe',
           'standalone tools/extensions and project attachment boundary',
           'project/chat switching preserves separate histories',
+          'native per-cwd directories and legacy resume without directory inheritance',
+          'Pi sessionDir override is respected',
         ],
         events,
       },
