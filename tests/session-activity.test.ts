@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { once } from 'node:events';
 import { Store } from '../electron/store';
 import { AgentService } from '../electron/agent';
 import type { PiRpc } from '../electron/rpc';
@@ -111,6 +112,60 @@ test('cancelled and failed connection attempts preserve activity and unread', as
   await fs.writeFile(path.join(f.dir, 'control.json'), JSON.stringify({ exitOnStats: true }));
   await assert.rejects(f.service.connect(f.older.id), /Pi 在加载会话时已退出/);
   assert.deepEqual(f.recency(), before);
+});
+
+test('an exit state event can precede persistence of its final activity timestamp', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect(f.older.id);
+  await f.store.flush();
+  const writer = f.store as unknown as {
+    replace: (name: string, contents: string) => Promise<void>;
+  };
+  const replace = writer.replace.bind(writer);
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let writes = 0;
+  t.mock.method(writer, 'replace', async (name: string, contents: string) => {
+    if (name === 'state.json' && ++writes === 2) {
+      entered();
+      await held;
+    }
+    await replace(name, contents);
+  });
+  let renderedAt: number | undefined;
+  f.service.on('state', (state: typeof f.store.state) => {
+    const session = state.sessions.find((item) => item.id === f.older.id);
+    if (session?.lastStatus === 'interrupted') renderedAt = session.updatedAt;
+  });
+  const rpc = (f.service as unknown as { rpc: PiRpc }).rpc;
+  const exited = once(rpc, 'exit');
+  try {
+    assert.equal(rpc.child!.kill(), true);
+    await waitForGate(
+      waiting,
+      exited.then(() => f.store.flush()),
+    );
+    const disk = JSON.parse(await fs.readFile(path.join(f.dir, 'state.json'), 'utf8'));
+    const saved = disk.sessions.find((session: { id: string }) => session.id === f.older.id);
+    assert.equal(saved.lastStatus, 'interrupted');
+    assert.equal(saved.updatedAt, 1, 'the first queued save still contains the previous activity');
+    assert.ok(f.older.updatedAt > 1);
+    assert.equal(renderedAt, f.older.updatedAt, 'state events expose the completed exit activity');
+    assert.notEqual(saved.updatedAt, renderedAt, 'waiting for this disk timestamp in the UI cannot finish');
+  } finally {
+    release();
+    await f.store.flush();
+  }
+  const disk = JSON.parse(await fs.readFile(path.join(f.dir, 'state.json'), 'utf8'));
+  assert.equal(
+    disk.sessions.find((session: { id: string }) => session.id === f.older.id).updatedAt,
+    renderedAt,
+  );
 });
 
 test('accepted messages and background completion still advance activity and mark unread', async (t) => {

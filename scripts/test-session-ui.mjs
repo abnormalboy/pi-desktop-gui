@@ -392,16 +392,23 @@ try {
   }, a.id);
   // The unexpected process exit is genuine activity. Establish its persisted/rendered baseline;
   // subsequent browsing and reconnection must leave that new activity order unchanged.
+  // Status and activity enqueue separate saves. The first interrupted disk snapshot may
+  // still contain the old timestamp, while state events already expose the completed exit.
+  await page.waitForFunction(
+    (id) => window.sessionUiState.sessions.find((session) => session.id === id)?.lastStatus === 'interrupted',
+    a.id,
+  );
+  originalActivity = await page.evaluate(() =>
+    Object.fromEntries(window.sessionUiState.sessions.map((session) => [session.id, session.updatedAt])),
+  );
   await wait(async () => {
     const state = JSON.parse(await fs.readFile(path.join(f.dataDir, 'state.json'), 'utf8'));
     if (state.sessions.find((session) => session.id === a.id)?.lastStatus !== 'interrupted') return false;
-    originalActivity = Object.fromEntries(state.sessions.map((session) => [session.id, session.updatedAt]));
-    return true;
+    return (
+      state.sessions.length === Object.keys(originalActivity).length &&
+      state.sessions.every((session) => session.updatedAt === originalActivity[session.id])
+    );
   });
-  await page.waitForFunction(
-    ({ id, at }) => window.sessionUiState.sessions.find((session) => session.id === id)?.updatedAt === at,
-    { id: a.id, at: originalActivity[a.id] },
-  );
   await page.waitForFunction(
     (id) => document.querySelector('.project-group .session-row')?.dataset.sessionId === id,
     a.id,
@@ -509,6 +516,35 @@ try {
 } catch (error) {
   testError = error;
   if (page && !page.isClosed()) {
+    await (async () => {
+      await fs.mkdir('test-results', { recursive: true });
+      const renderer = await page.evaluate(() => ({
+        selectedSessionId: window.sessionUiState?.selectedSessionId,
+        activity: window.sessionUiState?.sessions.map(({ id, updatedAt, lastStatus }) => ({
+          id,
+          updatedAt,
+          lastStatus,
+        })),
+      }));
+      const persisted = JSON.parse(await fs.readFile(path.join(f.dataDir, 'state.json'), 'utf8'));
+      await fs.writeFile(
+        `test-results/session-ui-failure-${process.platform}.json`,
+        JSON.stringify(
+          {
+            error: String(error),
+            expectedActivity: originalActivity,
+            renderer,
+            persistedActivity: persisted.sessions.map(({ id, updatedAt, lastStatus }) => ({
+              id,
+              updatedAt,
+              lastStatus,
+            })),
+          },
+          null,
+          2,
+        ),
+      );
+    })().catch(() => {});
     await fs
       .mkdir('test-results', { recursive: true })
       .then(() =>
