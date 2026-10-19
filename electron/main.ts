@@ -1416,7 +1416,7 @@ async function createWindow() {
     void (async () => {
       try {
         service.suspendReload(true);
-        if (service.hasPendingWork) {
+        if (service.requiresStopConfirmation) {
           const result = await showAppDialog(
             {
               type: 'question',

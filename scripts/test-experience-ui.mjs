@@ -219,6 +219,7 @@ try {
   console.log('PASS closing during resize exits cleanly, saves bounds, and restores dimensions on restart');
   console.log('Experience UI PASS', fixture.dir);
 } catch (error) {
+  console.error(error);
   if (page && !page.isClosed())
     await page.screenshot({ path: path.join(output, 'experience-ui-failure.png') });
   throw error;
@@ -235,6 +236,14 @@ try {
         );
       })
       .catch(() => {});
+    if (page && !page.isClosed()) {
+      const pendingExit = page.getByRole('dialog').filter({ hasText: 'Pi 仍在执行任务' });
+      if (await pendingExit.isVisible())
+        await pendingExit
+          .getByRole('button', { name: '停止并退出', exact: true })
+          .click()
+          .catch(() => {});
+    }
     await app.close();
   }
   await provider.close();

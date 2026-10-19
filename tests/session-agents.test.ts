@@ -53,6 +53,7 @@ test('conversations run in separate processes; queues, models and stopping stay 
   await Promise.all([first.send(a.id, 'hold', [], 'steer'), second.send(b.id, 'hold', [], 'steer')]);
   assert.ok(busy(first.runtime.status));
   assert.ok(busy(second.runtime.status));
+  assert.equal(agents.requiresStopConfirmation, true);
   assert.notEqual(first.lastSwitch?.pid, second.lastSwitch?.pid);
   await first.send(a.id, 'only A', [], 'followUp');
   await second.send(b.id, 'only B', [], 'steer');
@@ -230,6 +231,51 @@ test('shutdown refuses new conversations before waiting for existing processes t
     finish();
     await closing;
   }
+});
+
+test('exit waits for finishing operations without a stop prompt and cancels queued work', async (t) => {
+  const { agents, store, a, directory } = await fixture(t);
+  const agent = agents.get(a.id);
+  await agent.connect(a.id);
+  const rpc = (agent as any).rpc;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered = false;
+  const finishing = (agent as any).exclusive(async () => {
+    entered = true;
+    await gate;
+    store.session(a.id).draft = 'saved before exit';
+    await store.save();
+  });
+  await until(() => entered);
+  const queuedSend = assert.rejects(
+    agent.send(a.id, 'must not run during exit', [], 'steer'),
+    /任务已取消|应用正在关闭/,
+  );
+  const queuedMutation = assert.rejects(agent.admin(a.id, 'reload'), /应用正在关闭/);
+  assert.equal(agents.hasPendingWork, true);
+  assert.equal(agents.requiresStopConfirmation, false);
+  let disposed = false;
+  const closing = agents.dispose().then(() => {
+    disposed = true;
+  });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(disposed, false);
+    assert.equal(rpc.closed, false, 'do not close the process before the finishing operation');
+  } finally {
+    release();
+    await Promise.all([finishing, queuedSend, queuedMutation, closing]);
+  }
+  assert.equal(rpc.closed, true);
+  assert.ok(!agent.runtime.messages.some((message) => message.content === 'must not run during exit'));
+  const saved = JSON.parse(await fs.readFile(path.join(directory, 'state.json'), 'utf8'));
+  assert.equal(
+    saved.sessions.find((session: { id: string }) => session.id === a.id).draft,
+    'saved before exit',
+  );
 });
 
 test('workspace protection follows real overlapping directories and leaves unrelated projects available', async (t) => {

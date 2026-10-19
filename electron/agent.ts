@@ -110,8 +110,10 @@ export class AgentService extends EventEmitter {
   private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
   private checkpointRecorder: CheckpointRecorder;
   get hasPendingWork() {
+    return this.pendingOperations > 0 || this.requiresStopConfirmation;
+  }
+  get requiresStopConfirmation() {
     return (
-      this.pendingOperations > 0 ||
       busy(this.runtime.status) ||
       this.probing ||
       this.connecting ||
@@ -709,6 +711,7 @@ export class AgentService extends EventEmitter {
     this.assertCommandsStopped();
     await this.store.flush();
     this.store.assertWritable();
+    if (this.shutdown) throw new Error('应用正在关闭，请稍后重新打开');
     if (this.probing) throw new Error('正在测试模型连接，请稍候');
     const session = this.store.session(sessionId),
       project = session.projectId ? this.store.project(session.projectId) : undefined;
@@ -719,6 +722,7 @@ export class AgentService extends EventEmitter {
     if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) {
       await this.applyPendingConfiguration();
       await this.syncApprovalMode();
+      if (this.shutdown) throw new Error('应用正在关闭，请稍后重新打开');
       return;
     }
     await this.beforeConnect?.('connect');
@@ -1804,13 +1808,16 @@ export class AgentService extends EventEmitter {
   }
   async dispose() {
     this.shutdown = true;
-    await this.settingsOperation;
-    this.clearDialogs();
+    this.stopEpoch++;
+    this.stopRequested = true;
     if (this.publishing) clearTimeout(this.publishing);
     await this.probe?.close();
     if (busy(this.runtime.status)) {
       await this.stop().catch(() => {});
     }
+    await this.settingsOperation;
+    await this.operation;
+    this.clearDialogs();
     await this.rpc?.close();
     await this.store.flush().catch((e) => this.diagnostic(errorText(e)));
   }

@@ -74,6 +74,9 @@ export class SessionAgents extends EventEmitter {
       this.workspaceOperations.size > 0 || [...this.agents.values()].some((agent) => agent.hasPendingWork)
     );
   }
+  get requiresStopConfirmation() {
+    return [...this.agents.values()].some((agent) => agent.requiresStopConfirmation);
+  }
 
   setThinking(id: string, level: string) {
     return this.get(id).setThinking(id, level);
