@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import { Download, RefreshCw, ExternalLink } from 'lucide-react';
-import { installationLabels, releaseUrl, type UpdateState } from '../../shared/app-update';
+import {
+  installationLabels,
+  releaseUrl,
+  updateInstallNotice,
+  type UpdateState,
+} from '../../shared/app-update';
 import { Modal } from './Modal';
 import { RichText } from './conversation/Markdown';
 import { readableError } from '../lib/format';
@@ -12,20 +17,25 @@ interface UpdateProps {
   install: () => Promise<void>;
 }
 export function UpdateBadge({ update, open }: { update?: UpdateState; open: () => void }) {
-  if (!update?.version || !['available', 'downloading', 'ready'].includes(update.state)) return null;
+  if (!update) return null;
+  const offered = update.version && ['available', 'downloading', 'ready'].includes(update.state);
+  if (!offered && !updateInstallNotice(update)) return null;
   return (
     <button className="update-badge" onClick={open}>
-      {update.state === 'ready'
-        ? `重启以更新到 v${update.version}`
-        : update.state === 'downloading'
-          ? `正在下载更新 ${Math.floor(update.progress ?? 0)}%`
-          : `v${update.version} 可用`}
+      {!offered
+        ? '上次更新结果待确认'
+        : update.state === 'ready'
+          ? `重启以更新到 v${update.version}`
+          : update.state === 'downloading'
+            ? `正在下载更新 ${Math.floor(update.progress ?? 0)}%`
+            : `v${update.version} 可用`}
     </button>
   );
 }
 function UpdateActions({ update, busy, install }: UpdateProps) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const installNotice = updateInstallNotice(update);
   const run = async (action: () => Promise<unknown>) => {
     setError('');
     setPending(true);
@@ -50,6 +60,11 @@ function UpdateActions({ update, busy, install }: UpdateProps) {
           {error || update.error}
         </p>
       )}
+      {installNotice && (
+        <p className="environment-note" role="status">
+          {installNotice}
+        </p>
+      )}
       {update.state === 'ready' && busy && (
         <p className="environment-note">当前任务或审批结束后可重启更新。</p>
       )}
@@ -72,13 +87,19 @@ function UpdateActions({ update, busy, install }: UpdateProps) {
             {update.state === 'error' ? '重试下载' : '下载更新'}
           </button>
         ) : null}
-        {(update.version || update.state === 'error') && (
-          <button onClick={() => void run(() => api.invoke('openLink', releaseUrl(update.version)))}>
+        {(update.version || update.state === 'error' || installNotice) && (
+          <button
+            onClick={() =>
+              void run(() =>
+                api.invoke('openLink', releaseUrl(update.version ?? update.lastInstall?.targetVersion)),
+              )
+            }
+          >
             <ExternalLink size={14} />
             前往下载
           </button>
         )}
-        {update.state === 'error' && (
+        {(update.state === 'error' || (installNotice && update.state === 'idle')) && (
           <button
             disabled={!update.enabled || pending}
             onClick={() => void run(() => api.invoke('checkUpdate'))}

@@ -152,8 +152,30 @@ try {
   await page.getByRole('button', { name: '关闭', exact: true }).last().click();
   console.log('PASS quiet offline failure, manual fallback link, persisted download preference and progress');
 
+  await update({
+    state: 'idle',
+    version: undefined,
+    error: undefined,
+    lastInstall: {
+      currentVersion: '0.9.0',
+      targetVersion: '0.9.1',
+      startedAt: Date.now(),
+      outcome: 'unconfirmed',
+    },
+  });
+  await page.getByRole('button', { name: '上次更新结果待确认', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '尚未确认更新完成' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '重新检查', exact: true }).isEnabled(), true);
+  await page.getByRole('button', { name: '前往下载', exact: true }).click();
+  assert.equal(
+    (await app.evaluate(() => globalThis.updateUiFixture.links)).at(-1),
+    'https://github.com/yeyuProject/pi-desktop-gui/releases/tag/v0.9.1',
+  );
+  await page.getByRole('button', { name: '稍后', exact: true }).click();
+  console.log('PASS an unchanged version shows an unconfirmed update and the target installer download');
+
   const runtime = { ...emptyRuntime(), sessionId: session.id, connected: true, status: 'running' };
-  await update({ state: 'ready', progress: 100 }, runtime);
+  await update({ state: 'ready', version: '0.9.1', progress: 100, lastInstall: undefined }, runtime);
   await page.getByRole('button', { name: '重启以更新到 v0.9.1', exact: true }).click();
   const restart = page.getByRole('button', { name: '立即重启', exact: true });
   assert.equal(await restart.isDisabled(), true);

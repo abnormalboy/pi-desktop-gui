@@ -14,7 +14,7 @@ import {
   type UpdateOptions,
 } from '../electron/updater';
 import { nativeUpdateDriver } from '../electron/update-driver';
-import { compareAppVersions, stableVersion, releaseUrl } from '../shared/app-update';
+import { compareAppVersions, stableVersion, releaseUrl, updateInstallNotice } from '../shared/app-update';
 import { AgentService } from '../electron/agent';
 
 class Driver implements UpdateDriver {
@@ -275,6 +275,71 @@ test('accepted service operations block updates even before their runtime status
   release();
   await pending;
   assert.equal(agent.hasPendingWork, false);
+});
+test('installer errors are recorded without incorrectly blaming the network', async (t) => {
+  const driver = new Driver(),
+    records: import('../shared/app-update').UpdateInstallAttempt[] = [];
+  const service = new UpdateService({
+    ...options(driver),
+    recordAttempt: async (attempt) => {
+      records.push(attempt);
+    },
+  });
+  t.after(() => service.dispose());
+  await service.check();
+  await service.download();
+  await service.install();
+  driver.listener?.({ type: 'error', error: new Error('spawn installer EPERM') });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.state.installing, false);
+  assert.equal(service.state.lastInstall?.outcome, 'failed');
+  assert.deepEqual(
+    records.map((attempt) => attempt.outcome),
+    ['pending', 'failed'],
+  );
+  assert.match(service.state.error!, /安装程序/);
+  assert.doesNotMatch(service.state.error!, /检查网络/);
+  assert.match(updateInstallNotice(service.state)!, /无法启动更新安装程序/);
+});
+test('a receipt persistence failure prevents launching an unrecorded installer and permits retry', async (t) => {
+  const driver = new Driver();
+  let fail = true;
+  const service = new UpdateService({
+    ...options(driver),
+    recordAttempt: async () => {
+      if (fail) throw new Error('无法保存更新记录');
+    },
+  });
+  t.after(() => service.dispose());
+  await service.check();
+  await service.download();
+  await assert.rejects(service.install(), /无法保存更新记录/);
+  assert.equal(driver.installs, 0);
+  assert.equal(service.state.installing, false);
+  fail = false;
+  await service.install();
+  assert.equal(driver.installs, 1);
+});
+test('an update error during the receipt write cancels the pending installation', async (t) => {
+  const driver = new Driver();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const service = new UpdateService({ ...options(driver), recordAttempt: () => held });
+  t.after(() => {
+    release();
+    service.dispose();
+  });
+  await service.check();
+  await service.download();
+  const installing = service.install();
+  await new Promise((resolve) => setImmediate(resolve));
+  driver.listener?.({ type: 'error', error: new Error('installer vanished') });
+  release();
+  await assert.rejects(installing, /更新状态已变化/);
+  assert.equal(driver.installs, 0);
+  assert.equal(service.state.installing, false);
 });
 test('the GitHub notifier reads stable release Markdown and rejects prereleases', async () => {
   const release = await fetchLatestRelease(async (url) => {

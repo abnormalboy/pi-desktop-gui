@@ -5,6 +5,7 @@ import {
   LATEST_RELEASE_API,
   type UpdateInstallation,
   type UpdateState,
+  type UpdateInstallAttempt,
 } from '../shared/app-update';
 
 export interface DesktopRelease {
@@ -86,6 +87,8 @@ export interface UpdateOptions {
   busy: () => boolean;
   beforeInstall: () => Promise<void>;
   installFailed: () => void;
+  previousAttempt?: UpdateInstallAttempt;
+  recordAttempt?: (attempt: UpdateInstallAttempt) => Promise<void>;
 }
 
 /** Desktop update policy. The native updater and GitHub transport stay outside application state. */
@@ -109,6 +112,7 @@ export class UpdateService extends EventEmitter {
       enabled: options.enabled,
       disabledReason: options.disabledReason,
       installing: false,
+      lastInstall: options.previousAttempt,
     };
     if (options.enabled && this.state.mode === 'auto' && !options.driver)
       throw new Error('自动更新组件未初始化');
@@ -120,8 +124,24 @@ export class UpdateService extends EventEmitter {
     this.emit('update', structuredClone(this.state));
   }
   private fail(error: unknown) {
-    if (this.state.installing) this.options.installFailed();
-    this.publish({ state: 'error', installing: false, error: updateError(error) });
+    const installing = this.state.installing;
+    if (installing) {
+      this.options.installFailed();
+      this.markInstallFailed();
+    }
+    this.publish({
+      state: 'error',
+      installing: false,
+      error: installing
+        ? '无法启动更新安装程序或安装程序报告了错误，请重试，也可前往版本页面下载完整安装包。'
+        : updateError(error),
+    });
+  }
+  private markInstallFailed() {
+    if (this.state.lastInstall?.outcome !== 'pending') return;
+    const attempt: UpdateInstallAttempt = { ...this.state.lastInstall, outcome: 'failed' };
+    this.publish({ lastInstall: attempt });
+    void this.options.recordAttempt?.(attempt).catch(() => {});
   }
   private onDriverEvent(event: UpdateDriverEvent) {
     if (!this.state.enabled) return;
@@ -229,13 +249,25 @@ export class UpdateService extends EventEmitter {
       throw new Error('更新尚未下载完成');
     if (this.state.installing) return;
     if (this.options.busy()) throw new Error('当前任务或审批结束后才可重启更新');
+    const targetVersion = this.state.version!;
     this.publish({ installing: true, error: undefined });
     try {
       await this.options.beforeInstall();
       if (this.options.busy()) throw new Error('当前任务尚未结束，已取消重启更新');
+      const attempt: UpdateInstallAttempt = {
+        currentVersion: this.state.currentVersion,
+        targetVersion,
+        startedAt: Date.now(),
+        outcome: 'pending',
+      };
+      await this.options.recordAttempt?.(attempt);
+      if (!this.state.installing || this.state.state !== 'ready' || this.state.version !== targetVersion)
+        throw new Error('更新状态已变化，已取消重启更新，请重试。');
+      this.publish({ lastInstall: attempt });
       this.options.driver!.install();
     } catch (error) {
       this.options.installFailed();
+      this.markInstallFailed();
       this.publish({
         installing: false,
         error: error instanceof Error ? error.message : '无法准备重启更新，请重试。',

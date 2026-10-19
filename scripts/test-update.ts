@@ -249,7 +249,21 @@ try {
     const dataDir = path.join(root, mode, 'data');
     const store = new Store(dataDir, oldVersion);
     await store.load();
-    const session = store.createSession();
+    const project =
+      mode === 'restart'
+        ? {
+            id: randomUUID(),
+            name: '更新失败恢复验证',
+            path: path.join(root, mode, 'project'),
+            trusted: true,
+            createdAt: Date.now(),
+          }
+        : undefined;
+    if (project) {
+      await fs.mkdir(project.path, { recursive: true });
+      store.state.projects.push(project);
+    }
+    const session = store.createSession(project?.id);
     session.title = '升级保留测试';
     session.draft = '升级前草稿';
     session.approvalMode = 'confirm';
@@ -297,8 +311,10 @@ try {
     await page.getByRole('textbox', { name: '任务输入' }).waitFor();
     await page.evaluate(() => {
       (window as any).updateStates = [];
+      (window as any).updateWorkspaceEvents = [];
       window.desktop.onEvent((event) => {
         if (event.type === 'update') (window as any).updateStates.push(event.update);
+        if (event.type === 'workspaceChanged') (window as any).updateWorkspaceEvents.push(event);
       });
     });
     await page.evaluate(() => window.desktop.invoke('checkUpdate'));
@@ -326,6 +342,38 @@ try {
     await page
       .getByRole('button', { name: portable ? 'v0.9.1 可用' : '重启以更新到 v0.9.1', exact: true })
       .click();
+    if (mode === 'restart') {
+      // Exercise the real main-process recovery path, not just an UpdateService stub.
+      // Rename onto a directory fails deterministically on both Windows and Linux.
+      const blockedReceipt = path.join(dataDir, 'update-install.json');
+      await fs.mkdir(blockedReceipt);
+      await page.getByRole('button', { name: '立即重启', exact: true }).click();
+      await page.waitForFunction(() => {
+        const state = (window as any).updateStates.at(-1);
+        return state?.state === 'ready' && !state.installing && !!state.error;
+      });
+      assert.equal(
+        (await page.evaluate(() => window.desktop.invoke('bootstrap'))).update.currentVersion,
+        oldVersion,
+      );
+      await page.evaluate(() => {
+        (window as any).updateWorkspaceEvents = [];
+      });
+      await fs.writeFile(
+        path.join(project!.path, 'receipt-recovery.txt'),
+        'watcher survives failed update preparation',
+      );
+      await page.waitForFunction(() =>
+        (window as any).updateWorkspaceEvents.some(
+          (event: any) =>
+            event.changedPaths === undefined || event.changedPaths?.includes('receipt-recovery.txt'),
+        ),
+      );
+      await fs.rmdir(blockedReceipt);
+      console.log(
+        'PASS real receipt write failure cancels installation, restores workspace notifications and allows retry',
+      );
+    }
     const closed = portable
       ? new Promise<void>((resolve) => portableBrowser!.once('disconnected', () => resolve()))
       : app!.waitForEvent('close', { timeout: 120000 });
@@ -361,6 +409,10 @@ try {
     }
     const boot = await readBoot(dataDir);
     assert.equal(boot.version, nextVersion);
+    if (mode === 'restart') {
+      assert.equal(boot.bootstrap.update.lastInstall.outcome, 'completed');
+      assert.equal(boot.bootstrap.update.lastInstall.targetVersion, nextVersion);
+    }
     const oldBoot = JSON.parse(await fs.readFile(path.join(dataDir, `boot-${oldVersion}.json`), 'utf8'));
     assert.equal(
       boot.defaultDataDir,

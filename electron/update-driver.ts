@@ -46,7 +46,9 @@ export function nativeUpdateDriver(updater: AppUpdater): UpdateDriver {
       await updater.downloadUpdate();
     },
     install() {
-      updater.quitAndInstall(true, true);
+      // An explicit restart should show installer progress and actionable native errors.
+      // The updater's separate normal-quit handler still installs silently.
+      updater.quitAndInstall(false, true);
     },
   };
 }

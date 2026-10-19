@@ -55,6 +55,7 @@ import { toggleResourceSetting } from './resources-config';
 import { canonicalWritePath, isWithinDirectory } from './approval-paths';
 import { UpdateService, updateInstallation, fetchLatestRelease, fetchReleaseNotes } from './updater';
 import { createNativeUpdateDriver } from './update-driver';
+import { UpdateAttemptFile } from './update-attempt';
 import { readImageAttachment, validateImages } from './images';
 import { listPiSessions, searchSessionContents } from './history';
 import {
@@ -355,6 +356,12 @@ async function diagnostics() {
     JSON.stringify(
       {
         appVersion: app.getVersion(),
+        update: {
+          state: updates.state.state,
+          installation: updates.state.installation,
+          version: updates.state.version,
+          lastInstall: updates.state.lastInstall,
+        },
         platform: process.platform,
         environment,
         piCompatibility: environment.compatibility,
@@ -1490,12 +1497,18 @@ else {
       store.on('storage', (storage) => send({ type: 'storage', storage }));
       const installation = updateInstallation(process.platform, app.isPackaged, process.env);
       const updateEnabled = app.isPackaged && !process.env.PI_DESKTOP_DATA_DIR;
+      const updateAttempts =
+        updateEnabled && ['nsis', 'appimage'].includes(installation)
+          ? new UpdateAttemptFile(store.dir)
+          : undefined;
       updates = new UpdateService({
         currentVersion: app.getVersion(),
         installation,
         enabled: updateEnabled,
         disabledReason: updateEnabled ? undefined : '开发和测试环境不检查更新。',
         autoDownload: store.state.settings.autoDownloadUpdates,
+        previousAttempt: await updateAttempts?.read(app.getVersion()),
+        recordAttempt: updateAttempts ? (attempt) => updateAttempts.record(attempt) : undefined,
         driver:
           updateEnabled && (installation === 'nsis' || installation === 'appimage')
             ? createNativeUpdateDriver(installation)
@@ -1512,7 +1525,8 @@ else {
           windowTimer = undefined;
           await writeWindowState();
           quitting = true;
-          workspaceWatcher?.dispose();
+          // Keep the watcher until process exit: preparation/installer errors can return to this window.
+          // Its callback is already suppressed while quitting, and resumes if installFailed clears it.
         },
         installFailed: () => {
           quitting = false;

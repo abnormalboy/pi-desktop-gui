@@ -1,4 +1,10 @@
 export type UpdateInstallation = 'nsis' | 'portable' | 'appimage' | 'deb' | 'mac' | 'development';
+export interface UpdateInstallAttempt {
+  currentVersion: string;
+  targetVersion: string;
+  startedAt: number;
+  outcome: 'pending' | 'failed' | 'unconfirmed' | 'completed';
+}
 export interface UpdateState {
   state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error';
   currentVersion: string;
@@ -12,6 +18,17 @@ export interface UpdateState {
   notes?: string;
   error?: string;
   installing: boolean;
+  lastInstall?: UpdateInstallAttempt;
+}
+
+export function updateInstallNotice(update: UpdateState) {
+  const attempt = update.lastInstall;
+  if (!attempt || !['failed', 'unconfirmed'].includes(attempt.outcome)) return undefined;
+  if (compareAppVersions(update.currentVersion, attempt.targetVersion) >= 0) return undefined;
+  const versions = `上次尝试更新到 v${attempt.targetVersion}，当前仍是 v${update.currentVersion}。`;
+  return attempt.outcome === 'failed'
+    ? `${versions}无法启动更新安装程序，或安装程序报告了错误。请重试或下载完整安装包。`
+    : `${versions}尚未确认更新完成。如果安装程序仍在运行，请等待完成；否则可重试或下载完整安装包。`;
 }
 
 export const RELEASES_URL = 'https://github.com/yeyuProject/pi-desktop-gui/releases';
