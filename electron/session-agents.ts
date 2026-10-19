@@ -77,6 +77,9 @@ export class SessionAgents extends EventEmitter {
   get requiresStopConfirmation() {
     return [...this.agents.values()].some((agent) => agent.requiresStopConfirmation);
   }
+  diagnostics() {
+    return [...this.agents.values()].map((agent) => agent.diagnostics());
+  }
 
   setThinking(id: string, level: string) {
     return this.get(id).setThinking(id, level);

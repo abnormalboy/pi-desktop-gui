@@ -137,6 +137,19 @@ export class AgentService extends EventEmitter {
   get writingPaths() {
     return [...this.activeWriteTargets.values()];
   }
+  diagnostics() {
+    return {
+      sessionId: this.runtime.sessionId,
+      status: this.runtime.status,
+      connected: this.runtime.connected,
+      connecting: this.connecting,
+      probing: this.probing,
+      unsafeExit: this.unsafeExit,
+      pendingOperations: this.pendingOperations,
+      dialogs: this.runtime.dialogs.map(({ id, title }) => ({ id, title })),
+      crash: this.runtime.crash,
+    };
+  }
   suspendReload(value: boolean) {
     this.reloadSuspended = value;
     if (!value && this.runtime.configurationPending && !busy(this.runtime.status))

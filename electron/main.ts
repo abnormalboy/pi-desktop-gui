@@ -359,6 +359,7 @@ async function diagnostics() {
         piCompatibility: environment.compatibility,
         sessionSwitch: agent?.lastSwitch,
         modelErrors: agent?.recentModelErrors,
+        sessions: service.diagnostics(),
         runtime: {
           status: service.runtime.status,
           connected: service.runtime.connected,

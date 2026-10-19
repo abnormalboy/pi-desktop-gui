@@ -220,6 +220,15 @@ try {
   console.log('Experience UI PASS', fixture.dir);
 } catch (error) {
   console.error(error);
+  if (page && !page.isClosed()) {
+    try {
+      const diagnostics = await page.evaluate(() => window.desktop.invoke('diagnostics'));
+      await fs.writeFile(path.join(output, 'experience-ui-failure.json'), diagnostics);
+      console.error('Experience UI diagnostics:', diagnostics);
+    } catch (diagnosticError) {
+      console.error('Could not capture experience UI diagnostics:', diagnosticError);
+    }
+  }
   if (page && !page.isClosed())
     await page.screenshot({ path: path.join(output, 'experience-ui-failure.png') });
   throw error;
