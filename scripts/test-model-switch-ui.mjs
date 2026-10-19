@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { prepareRealPiFixture } from '../tests/support/local-provider.ts';
+import { modelSwitchReady } from './model-switch-readiness.mjs';
 
 process.env.PI_OFFLINE = '1';
 const requests = [];
@@ -101,39 +102,7 @@ const observeModelSwitchState = () =>
     window.modelSwitchState = state;
     if (runtime.sessionId) window.modelSwitchRuntimes.set(runtime.sessionId, runtime);
   });
-// Playwright 1.64 checks predicate truthiness before awaiting it: return a boolean,
-// never a Promise, and verify the intended session rather than whichever is current.
-function modelSwitchReady({
-  id,
-  title,
-  status,
-  modelId,
-  nextModelId,
-  connected,
-  readyToType,
-  draft,
-  canSend,
-}) {
-  const runtime = window.modelSwitchRuntimes.get(id);
-  const input = document.querySelector('textarea[aria-label="任务输入"]');
-  const send = document.querySelector('.send-button');
-  return Boolean(
-    window.modelSwitchState?.selectedSessionId === id &&
-    runtime?.sessionId === id &&
-    (status === undefined || runtime.status === status) &&
-    (modelId === undefined || runtime.model?.id === modelId) &&
-    (nextModelId === undefined || runtime.nextTask?.model?.id === nextModelId) &&
-    (connected === undefined || runtime.connected === connected) &&
-    (title === undefined ||
-      (document.querySelector('.workspace-title h1')?.textContent === title &&
-        document
-          .querySelector(`.session-row[data-session-id="${id}"] > button`)
-          ?.getAttribute('aria-current') === 'page')) &&
-    (!readyToType || (input && !input.disabled && send && !send.querySelector('.spin'))) &&
-    (draft === undefined || input?.value === draft) &&
-    (!canSend || (send && !send.disabled)),
-  );
-}
+
 try {
   app = await electron.launch({
     executablePath: process.env.PI_DESKTOP_EXE,
@@ -146,7 +115,24 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   await observeModelSwitchState();
+  // A visible composer and bootstrap response can precede Pi's model/capability handshake.
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    title: f.store.session(f.sessionId).title,
+    modelId: 'local-e2e',
+    connected: true,
+    status: 'idle',
+    supportsThinking: 'low',
+    readyToType: true,
+  });
   await page.evaluate((id) => window.desktop.invoke('setSessionThinking', id, 'low'), f.sessionId);
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    modelId: 'local-e2e',
+    connected: true,
+    status: 'idle',
+    thinking: 'low',
+  });
   await page.evaluate(
     (id) => window.desktop.invoke('send', id, 'MODEL_SWITCH_DURING_RESPONSE', [], 'steer'),
     f.sessionId,
@@ -162,8 +148,19 @@ try {
     modelId: 'local-e2e',
     nextModelId: 'local-next',
     status: 'running',
+    connected: true,
+    supportsThinking: 'high',
+    readyToType: true,
   });
   await page.evaluate((id) => window.desktop.invoke('setSessionThinking', id, 'high'), f.sessionId);
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    modelId: 'local-e2e',
+    nextModelId: 'local-next',
+    status: 'running',
+    thinking: 'low',
+    nextThinking: 'high',
+  });
   await page.evaluate(
     (id) => window.desktop.invoke('send', id, 'MODEL_SWITCH_SUPPLEMENT', [], 'steer'),
     f.sessionId,
@@ -176,9 +173,28 @@ try {
   assert.equal(await selector.isEnabled(), true);
   assert.equal(await page.getByRole('button', { name: '保存设置', exact: true }).isEnabled(), true);
   await selector.selectOption('local-e2e::local-e2e');
-  await page.waitForFunction(() => !document.querySelector('select[aria-label="选择模型"]')?.disabled);
+  // Running-task selectors stay enabled, so enabled alone cannot acknowledge the change.
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    status: 'running',
+    modelId: 'local-e2e',
+    nextModelId: 'local-e2e',
+    savedModelId: 'local-e2e',
+    selectorValue: 'local-e2e::local-e2e',
+    nextThinking: 'high',
+    readyToType: true,
+  });
   await selector.selectOption('local-e2e::local-next');
-  await page.waitForFunction(() => !document.querySelector('select[aria-label="选择模型"]')?.disabled);
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    status: 'running',
+    modelId: 'local-e2e',
+    nextModelId: 'local-next',
+    savedModelId: 'local-next',
+    selectorValue: 'local-e2e::local-next',
+    nextThinking: 'high',
+    readyToType: true,
+  });
   await assert.rejects(
     page.evaluate(
       (id) => window.desktop.invoke('setSessionModel', id, 'local-e2e', 'missing-model'),
@@ -222,14 +238,26 @@ try {
   await page.waitForFunction(modelSwitchReady, {
     id: other.id,
     nextModelId: 'local-e2e',
+    savedModelId: 'local-e2e',
     status: 'running',
+    connected: true,
+    readyToType: true,
   });
   // Recreate the renderer while both processes are quiet but still running.
   await page.reload();
   await observeModelSwitchState();
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    title: other.title,
+    connected: true,
+    status: 'running',
+    nextModelId: 'local-e2e',
+    readyToType: true,
+  });
   await page.getByText('CONCURRENT_RESPONSE_B', { exact: true }).waitFor();
   await page.getByRole('button', { name: '停止任务', exact: true }).click();
   await page.locator('.run-meta .stopped').waitFor();
+  await page.waitForFunction(modelSwitchReady, { id: other.id, connected: true, status: 'stopped' });
   const stateWithBoth = await page.evaluate(() => window.desktop.invoke('bootstrap'));
   assert.equal(
     stateWithBoth.state.sessions.find((session) => session.id === f.sessionId).lastStatus,
@@ -237,6 +265,17 @@ try {
   );
   const firstTitle = stateWithBoth.state.sessions.find((session) => session.id === f.sessionId).title;
   await page.getByRole('button', { name: firstTitle, exact: true }).click();
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    title: firstTitle,
+    connected: true,
+    status: 'running',
+    modelId: 'local-e2e',
+    nextModelId: 'local-next',
+    thinking: 'low',
+    nextThinking: 'high',
+    readyToType: true,
+  });
   await page.getByText('CURRENT_RESPONSE_A', { exact: true }).waitFor();
   const stillRunning = await page.evaluate(() => window.desktop.invoke('bootstrap'));
   assert.equal(stillRunning.runtime.model.id, 'local-e2e');
@@ -246,6 +285,13 @@ try {
 
   releaseResponse();
   await page.locator('.run-meta .completed').waitFor();
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    connected: true,
+    status: 'completed',
+    modelId: 'local-e2e',
+    thinking: 'low',
+  });
   assert.deepEqual(
     requests.filter((request) => !request.otherRequest).map((request) => request.model),
     ['local-e2e', 'local-e2e'],
@@ -256,6 +302,7 @@ try {
   );
   const result = await page.evaluate(() => window.desktop.invoke('bootstrap'));
   assert.equal(result.runtime.status, 'completed', result.runtime.error);
+  assert.equal(result.runtime.error, undefined);
   const replies = result.runtime.messages.filter((message) => message.role === 'assistant');
   assert.deepEqual(
     replies.map((message) => message.model),
@@ -266,6 +313,7 @@ try {
     id: f.sessionId,
     modelId: 'local-next',
     status: 'completed',
+    thinking: 'high',
   });
   assert.equal(requests.at(-1).model, 'local-next');
   assert.equal(requests.at(-1).reasoning_effort, 'high');
@@ -277,6 +325,7 @@ try {
     status: 'stopped',
     readyToType: true,
   });
+  assert.equal(await page.getByRole('alert').count(), 0, 'stopped B must not hide a failed stop operation');
   await page.getByRole('textbox', { name: '任务输入' }).fill('B_AFTER_STOP');
   await page.waitForFunction(modelSwitchReady, {
     id: other.id,
@@ -285,8 +334,14 @@ try {
     canSend: true,
   });
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
-  await page.waitForFunction(modelSwitchReady, { id: other.id, status: 'completed' });
-  assert.equal((await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime.model.id, 'local-e2e');
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    status: 'completed',
+    modelId: 'local-e2e',
+  });
+  const otherResult = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  assert.equal(otherResult.runtime.model.id, 'local-e2e');
+  assert.equal(otherResult.runtime.error, undefined);
   assert.equal(requests.at(-1).model, 'local-e2e');
   assert.equal(
     requests.filter((request) => request.otherRequest).length,
@@ -296,6 +351,8 @@ try {
   const standalone = await page.evaluate(() => window.desktop.invoke('newSession'));
   await page.waitForFunction(modelSwitchReady, {
     id: standalone.id,
+    title: standalone.title,
+    readyToType: true,
     connected: true,
     status: 'idle',
   });
@@ -326,6 +383,15 @@ try {
   await features.getByRole('heading', { name: '当前会话', exact: true }).waitFor();
   assert.equal(await features.getByRole('button', { name: '克隆会话', exact: true }).count(), 0);
   assert.equal(await features.getByRole('button', { name: '导出 HTML', exact: true }).count(), 0);
+  const finalErrors = await page.evaluate(
+    (ids) => ids.map((id) => ({ id, error: window.modelSwitchRuntimes.get(id)?.error })),
+    [f.sessionId, other.id],
+  );
+  assert.ok(
+    finalErrors.every(({ error }) => error === undefined),
+    JSON.stringify(finalErrors),
+  );
+  assert.equal(await page.getByRole('alert').count(), 0);
   assert.deepEqual(errors, []);
   console.log(
     'PASS real Pi preserves model/thinking through tool continuation and runtime supplements; new user task uses the saved choice',
@@ -346,12 +412,15 @@ try {
         selectedSessionId: window.modelSwitchState?.selectedSessionId,
         sessions: window.modelSwitchState?.sessions.map(({ id, title, draft }) => ({ id, title, draft })),
         runtimes: [...(window.modelSwitchRuntimes?.values() ?? [])].map(
-          ({ sessionId, status, connected, crash, model, nextTask }) => ({
+          ({ sessionId, status, connected, crash, error, model, thinking, thinkingLevels, nextTask }) => ({
             sessionId,
             status,
             connected,
             crash,
+            error,
             model,
+            thinking,
+            thinkingLevels,
             nextTask,
           }),
         ),
