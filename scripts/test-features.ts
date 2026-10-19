@@ -19,11 +19,24 @@ async function until(fn: () => boolean) {
     await new Promise((r) => setTimeout(r, 40));
   }
 }
+async function assertEmptyExport(id: string) {
+  for (const format of ['html', 'jsonl'] as const)
+    await assert.rejects(s.captureExport(id, format, path.join(f.dir, 'empty.' + format)), {
+      message: '会话尚未产生可导出的内容',
+    });
+}
 try {
   const originalSession = f.store.session(f.sessionId);
   originalSession.updatedAt = 1;
+  await assertEmptyExport(f.sessionId);
   await s.connect(f.sessionId);
   assert.equal(originalSession.updatedAt, 1, 'connecting is not conversation activity');
+  assert.ok(originalSession.file, 'Pi allocates a path before the first message');
+  await assert.rejects(fs.stat(originalSession.file), { code: 'ENOENT' });
+  assert.equal(s.runtime.messages.length, 0);
+  await assertEmptyExport(f.sessionId);
+  assert.equal(provider.requests.length, 0, 'empty exports must not send a model request');
+  console.log('PASS real Pi empty exports before and after explicit connection');
   await s.send(f.sessionId, 'IMAGE_E2E', [], 'steer', [
     { id: 'image', name: 'image.png', data: png, mimeType: 'image/png' },
   ]);
@@ -40,6 +53,13 @@ try {
   assert.ok(
     s.runtime.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'image')),
   );
+  const exported = (await s.captureExport(f.sessionId, 'jsonl', path.join(f.dir, 'session.jsonl')))
+    .toString()
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.ok(exported.some((entry) => entry.message?.role === 'user'));
+  assert.ok(exported.some((entry) => entry.message?.role === 'assistant'));
   console.log('PASS real Pi image delivery and history');
   await s.send(f.sessionId, 'SECOND_MESSAGE', [], 'steer');
   await until(() => !busy(s.runtime.status));
@@ -121,8 +141,10 @@ try {
   await s.admin(f.sessionId, 'toggle_resource', { resource: extension, enabled: true });
   assert.ok(s.runtime.commands.some((c) => c.name === 'gui-select'));
   console.log('PASS actual extension disable/re-enable and reload');
-  await s.exportHtml(f.sessionId, path.join(f.dir, 'session.html'));
-  assert.match(await fs.readFile(path.join(f.dir, 'session.html'), 'utf8'), /<!DOCTYPE html>/i);
+  assert.match(
+    (await s.captureExport(f.sessionId, 'html', path.join(f.dir, 'session.html'))).toString(),
+    /<!DOCTYPE html>/i,
+  );
   const settings = await config.read(f.sessionId, 'settings', false);
   const value = JSON.parse(settings.text);
   value.compaction = { enabled: false, keepRecentTokens: 1, reserveTokens: 1024 };
@@ -144,7 +166,14 @@ try {
   assert.ok(s.runtime.messages.some((m) => messageText(m).includes('BRANCHED_MESSAGE')));
   console.log('PASS real HTML export and model-backed manual compaction');
   const chat = f.store.createSession();
+  const beforeEmptyExport = provider.requests.length;
+  await assertEmptyExport(chat.id);
   await s.connect(chat.id);
+  assert.ok(chat.file);
+  await assert.rejects(fs.stat(chat.file), { code: 'ENOENT' });
+  await assertEmptyExport(chat.id);
+  assert.equal(provider.requests.length, beforeEmptyExport);
+  console.log('PASS real Pi standalone empty exports after explicit connection');
   await s.send(chat.id, '!printf STANDALONE_TOOLS', [], 'steer');
   assert.ok(s.runtime.messages.some((m) => String(m.output).includes('STANDALONE_TOOLS')));
   assert.ok(s.runtime.commands.some((c) => c.name === 'gui-select'));

@@ -38,7 +38,7 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 
 ## Features
 
-- **Visible agent workflow** — Streamed thinking, tool calls with arguments and exit status, inline diffs for every edit, plus context usage, tokens and cost.
+- **Visible agent workflow** — Streamed thinking, tool calls with arguments and exit status, inline diffs for every edit, plus estimated current context/window capacity, clearly labeled cumulative session tokens, cache breakdown and estimated cost.
 - **Image attachments** — Paste or drop images even when the system omits their file type; selecting a project image through `@` also attaches the image. Supports PNG, JPEG, WebP and GIF, up to 8 images, 8 MiB each and 16 MiB combined.
 - **Per-turn undo** — In Git projects, a snapshot is taken before each run (stored outside your repo's `.git`). Undo a whole turn or roll back individual files. Side effects of shell commands are not covered.
 - **Tool approval** — Choose _Auto_, _Confirm changes_ or _Read-only_ per session. Approve once, always allow for the session, or deny with a reason.
@@ -47,7 +47,7 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 - **Quick chat or full project** — Start a standalone chat without a repository, or open a project to get the file tree, Git changes and snapshots.
 - **Concurrent conversations** — Each connected chat has its own Pi process. Switch chats while tasks continue. Model and reasoning changes apply to the next new user task; tool continuations and mid-run additions retain the current settings. A double <kbd>Esc</kbd> stops only the current chat.
 - **Steer while it runs** — Add instructions mid-run (steer) or queue follow-ups within each conversation.
-- **Clear retry progress** — See retry backoff and response wait time, cancel an active retry request, and distinguish recovered attempts from failures in the run log.
+- **Clear retry progress** — See retry backoff and response wait time, cancel an active retry request, and distinguish recovered attempts from failures in the run log. Consecutive empty error replies show the latest failure once, with earlier attempts expandable.
 - **Keyboard-first** — Global search across sessions, in-session find, and shortcuts for every panel.
 - **Consistent appearance** — Light, dark and system themes cover the desktop title bar and confirmations while retaining native window controls. Pi configuration stays editable during a run; saving waits until it is safe and reports separately when a saved change could not yet be applied.
 

@@ -341,7 +341,9 @@ mark,
   position: absolute;
   right: 0;
   bottom: calc(100% + 10px);
-  width: 250px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(560px, 70vh);
+  overflow: auto;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -357,6 +359,10 @@ mark,
 .context-popover > span {
   color: var(--muted);
   font-size: 11px;
+}
+.context-popover > span > strong {
+  color: var(--ink);
+  font-weight: 500;
 }
 .context-popover button {
   text-align: left;
@@ -433,4 +439,17 @@ mark,
 }
 .lightbox-next {
   right: 16px;
+}
+.retry-error-history {
+  margin: -8px 0 16px 38px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.retry-error-history > summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.retry-error-history-content {
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
 }

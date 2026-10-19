@@ -204,7 +204,7 @@ export function ComposerFooter(props: ComposerProps) {
                 : `Enter 发送 · Shift+Enter 换行 · ↑ 上一条提问 · ${shortcut('/')} 快捷键。独立对话支持 Pi 工具，工作目录可在 Pi 功能中打开。`
             }
           >
-            {ownRuntime && runtime.stats?.tokens ? (
+            {ownRuntime && runtime.stats ? (
               <ContextMeter
                 stats={runtime.stats}
                 open={() => setFeatureTab('session')}

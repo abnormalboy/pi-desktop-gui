@@ -119,6 +119,8 @@ export class AgentService extends EventEmitter {
   private processAgentDir?: string;
   private switchEvents?: any[];
   private switchStarted = false;
+  // Pi allocates a path before its first message creates the file. Never infer this on resume.
+  private freshSessionFile?: string;
   lastSwitch?: { mode: 'reuse' | 'restart'; elapsedMs: number; reason?: string; pid?: number };
   recentModelErrors: { kind: ModelErrorKind; at: number }[] = [];
   private errorCounts = new Map<string, { kind: ModelErrorKind; count: number }>();
@@ -557,6 +559,7 @@ export class AgentService extends EventEmitter {
         break;
       // agent_end is deliberately not a terminal state: recovery and queued work may follow.
     }
+    if (r.messages.length) this.freshSessionFile = undefined;
     if (!this.connecting && sessionActivityEvents.has(record.type)) this.activity();
     const dropped = Math.max(0, r.notices.length - 20);
     if (dropped) {
@@ -716,11 +719,18 @@ export class AgentService extends EventEmitter {
     this.publish();
   }
   private async readTranscript(file: string | undefined, fallback: Message[]): Promise<Message[]> {
+    const runtime = this.runtime;
+    if (fallback.length && this.freshSessionFile === file) this.freshSessionFile = undefined;
     if (file) {
       try {
-        return (await readSessionFile(file)).messages.map(redactMessageError);
+        const transcript = await readSessionFile(file);
+        if (this.runtime === runtime && this.freshSessionFile === file) this.freshSessionFile = undefined;
+        return transcript.messages.map(redactMessageError);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          if (this.runtime === runtime && this.freshSessionFile === file) this.freshSessionFile = undefined;
+          throw error;
+        }
       }
     }
     return fallback.map(redactMessageError);
@@ -863,6 +873,7 @@ export class AgentService extends EventEmitter {
     }
   }
   private resetSession(sessionId: string, cwd: string) {
+    this.freshSessionFile = undefined;
     this.checkpointRecorder.reset();
     this.activeWriteTargets.clear();
     this.clearDialogs();
@@ -987,6 +998,7 @@ export class AgentService extends EventEmitter {
     let state = await rpc.request('get_state', {}, 120000);
     assertActive();
     if (state.sessionFile) session.file = state.sessionFile;
+    if (!resuming && !this.runtime.messages.length) this.freshSessionFile = state.sessionFile;
     this.runtime.model = displayModel(state.model);
     this.runtime.thinking = state.thinkingLevel;
     const [messages] = await Promise.all([rpc.request('get_messages'), this.refreshCapabilities()]);
@@ -1653,16 +1665,35 @@ export class AgentService extends EventEmitter {
     return this.readTask(id, (rpc) => rpc.request('export_html', { outputPath }, 120000));
   }
   async captureExport(id: string, format: 'html' | 'jsonl', temporary: string): Promise<Buffer> {
-    const file = this.store.session(id).file;
+    const session = this.store.session(id);
+    const file = session.file;
     if (!file) throw new Error('会话尚未产生可导出的内容');
-    const current = this.runtime.sessionId === id && busy(this.runtime.status);
-    const message = current ? structuredClone(this.runtime.messages.at(-1)) : undefined;
+    const runtime = this.runtime;
+    const isFreshEmpty = () =>
+      this.runtime === runtime &&
+      runtime.sessionId === id &&
+      runtime.connected &&
+      !busy(runtime.status) &&
+      !runtime.messages.length &&
+      session.file === file &&
+      this.freshSessionFile === file;
+    const freshEmpty = isFreshEmpty();
+    const current = runtime.sessionId === id && busy(runtime.status);
+    const message = current ? structuredClone(runtime.messages.at(-1)) : undefined;
     const output = current
-      ? this.runtime.tools
+      ? runtime.tools
           .filter((tool) => tool.status === 'running' && tool.output)
           .map((tool) => ({ name: tool.name, output: tool.output }))
       : [];
-    const raw = await fs.readFile(file, 'utf8');
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && freshEmpty && isFreshEmpty())
+        throw new Error('会话尚未产生可导出的内容');
+      throw error;
+    }
+    if (this.runtime === runtime && this.freshSessionFile === file) this.freshSessionFile = undefined;
     const entries = raw
       .trim()
       .split(/\r?\n/)

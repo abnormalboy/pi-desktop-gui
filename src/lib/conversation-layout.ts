@@ -19,8 +19,20 @@ export function hideRecoveredErrors(messages: Message[]): Message[] {
   }
   return result.reverse();
 }
+// Text-less tool, thinking, image and unknown blocks may carry meaningful work.
+// Only genuinely empty failed replies can share a compact presentation.
+function isEmptyFailure(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    message.stopReason === 'error' &&
+    Boolean(message.errorMessage) &&
+    (typeof message.content === 'string'
+      ? !message.content.trim()
+      : message.content.every((block) => block.type === 'text' && !block.text?.trim()))
+  );
+}
 export type ConversationItem =
-  { kind: 'message'; index: number } | { kind: 'group'; id: string; indices: number[] };
+  { kind: 'message'; index: number } | { kind: 'group' | 'errors'; id: string; indices: number[] };
 export function groupConversation(
   messages: Message[],
   toolFor: (message: Message) => ToolActivity,
@@ -40,6 +52,15 @@ export function groupConversation(
   };
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
+    if (isEmptyFailure(message)) {
+      flush();
+      const indices = [index];
+      while (index + 1 < messages.length && isEmptyFailure(messages[index + 1])) indices.push(++index);
+      if (indices.length > 1)
+        result.push({ kind: 'errors', id: `errors:${message.timestamp ?? ''}:${indices[0]}`, indices });
+      else result.push({ kind: 'message', index });
+      continue;
+    }
     if (message.role === 'toolResult') {
       const tool = toolFor(message);
       if (

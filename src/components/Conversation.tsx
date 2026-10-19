@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { limitForMessage, searchSession } from '../lib/session-search';
 import { conversationTurns, groupConversation } from '../lib/conversation-layout';
 import { ToolGroupCard } from './conversation/ToolGroupCard';
+import { RetryErrorGroup } from './conversation/RetryErrorGroup';
 import { SearchHighlight } from './conversation/SearchHighlight';
 import { sessionModelState } from '../lib/session-model';
 import '../styles/conversation-v014.css';
@@ -390,24 +391,34 @@ export function Conversation(
           {items.map((item) =>
             item.kind === 'message'
               ? item.index >= startIndex && renderMessage(item.index)
-              : item.indices.at(-1)! >= startIndex && (
-                  <ToolGroupCard
-                    key={item.id}
-                    tools={item.indices.map((index) => messageContext.toolFor(messages[index]))}
-                    expanded={
-                      expanded.includes(item.id) || item.indices.includes(activeMatch?.messageIndex ?? -1)
-                    }
-                    onToggle={(open) => {
-                      if (
-                        !item.indices.includes(activeMatch?.messageIndex ?? -1) &&
-                        open !== expanded.includes(item.id)
-                      )
-                        toggleTool(item.id, open);
-                    }}
-                  >
-                    {item.indices.map(renderMessage)}
-                  </ToolGroupCard>
-                ),
+              : item.kind === 'errors'
+                ? item.indices.at(-1)! >= startIndex && (
+                    <RetryErrorGroup
+                      key={`${selected?.id}:${item.id}`}
+                      messages={messages}
+                      indices={item.indices}
+                      activeIndex={activeMatch?.messageIndex}
+                      renderMessage={renderMessage}
+                    />
+                  )
+                : item.indices.at(-1)! >= startIndex && (
+                    <ToolGroupCard
+                      key={item.id}
+                      tools={item.indices.map((index) => messageContext.toolFor(messages[index]))}
+                      expanded={
+                        expanded.includes(item.id) || item.indices.includes(activeMatch?.messageIndex ?? -1)
+                      }
+                      onToggle={(open) => {
+                        if (
+                          !item.indices.includes(activeMatch?.messageIndex ?? -1) &&
+                          open !== expanded.includes(item.id)
+                        )
+                          toggleTool(item.id, open);
+                      }}
+                    >
+                      {item.indices.map(renderMessage)}
+                    </ToolGroupCard>
+                  ),
           )}
           {ownRuntime &&
             runtime.tools

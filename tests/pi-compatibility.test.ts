@@ -85,7 +85,17 @@ test('documented RPC fields are checked at the adapter, without guessing renamed
       cost: 0.1,
       contextUsage: { tokens: null, percent: null, contextWindow: 32768 },
     }),
-    { tokens: 12, cost: 0.1, contextPercent: undefined, contextTokens: undefined, contextWindow: 32768 },
+    {
+      tokens: 12,
+      inputTokens: undefined,
+      outputTokens: undefined,
+      cacheReadTokens: undefined,
+      cacheWriteTokens: undefined,
+      cost: 0.1,
+      contextPercent: undefined,
+      contextTokens: undefined,
+      contextWindow: 32768,
+    },
   );
   assert.throws(() => sessionStats({ tokens: { total: '12' } }), /不兼容/);
 });

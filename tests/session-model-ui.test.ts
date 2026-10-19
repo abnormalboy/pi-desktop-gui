@@ -163,3 +163,32 @@ test('connection progress is shown without a task timer; real task startup retai
   assert.match(starting, /class="elapsed"/);
   assert.doesNotMatch(starting, /正在连接 Pi/);
 });
+
+test('composer exposes zero and partial stats, while keeping absent or another session stats hidden', () => {
+  const footer = (stats: Runtime['stats'], ownRuntime = true) =>
+    renderToStaticMarkup(
+      React.createElement(ComposerFooter, {
+        runtime: { ...emptyRuntime(), sessionId: session.id, connected: true, stats },
+        ownRuntime,
+        ownRunning: false,
+        selected: session,
+        pending: false,
+        sessionEnabled: true,
+        running: false,
+      } as ComposerProps),
+    );
+  const zero = footer({ tokens: 0, cost: 0, contextTokens: 0, contextWindow: 10000, contextPercent: 0 });
+  assert.match(zero, /class="context-meter /);
+  assert.match(zero, /上下文 0% \(0 \/ 10k\)/);
+  assert.match(zero, /累计 0 tokens/);
+  assert.match(zero, /估算 \$0\.0000/);
+  const partial = footer({ contextTokens: 500, contextWindow: 10000, contextPercent: 5 });
+  assert.match(partial, /上下文 5% \(500 \/ 10k\)/);
+  assert.match(partial, /累计 未知 tokens/);
+  assert.match(footer({ contextWindow: 10000 }), /上下文 未知 \/ 10k/);
+  assert.match(footer({}), /累计 未知 tokens/);
+  for (const markup of [footer(undefined), footer({ tokens: 12345 }, false)]) {
+    assert.doesNotMatch(markup, /context-meter/);
+    assert.match(markup, /shortcut-link/);
+  }
+});

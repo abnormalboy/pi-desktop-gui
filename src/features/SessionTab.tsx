@@ -3,6 +3,7 @@ import { useState } from 'react';
 import '../styles/management.css';
 const api = window.desktop;
 import type { FeatureModel } from './usePiFeatures';
+import { SessionUsageDetails } from '../components/conversation/Usage';
 export function SessionTab({
   session,
   runtime,
@@ -65,17 +66,13 @@ export function SessionTab({
           </button>
         )}
       </div>
-      <div className="feature-stats">
-        <span>
-          累计用量 <strong>{runtime.stats?.tokens?.toLocaleString() ?? '—'} tokens</strong>
-        </span>
-        <span>
-          累计费用 <strong>${runtime.stats?.cost?.toFixed(4) ?? '—'}</strong>
-        </span>
-        <span>
-          上下文占用 <strong>{runtime.stats?.contextPercent?.toFixed(1) ?? '—'}%</strong>
-        </span>
+      <div className="feature-stats session-usage-details" aria-label="当前会话用量">
+        <SessionUsageDetails stats={runtime.stats ?? {}} />
       </div>
+      <p className="settings-copy">
+        累计用量包含已压缩的历史及工具、压缩和分支摘要的用量。窗口剩余为估算，自动压缩可能提前触发。
+        缓存读取占输入按累计缓存读取 /（输入 + 缓存读取 + 缓存写入）计算。
+      </p>
       <section className="usage-summary" aria-label="本地用量汇总">
         <h3>本地用量汇总</h3>
         <p className="settings-copy">

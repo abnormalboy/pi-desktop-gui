@@ -225,7 +225,12 @@ export interface Runtime {
   startedAt?: number;
   connected: boolean;
   stats?: {
+    /** Cumulative usage across the full Pi session, including compacted history. */
     tokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
     cost?: number;
     contextPercent?: number;
     contextTokens?: number;

@@ -1,5 +1,14 @@
 import { type Runtime, type Message } from '../../../shared/types';
 import { useEffect, useRef, useState } from 'react';
+import { contextUsageLabel, sessionUsageRows } from '../../lib/context-usage';
+
+export function SessionUsageDetails({ stats }: { stats: NonNullable<Runtime['stats']> }) {
+  return sessionUsageRows(stats).map(({ label, value, title }) => (
+    <span key={label} title={title}>
+      {label} <strong>{value}</strong>
+    </span>
+  ));
+}
 
 export function ReplyMeta({ message }: { message: Message }) {
   const usage = message.usage as
@@ -72,30 +81,22 @@ export function ContextMeter({
         className={'context-meter ' + level}
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
-        title={
-          (percent !== undefined && stats.contextTokens && stats.contextWindow
-            ? `上下文 ${stats.contextTokens.toLocaleString()} / ${stats.contextWindow.toLocaleString()} tokens\n`
-            : '') +
-          `累计 ${stats.tokens?.toLocaleString() ?? 0} tokens` +
-          (stats.cost ? ` · $${stats.cost.toFixed(4)}` : '') +
-          '\n点击查看会话与上下文'
-        }
+        title={`当前上下文（估算）${contextUsageLabel(stats)}\n累计 ${stats.tokens?.toLocaleString() ?? '未知'} tokens${stats.cost === undefined ? '' : ` · 估算 $${stats.cost.toFixed(4)}`}\n点击查看会话与上下文`}
       >
         {percent !== undefined && (
-          <>
-            <span className="meter" aria-hidden="true">
-              <i style={{ width: Math.min(100, percent) + '%' }} />
-            </span>
-            <span>上下文 {Math.round(percent)}%</span>
-          </>
+          <span className="meter" aria-hidden="true">
+            <i style={{ width: Math.min(100, percent) + '%' }} />
+          </span>
         )}
-        <span>{(stats.tokens ?? 0).toLocaleString()} tokens</span>
-        {!!stats.cost && <span>${stats.cost < 0.01 ? stats.cost.toFixed(4) : stats.cost.toFixed(2)}</span>}
+        <span>上下文 {contextUsageLabel(stats, true)}</span>
+        <span>累计 {stats.tokens?.toLocaleString() ?? '未知'} tokens</span>
+        {stats.cost !== undefined && (
+          <span>估算 ${stats.cost < 0.01 ? stats.cost.toFixed(4) : stats.cost.toFixed(2)}</span>
+        )}
       </button>
       {expanded && (
         <span className="context-popover">
-          <strong>上下文 {percent === undefined ? '未知' : `${Math.round(percent)}%`}</strong>
-          <span>累计 {(stats.tokens ?? 0).toLocaleString()} tokens</span>
+          <SessionUsageDetails stats={stats} />
           <button
             disabled={disabled || !compact}
             title={disabled ? '本会话正在执行任务或暂时无法修改历史，请停止相关任务后压缩' : ''}

@@ -15,7 +15,17 @@ const runtime = {
   sessionId: fixture.sessionId,
   connected: true,
   status: 'completed',
-  stats: { tokens: 12000, contextPercent: 80, contextTokens: 8000, contextWindow: 10000, cost: 0.02 },
+  stats: {
+    tokens: 12000,
+    inputTokens: 4000,
+    outputTokens: 2000,
+    cacheReadTokens: 5000,
+    cacheWriteTokens: 1000,
+    contextPercent: 80,
+    contextTokens: 8000,
+    contextWindow: 10000,
+    cost: 0.02,
+  },
   commands: [
     { name: 'check-diff', source: 'prompt', argumentHint: '<模块名> [关注点]', description: '检查模块' },
   ],
@@ -377,13 +387,78 @@ try {
     globalThis.conversationCalls.filter((call) => call.method === 'send').at(-1),
   );
   assert.equal(template.args[1], '/check-diff "src/hello world" errors');
+  assert.match(
+    await page.locator('.context-meter').textContent(),
+    /上下文 80% \(8k \/ 10k\).*累计 12,000 tokens/,
+  );
+  await page.locator('.context-meter.mid').click();
+  const usageText = await page.locator('.context-popover').innerText();
+  for (const text of [
+    '8,000 / 10,000 tokens (80.0%)',
+    '窗口剩余 2,000 tokens',
+    '会话累计 12,000 tokens',
+    '累计缓存读取 5,000 tokens',
+    '累计缓存写入 1,000 tokens',
+    '缓存读取占输入 50.0%',
+    '估算费用 $0.0200',
+  ])
+    assert.ok(usageText.includes(text), text);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.context-popover').count(), 0);
+  await page.locator('.context-meter.mid').click();
+  await input.click();
+  assert.equal(await page.locator('.context-popover').count(), 0);
+  await page.locator('.context-meter.mid').click();
+  await page.getByRole('button', { name: '查看会话与本地用量' }).click();
+  const usageDialog = page.getByRole('dialog', { name: 'Pi 功能' });
+  await usageDialog.getByLabel('当前会话用量').waitFor();
+  assert.match(await usageDialog.getByLabel('当前会话用量').innerText(), /8,000 \/ 10,000 tokens \(80\.0%\)/);
+  assert.match(
+    await usageDialog.getByLabel('当前会话用量').innerText(),
+    /累计输入（不含缓存）\s+4,000 tokens/,
+  );
+  await usageDialog.getByRole('button', { name: '关闭', exact: true }).last().click();
+  assert.equal(await page.locator('.context-popover').count(), 0);
+  const showStats = async (stats) => {
+    await app.evaluate(
+      ({ BrowserWindow }, runtime) =>
+        BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', { type: 'runtime', runtime }),
+      { ...runtime, stats },
+    );
+  };
+  await showStats({ tokens: 12000, contextWindow: 10000 });
+  await page.locator('.context-meter').filter({ hasText: '上下文 未知 / 10k' }).waitFor();
+  await page.locator('.context-meter').click();
+  assert.match(await page.locator('.context-popover').innerText(), /累计缓存读取 未知 tokens/);
+  assert.match(await page.locator('.context-popover').innerText(), /缓存读取占输入 未知/);
+  assert.match(await page.locator('.context-popover').innerText(), /估算费用 未知/);
+  assert.equal(await page.locator('.context-meter .meter').count(), 0);
+  await page.keyboard.press('Escape');
+  await showStats({
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cost: 0,
+    contextTokens: 0,
+    contextPercent: 0,
+    contextWindow: 10000,
+  });
+  await page.locator('.context-meter').filter({ hasText: '上下文 0% (0 / 10k)' }).waitFor();
+  assert.match(await page.locator('.context-meter').innerText(), /累计 0 tokens/);
+  await page.locator('.context-meter').click();
+  assert.match(await page.locator('.context-popover').innerText(), /缓存读取占输入 未知/);
+  assert.match(await page.locator('.context-popover').innerText(), /估算费用 \$0\.0000/);
+  await page.keyboard.press('Escape');
+  await showStats(runtime.stats);
   await page.locator('.context-meter.mid').click();
   await page.getByRole('button', { name: '立即压缩上下文' }).click();
   assert.equal(
     await app.evaluate(() => globalThis.conversationCalls.some((call) => call.method === 'compact')),
     true,
   );
-  console.log('PASS template parameters and context warning action');
+  console.log('PASS template parameters, labeled context/cache usage, popover dismissal and compact action');
 
   const pixel =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1XkAAAAASUVORK5CYII=';

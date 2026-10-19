@@ -48,6 +48,27 @@ try {
   const probe = await service.testConnection(sessionId);
   assert.equal(probe.text, 'OK');
   console.log('PASS actual Pi model probe');
+  const usageSession = store.createSession(projectId);
+  await service.connect(usageSession.id);
+  for (const turn of [1, 2]) {
+    await service.send(usageSession.id, `E2E_USAGE turn ${turn}`, [], 'steer');
+    await waitFor(
+      () => service.runtime.status === 'completed' && service.runtime.stats?.tokens === 120 * turn,
+    );
+    assert.deepEqual(service.runtime.stats, {
+      tokens: 120 * turn,
+      inputTokens: 30 * turn,
+      outputTokens: 20 * turn,
+      cacheReadTokens: 60 * turn,
+      cacheWriteTokens: 10 * turn,
+      cost: 0,
+      contextTokens: 120,
+      contextWindow: 32768,
+      contextPercent: (120 / 32768) * 100,
+    });
+  }
+  console.log('PASS actual Pi cumulative input/output/cache usage stays separate from current context');
+  await service.connect(sessionId);
   await service.send(sessionId, 'E2E_FILES：读取输入、写入输出并运行验证命令。', ['输入 文件.txt'], 'steer');
   await waitFor(() => ['completed', 'error'].includes(service.runtime.status));
   assert.equal(service.runtime.status, 'completed', service.runtime.error ?? '');

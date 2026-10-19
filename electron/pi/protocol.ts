@@ -26,7 +26,7 @@ const object = (value: unknown): value is Record<string, any> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 const model = (value: unknown) =>
   object(value) && typeof value.id === 'string' && typeof value.provider === 'string';
-const numbers = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
+const numbers = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 export function incompatible(command: string, detail: string): never {
   throw new Error(
     `Pi 返回的 ${command} 数据格式与当前桌面端不兼容（${detail}）。请在诊断中记录 Pi 版本及错误信息，更新 Pi Desktop 或 Pi 后重试。`,
@@ -102,11 +102,15 @@ export function sessionStats(value: unknown): Runtime['stats'] {
   const optionalNumber = (value: unknown, field: string) => {
     // Pi documents null usage immediately after compaction, until the next model response.
     if (value === undefined || value === null) return undefined;
-    if (!numbers(value)) incompatible('get_session_stats', field + ' 不是有效数字');
+    if (!numbers(value) || value < 0) incompatible('get_session_stats', field + ' 不是有效非负数字');
     return value as number;
   };
   return {
     tokens: optionalNumber(value.tokens?.total, 'tokens.total'),
+    inputTokens: optionalNumber(value.tokens?.input, 'tokens.input'),
+    outputTokens: optionalNumber(value.tokens?.output, 'tokens.output'),
+    cacheReadTokens: optionalNumber(value.tokens?.cacheRead, 'tokens.cacheRead'),
+    cacheWriteTokens: optionalNumber(value.tokens?.cacheWrite, 'tokens.cacheWrite'),
     cost: optionalNumber(value.cost, 'cost'),
     contextPercent: optionalNumber(value.contextUsage?.percent, 'contextUsage.percent'),
     contextTokens: optionalNumber(value.contextUsage?.tokens, 'contextUsage.tokens'),

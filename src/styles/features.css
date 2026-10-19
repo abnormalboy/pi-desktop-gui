@@ -15,6 +15,13 @@
   font-size: calc(17px * var(--font-scale));
   font-variant-numeric: tabular-nums;
 }
+.session-usage-details {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.session-usage-details strong {
+  overflow-wrap: anywhere;
+  font-size: calc(14px * var(--font-scale));
+}
 .theme-options > button.active {
   background: var(--surface);
   color: var(--ink);
@@ -135,6 +142,9 @@
   margin-right: -6px;
   border-radius: 6px;
   font-variant-numeric: tabular-nums;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 4px;
 }
 .composer-bottom .context-meter:hover {
   background: var(--hover);

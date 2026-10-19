@@ -44,6 +44,20 @@ export async function createLocalProvider(options: { holdSlowResponses?: boolean
       );
     const done = (reason = 'stop') => {
       chunk({}, reason);
+      if (prompt.startsWith('E2E_USAGE'))
+        res.write(
+          `data: ${JSON.stringify({
+            id: 'chatcmpl-local',
+            object: 'chat.completion.chunk',
+            choices: [],
+            usage: {
+              prompt_tokens: 100,
+              completion_tokens: 20,
+              total_tokens: 120,
+              prompt_tokens_details: { cached_tokens: 60, cache_write_tokens: 10 },
+            },
+          })}\n\n`,
+        );
       res.write('data: [DONE]\n\n');
       res.end();
     };
