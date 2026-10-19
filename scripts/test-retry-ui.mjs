@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { prepareRealPiFixture } from '../tests/support/local-provider.ts';
 import { createRetryProvider } from '../tests/support/retry-provider.ts';
+import { installRetryDisplayFixture } from '../tests/support/retry-display-fixture.mjs';
 
 process.env.PI_OFFLINE = '1';
 const provider = await createRetryProvider();
@@ -125,38 +126,16 @@ try {
   assert.equal(await page.locator('.runtime-notices p').count(), 1);
   await normalAfterRetry('failure');
   // Deterministic renderer fixtures exercise mixed errors and search; provider scenarios above use real Pi.
-  await app.evaluate(({ ipcMain }) => {
-    globalThis.retryDisplayActions = [];
-    const handler = ipcMain._invokeHandlers.get('desktop:invoke');
-    ipcMain.removeHandler('desktop:invoke');
-    ipcMain.handle('desktop:invoke', async (event, method, args) => {
-      if (method === 'readHistory' && globalThis.retryDisplayRuntime)
-        return globalThis.retryDisplayRuntime.messages;
-      if (method === 'messageAction') {
-        globalThis.retryDisplayActions.push(args);
-        return;
-      }
-      const result = await handler(event, method, args);
-      return method === 'bootstrap' && globalThis.retryDisplayRuntime
-        ? { ...result, runtime: globalThis.retryDisplayRuntime }
-        : result;
-    });
-  });
+  await app.evaluate(installRetryDisplayFixture, fixture.sessionId);
   const show = (messages, extra = {}) =>
-    app.evaluate(
-      ({ BrowserWindow }, runtime) => {
-        globalThis.retryDisplayRuntime = runtime;
-        BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', { type: 'runtime', runtime });
-      },
-      {
-        ...emptyRuntime(),
-        sessionId: fixture.sessionId,
-        connected: true,
-        status: 'error',
-        messages,
-        ...extra,
-      },
-    );
+    app.evaluate((_electron, runtime) => globalThis.retryDisplayFixture.publish(runtime), {
+      ...emptyRuntime(),
+      sessionId: fixture.sessionId,
+      connected: true,
+      status: 'error',
+      messages,
+      ...extra,
+    });
   const user = (content) => ({ role: 'user', content });
   const failure = (errorMessage, timestamp) => ({
     role: 'assistant',
@@ -191,8 +170,8 @@ try {
   await expect(page.locator('.retry-banner')).toHaveCount(0);
   await expect(inlineErrors).toHaveCount(1);
   await page.getByTitle('重新生成这条回复').click();
-  await wait(async () => (await app.evaluate(() => globalThis.retryDisplayActions.length)) === 1);
-  assert.deepEqual(await app.evaluate(() => globalThis.retryDisplayActions[0]), [
+  await wait(async () => (await app.evaluate(() => globalThis.retryDisplayFixture.actions.length)) === 1);
+  assert.deepEqual(await app.evaluate(() => globalThis.retryDisplayFixture.actions[0]), [
     fixture.sessionId,
     'regenerate',
     'assistant',
@@ -296,6 +275,55 @@ try {
   console.log('PASS retry exhaustion displays its final outcome with no busy retry banner');
 } catch (error) {
   await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
+  // Only local fixture state and bounded display diagnostics; never dump settings or credentials.
+  const fixtureState = await app
+    ?.evaluate(() => {
+      const fixture = globalThis.retryDisplayFixture;
+      const runtime = fixture?.runtime;
+      return {
+        active: Boolean(runtime),
+        ignoredEvents: fixture?.ignoredEvents ?? 0,
+        actionCount: fixture?.actions.length ?? 0,
+        status: runtime?.status,
+        connected: runtime?.connected,
+        retry: runtime?.retry && {
+          attempt: runtime.retry.attempt,
+          maxAttempts: runtime.retry.maxAttempts,
+          phase: runtime.retry.phase,
+        },
+        messages: runtime?.messages.map((message) => ({
+          role: message.role,
+          stopReason: message.stopReason,
+          timestamp: message.timestamp,
+          hasError: Boolean(message.errorMessage),
+        })),
+      };
+    })
+    .catch(() => ({ unavailable: true }));
+  const displayState = await page
+    ?.evaluate(() => ({
+      runStatus: document.querySelector('.run-meta')?.textContent?.slice(0, 300),
+      retryBanner: document.querySelector('.retry-banner')?.textContent?.slice(0, 300),
+      findQuery: document.querySelector('[aria-label="查找当前会话"]')?.value,
+      groups: [...document.querySelectorAll('.retry-error-history')].map((details) => ({
+        open: details.open,
+        summary: details.querySelector('summary')?.textContent,
+        messages: details.querySelectorAll('.message.assistant').length,
+      })),
+      messages: [...document.querySelectorAll('[data-message-index]')].map((element) => ({
+        index: element.getAttribute('data-message-index'),
+        active: element.classList.contains('search-active'),
+        visible: element.getClientRects().length > 0,
+        hasError: Boolean(element.querySelector('.inline-error')),
+      })),
+    }))
+    .catch(() => ({ unavailable: true }));
+  await fs
+    .writeFile(
+      path.join(output, 'failure-state.json'),
+      JSON.stringify({ failed: true, fixture: fixtureState, display: displayState }, null, 2),
+    )
+    .catch(() => {});
   throw error;
 } finally {
   await app?.close();
