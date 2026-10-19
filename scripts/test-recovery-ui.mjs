@@ -148,8 +148,10 @@ try {
   assert.match(await missingBanner.innerText(), /索引缺失.*已恢复到/);
   await missingBanner.getByRole('button', { name: '知道了' }).click();
   assert.equal(await missingBanner.count(), 0);
+  await page.evaluate((id) => window.desktop.invoke('connect', id), missing.sessionId);
   console.log('PASS restoring a missing index also shows the backup time and supports dismissal');
 } catch (error) {
+  console.error(error);
   if (page && !page.isClosed()) await page.screenshot({ path: path.join(output, 'recovery-ui-failure.png') });
   throw error;
 } finally {
@@ -164,6 +166,14 @@ try {
         );
       })
       .catch(() => {});
+    if (page && !page.isClosed()) {
+      const pendingExit = page.getByRole('dialog').filter({ hasText: 'Pi 仍在执行任务' });
+      if (await pendingExit.isVisible())
+        await pendingExit
+          .getByRole('button', { name: '停止并退出', exact: true })
+          .click()
+          .catch(() => {});
+    }
     await app.close();
   }
   await provider.close();
