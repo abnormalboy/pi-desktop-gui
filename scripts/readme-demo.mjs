@@ -20,7 +20,11 @@ try {
 
 const mock = () => {
   const listeners = new Set();
-  const emit = (event) => listeners.forEach((listener) => listener(structuredClone(event)));
+  let stateRevision = 0;
+  const emit = (event) => {
+    if (event.type === 'state') event = { ...event, revision: ++stateRevision };
+    listeners.forEach((listener) => listener(structuredClone(event)));
+  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const now = Date.now();
   const model = {
@@ -262,9 +266,11 @@ const mock = () => {
   }
 
   const handlers = {
+    navigationState: () => structuredClone({ state, revision: ++stateRevision }),
     bootstrap: () =>
       structuredClone({
         state,
+        revision: ++stateRevision,
         runtime,
         environment: {
           piPath: '/usr/local/bin/pi',

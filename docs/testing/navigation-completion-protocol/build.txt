@@ -1,0 +1,24 @@
+
+> pi-desktop-gui@0.14.21 build
+> tsc --noEmit && vite build && node scripts/build-main.mjs
+
+vite v8.3.4 building client environment for production...
+transforming...
+✓ 2267 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.65 kB │ gzip:   0.39 kB
+dist/assets/index-D2FQ3SVs.css   87.06 kB │ gzip:  16.17 kB
+dist/assets/index-B1t38svH.js   631.24 kB │ gzip: 198.98 kB
+
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 605ms
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

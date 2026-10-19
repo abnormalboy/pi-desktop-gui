@@ -1,0 +1,240 @@
+{
+  "passed": true,
+  "protocolEvidence": [
+    {
+      "phase": "C/C/B-busy",
+      "resultId": "bff71c3d-4038-4a0b-a586-23805da407d9",
+      "selected": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+      "main": [
+        {
+          "kind": "reply-send",
+          "phase": "C/C/B-busy",
+          "method": "detect",
+          "at": 1792412742306
+        },
+        {
+          "kind": "state-send",
+          "phase": "C/C/B-busy",
+          "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "at": 1792412742324
+        },
+        {
+          "kind": "state-send",
+          "phase": "C/C/B-busy",
+          "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "at": 1792412742325
+        },
+        {
+          "kind": "reply-send",
+          "phase": "C/C/B-busy",
+          "method": "newSession",
+          "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+          "at": 1792412742328
+        },
+        {
+          "kind": "reply-send",
+          "phase": "C/C/B-busy",
+          "method": "readHistory",
+          "at": 1792412744326
+        }
+      ],
+      "renderer": {
+        "events": [
+          {
+            "kind": "state",
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "phase": "C/C/B-busy",
+            "at": 1792412744321
+          },
+          {
+            "kind": "state",
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "phase": "C/C/B-busy",
+            "at": 1792412744329
+          }
+        ],
+        "unlock": {
+          "phase": "C/C/B-busy",
+          "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "stateId": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "at": 1792412744328
+        },
+        "probe": [
+          {
+            "kind": "receive",
+            "phase": "C/C/B-busy",
+            "revision": 29,
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "at": 1792412744320
+          },
+          {
+            "kind": "invoke",
+            "phase": "C/C/B-busy",
+            "method": "newSession",
+            "request": 14,
+            "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+            "received": 29,
+            "selected": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "at": 1792412744321
+          },
+          {
+            "kind": "unlock-layout",
+            "phase": "C/C/B-busy",
+            "request": 14,
+            "committed": 29,
+            "received": 29,
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "domId": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "disabled": false,
+            "at": 1792412744323
+          },
+          {
+            "kind": "receive",
+            "phase": "C/C/B-busy",
+            "revision": 30,
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "at": 1792412744328
+          }
+        ],
+        "busy": {
+          "start": 1792412742316,
+          "end": 1792412744317
+        }
+      }
+    },
+    {
+      "phase": "B/C/B",
+      "resultId": "bff71c3d-4038-4a0b-a586-23805da407d9",
+      "selected": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+      "main": [
+        {
+          "kind": "state-send",
+          "phase": "B/C/B",
+          "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+          "at": 1792412744546
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "readHistory",
+          "at": 1792412744581
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "checkpoints",
+          "at": 1792412744583
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "projectRules",
+          "at": 1792412744584
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "changes",
+          "at": 1792412744588
+        },
+        {
+          "kind": "state-send",
+          "phase": "B/C/B",
+          "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "at": 1792412744635
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "readHistory",
+          "at": 1792412744644
+        },
+        {
+          "kind": "reply-send",
+          "phase": "B/C/B",
+          "method": "newSession",
+          "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+          "at": 1792412744699
+        }
+      ],
+      "renderer": {
+        "events": [
+          {
+            "kind": "state",
+            "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+            "phase": "B/C/B",
+            "at": 1792412744557
+          },
+          {
+            "kind": "state",
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "phase": "B/C/B",
+            "at": 1792412744635
+          }
+        ],
+        "unlock": {
+          "phase": "B/C/B",
+          "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "stateId": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+          "at": 1792412744701
+        },
+        "probe": [
+          {
+            "kind": "receive",
+            "phase": "B/C/B",
+            "revision": 31,
+            "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+            "at": 1792412744557
+          },
+          {
+            "kind": "receive",
+            "phase": "B/C/B",
+            "revision": 32,
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "at": 1792412744635
+          },
+          {
+            "kind": "invoke",
+            "phase": "B/C/B",
+            "method": "newSession",
+            "request": 15,
+            "id": "bff71c3d-4038-4a0b-a586-23805da407d9",
+            "received": 32,
+            "selected": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "at": 1792412744699
+          },
+          {
+            "kind": "unlock-layout",
+            "phase": "B/C/B",
+            "request": 15,
+            "committed": 32,
+            "received": 32,
+            "id": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "domId": "2d2f517c-d06f-47b2-9311-15ee0961809f",
+            "disabled": false,
+            "at": 1792412744701
+          }
+        ],
+        "busy": {
+          "start": 1792412742316,
+          "end": 1792412744317
+        }
+      }
+    }
+  ],
+  "rendererErrors": [],
+  "explicitConnects": [
+    {
+      "method": "connect",
+      "id": "e9606448-4177-4dad-b708-17d48c8c1512"
+    },
+    {
+      "method": "connect",
+      "id": "ade801ea-22a3-4950-a531-d47a24d6dc22"
+    },
+    {
+      "method": "connect",
+      "id": "d8ac5fbb-5563-4fe2-9179-9f1c2319d466"
+    }
+  ]
+}

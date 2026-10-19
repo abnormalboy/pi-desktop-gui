@@ -68,7 +68,15 @@ import {
   samePath,
   terminalOpen,
 } from './platform';
-import { busy, messageText, type AppEvent, type ApiMap, type Runtime, type Session } from '../shared/types';
+import {
+  busy,
+  messageText,
+  type AppEvent,
+  type ApiMap,
+  type Runtime,
+  type Session,
+  type StateSnapshot,
+} from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: SessionAgents, workspace: Workspace;
 let updates: UpdateService;
@@ -83,9 +91,18 @@ let appQuitRequested = false;
 if (process.env.PI_DESKTOP_DATA_DIR) app.setPath('userData', path.resolve(process.env.PI_DESKTOP_DATA_DIR));
 const developmentRoot = app.isPackaged ? undefined : app.getAppPath();
 const appUserModelId = app.isPackaged ? 'io.yeyuproject.pi-desktop' : 'io.yeyuproject.pi-desktop.dev';
-const send = (event: AppEvent) => {
+let stateRevision = 0;
+// Broadcasts, bootstrap and completion reads share one non-persistent sequence.
+const stateSnapshot = (state = store.state): StateSnapshot => ({
+  state: structuredClone(state),
+  revision: ++stateRevision,
+});
+const send = (
+  event: Exclude<AppEvent, { type: 'state' }> | { type: 'state'; state: StateSnapshot['state'] },
+) => {
+  const value: AppEvent = event.type === 'state' ? { type: 'state', ...stateSnapshot(event.state) } : event;
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
-    window.webContents.send('desktop:event', event);
+    window.webContents.send('desktop:event', value);
   if (event.type === 'state') void watchSelectedProject();
 };
 let appDialogsReady = false;
@@ -422,7 +439,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const environment = await detectEnvironment(store.state.settings, developmentRoot);
     service.resync();
     return {
-      state: store.state,
+      ...stateSnapshot(),
       runtime: service.runtime,
       environment,
       dataDir: store.dir,
@@ -430,6 +447,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       update: updates.state,
     };
   },
+  navigationState: () => stateSnapshot(),
   checkUpdate: () => updates.check(),
   downloadUpdate: () => updates.download(),
   installUpdate: () => updates.install(),
@@ -1557,7 +1575,14 @@ else {
           if (updates.state.installing && method === 'saveView') return;
           if (
             updates.state.installing &&
-            !['bootstrap', 'diagnostics', 'copy', 'respondAppDialog', 'appDialogsReady'].includes(method)
+            ![
+              'bootstrap',
+              'navigationState',
+              'diagnostics',
+              'copy',
+              'respondAppDialog',
+              'appDialogsReady',
+            ].includes(method)
           )
             throw new Error('正在准备重启更新，请稍候');
           const readOnlyMethods: (keyof ApiMap)[] = [
@@ -1565,6 +1590,7 @@ else {
             'respondAppDialog',
             'showAppMenu',
             'bootstrap',
+            'navigationState',
             'checkUpdate',
             'downloadUpdate',
             'installUpdate',
@@ -1619,6 +1645,7 @@ else {
               'appDialogsReady',
               'respondAppDialog',
               'bootstrap',
+              'navigationState',
               'diagnostics',
               'copy',
               'copyImage',

@@ -1,5 +1,7 @@
 # Model entry during new-chat and selection transitions
 
+The current completion contract and final validation are in [navigation completion protocol](navigation-completion-protocol.md). The report below and its earlier wrong-target lock control describe historical candidates; that control was replaced after actual main/store concurrency proved the same mismatch legal.
+
 This report records `cff974c` and its original local validation. Independent review subsequently found an external-navigation lock regression despite that commit's green CI. [The external-selection follow-up](external-selection-transition.md) supersedes the lifecycle description below and adds native-menu/deletion coverage while retaining the popup-owner and wrong-target protections.
 
 Branch `fix/chat-ui-model-readiness` continues after test commit `fb921ce`; its main ancestor remains `6cc2186`. The retry assertion fixes from `013966f8` and semantic target/readiness checks from `fb921ce` are retained. This follow-up changes product behavior for the ordinary-user race recorded in [the earlier investigation](chat-ui-model-readiness.md).

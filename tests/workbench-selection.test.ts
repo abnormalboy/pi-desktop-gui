@@ -1,12 +1,19 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { transformSync } from 'esbuild';
 import * as types from '../shared/types';
 import { defaultSettings } from '../electron/store-state';
 import { hideRecoveredErrors } from '../src/lib/conversation-layout';
 import { readableError } from '../src/lib/format';
 import type { Workbench } from '../src/hooks/useWorkbench';
+import { Store } from '../electron/store';
+import { SessionAgents } from '../electron/session-agents';
+import { Workspace } from '../electron/workspace';
+import { createMainNavigation } from './support/main-navigation';
 
 // Execute the whole production hook with deterministic hook storage, effects, IPC,
 // and timers. This checks its real render/closure logic, not Electron or DOM paint.
@@ -34,7 +41,11 @@ const session = (id: string, file: string | undefined = `${id}.jsonl`): types.Se
 });
 const noOp = () => {};
 type Effect = { deps?: unknown[]; cleanup?: () => void; run?: () => void | (() => void) };
-function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
+function harness(
+  invoke: (method: string, id?: string) => Promise<unknown>,
+  initialState?: types.AppState,
+  confirm?: () => Promise<types.StateSnapshot>,
+) {
   const slots: any[] = [],
     effects = new Map<number, Effect>();
   let cursor = 0,
@@ -42,10 +53,14 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     mounted = true,
     updatesAfterUnmount = 0,
     timerId = 0;
-  let selectionObserver: ((id: string | undefined) => void) | undefined;
+  const receivedState: { current: { state?: types.AppState; revision: number } } = {
+    current: { revision: 0 },
+  };
+  let queuedState: { state: types.AppState; revision: number } | undefined;
+  let deferredCommit = false;
   const timers = new Map<number, { run: () => void; delay: number; interval: boolean }>();
   const cleared: number[] = [];
-  const state: types.AppState = {
+  const state: types.AppState = initialState ?? {
     version: 1,
     projects: [],
     sessions: ['A', 'B', 'C'].map((id) => session(id)),
@@ -54,6 +69,15 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
   };
   const view = {
     state,
+    stateRevision: 0,
+    receivedState,
+    receiveState(state: types.AppState, revision: number) {
+      receiveState(state, revision);
+      if (!deferredCommit) {
+        commitToView();
+        dirty = true;
+      }
+    },
     runtime: types.emptyRuntime(),
     anyRunning: false,
     environment: { supported: false, authExists: false, modelsExist: false },
@@ -61,6 +85,14 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     setEnvironment: noOp,
     update: undefined,
   };
+  const invokeApi = (method: string, id?: string) =>
+    method === 'navigationState'
+      ? (confirm?.() ??
+        Promise.resolve({
+          state: structuredClone(receivedState.current.state ?? view.state),
+          revision: receivedState.current.revision + 1,
+        }))
+      : invoke(method, id);
   const changed = (before: unknown[] | undefined, after: unknown[] | undefined) =>
     !before || !after || before.length !== after.length || before.some((v, i) => !Object.is(v, after[i]));
   const useEffect = (run: Effect['run'], deps?: unknown[]) => {
@@ -117,12 +149,7 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
   const workspace = { checkpoints: [], setTab: noOp, inspectFile: noOp, openCheckpoint: noOp };
   const dependencies: Record<string, unknown> = {
     react: hooks,
-    './useRuntime': {
-      useRuntime(_setError: unknown, _setPrefs: unknown, observe: typeof selectionObserver) {
-        selectionObserver = observe;
-        return view;
-      },
-    },
+    './useRuntime': { useRuntime: () => view },
     './useDraft': { useDraft: () => draft },
     './useWorkspace': { useWorkspace: () => workspace },
     './useShortcuts': { useShortcuts: noOp },
@@ -163,7 +190,7 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     require,
     module,
     module.exports,
-    { desktop: { invoke, platform: 'linux' } },
+    { desktop: { invoke: invokeApi, platform: 'linux' } },
     { getItem: () => null, setItem: noOp },
     { documentElement: { dataset: {}, style: { setProperty: noOp } }, activeElement: null },
     timeout,
@@ -199,10 +226,25 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     }
     return result;
   }
-  function select(id: string, runtime = types.emptyRuntime()) {
-    view.state = { ...view.state, selectedSessionId: id };
-    view.runtime = runtime;
+  function receiveState(state: types.AppState, revision = receivedState.current.revision + 1) {
+    if (revision <= receivedState.current.revision) return;
+    queuedState = { state, revision };
+    receivedState.current = queuedState;
+  }
+  function commitToView() {
+    if (!queuedState) return;
+    view.state = queuedState.state;
+    view.stateRevision = queuedState.revision;
+    queuedState = undefined;
+  }
+  function commitState() {
+    commitToView();
     return render();
+  }
+  function select(id: string, runtime = types.emptyRuntime()) {
+    receiveState({ ...view.state, selectedSessionId: id });
+    view.runtime = runtime;
+    return commitState();
   }
   render();
   flush();
@@ -213,9 +255,14 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     flush,
     settle,
     select,
+    receiveState,
+    commitState,
+    deferStateCommit(value = true) {
+      deferredCommit = value;
+    },
     emitSelection(id: string) {
-      selectionObserver?.(id);
-      view.state = { ...view.state, selectedSessionId: id };
+      receiveState({ ...view.state, selectedSessionId: id });
+      commitToView();
     },
     timers,
     cleared,
@@ -237,6 +284,340 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
         }
     },
   };
+}
+
+async function mainFixture(t: TestContext, phase: 'save' | 'reply', holdRender = false) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-navigation-protocol-'));
+  const store = new Store(dir);
+  await store.load();
+  store.state.projects.push({ id: 'P', name: 'project', path: dir, trusted: true, createdAt: 1 });
+  const original = store.createSession();
+  original.draft = 'Preserve the original chat';
+  await store.save();
+  const agents = new SessionAgents(store, new Workspace(dir));
+  const entered = deferred(),
+    release = deferred();
+  const selectionEntered = deferred(),
+    selectionRelease = deferred();
+  let holdSelection = false;
+  const trace: {
+    kind: 'state' | 'reply' | 'call' | 'confirmation';
+    revision?: number;
+    id?: string;
+    method?: string;
+  }[] = [];
+  let navigation!: ReturnType<typeof createMainNavigation>,
+    creationCount = 0;
+  if (phase === 'save') {
+    const save = store.save.bind(store);
+    let count = 0;
+    t.mock.method(store, 'save', () => {
+      const persisted = save();
+      if (++count !== 1) return persisted;
+      entered.resolve();
+      return persisted.then(() => release.promise);
+    });
+  }
+  const f = harness(
+    async (method, id) => {
+      trace.push({ kind: 'call', method, id });
+      if (method === 'newSession') {
+        const first = ++creationCount === 1;
+        const result = await navigation.create(id);
+        if (phase === 'reply' && first) {
+          entered.resolve();
+          await release.promise;
+        }
+        trace.push({ kind: 'reply', id: result.id });
+        return result;
+      }
+      if (method === 'selectSession') {
+        const result = await navigation.select(id!);
+        if (holdSelection) {
+          selectionEntered.resolve();
+          await selectionRelease.promise;
+        }
+        return result;
+      }
+      if (method === 'readHistory') return agents.get(id!).history(id!);
+      return [];
+    },
+    structuredClone(store.state),
+    async () => {
+      const result = await navigation.confirm();
+      trace.push({ kind: 'confirmation', id: result.state.selectedSessionId, revision: result.revision });
+      return result;
+    },
+  );
+  f.deferStateCommit(holdRender);
+  navigation = createMainNavigation(store, agents, (event) => {
+    if (event.type !== 'state') return;
+    trace.push({ kind: 'state', id: event.state.selectedSessionId, revision: event.revision });
+    f.receiveState(structuredClone(event.state), event.revision);
+    if (!holdRender) {
+      f.commitState();
+      f.flush();
+    }
+  });
+  t.after(async () => {
+    release.resolve();
+    selectionRelease.resolve();
+    f.unmount();
+    await agents.dispose();
+    await store.flush().catch(() => {});
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  return {
+    f,
+    store,
+    navigation,
+    agents,
+    entered,
+    release,
+    trace,
+    original,
+    holdSelection() {
+      holdSelection = true;
+      return { entered: selectionEntered, release: selectionRelease };
+    },
+  };
+}
+
+test('actual main completion cannot unlock before its received state or a newer snapshot renders', async (t) => {
+  const p = await mainFixture(t, 'save', true);
+  const creating = p.f.current.createSession('P');
+  p.f.flush();
+  await p.entered.promise;
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  p.release.resolve();
+  await creating;
+  await p.f.settle();
+  assert.equal(p.f.current.selected?.id, p.original.id);
+  assert.equal(p.f.current.selectionChanging, true, 'received state is not yet committed');
+  p.store.session(c).draft = 'Preserve C';
+  await p.navigation.nativeCreate();
+  const d = p.store.state.selectedSessionId!;
+  assert.notEqual(d, c);
+  await p.f.settle();
+  assert.equal(p.f.current.selectionChanging, true);
+  p.f.commitState();
+  p.f.flush();
+  assert.equal(p.f.current.selected?.id, d);
+  assert.equal(p.f.current.selectionChanging, false);
+  assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+});
+
+for (const oldOutcome of ['success', 'cancelled'] as const) {
+  test(`actual main ${oldOutcome} completion cannot release a newer hook request`, async (t) => {
+    const p = await mainFixture(t, 'save');
+    const old = p.f.current.createSession('P');
+    p.f.flush();
+    await p.entered.promise;
+    const selected = p.holdSelection();
+    const latest = p.f.current.selectSession(p.original);
+    p.f.flush();
+    await selected.entered.promise;
+    await p.navigation.nativeCreate();
+    const c = p.store.state.selectedSessionId!;
+    if (oldOutcome === 'success') p.release.resolve();
+    else p.release.reject(new Error('TEST_SAVE_CANCELLED'));
+    await old;
+    await p.f.settle();
+    assert.equal(p.f.current.selected?.id, c);
+    assert.equal(p.f.current.selectionChanging, true);
+    assert.equal(p.f.current.sessionEnabled, false);
+    selected.release.resolve();
+    await latest;
+    await p.f.settle();
+    assert.equal(p.f.current.selected?.id, c);
+    assert.equal(p.f.current.selectionChanging, false);
+    assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+  });
+}
+
+test('actual failed creation releases only its pending lock and retains authoritative selection and guards', async (t) => {
+  const p = await mainFixture(t, 'save');
+  const creating = p.f.current.createSession('P');
+  p.f.flush();
+  await p.entered.promise;
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  p.release.reject(new Error('TEST_SAVE_FAILED'));
+  await creating;
+  await p.f.settle();
+  assert.equal(p.f.current.selected?.id, c);
+  assert.equal(p.f.current.selectionChanging, false);
+  p.f.view.storage.writable = false;
+  p.f.render();
+  p.f.flush();
+  assert.equal(p.f.current.sessionEnabled, false);
+  await p.f.current.connect();
+  assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+});
+
+test('a queued authoritative state invalidates old model actions before React commits it', async (t) => {
+  const p = await mainFixture(t, 'reply', true);
+  const old = p.f.current;
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  assert.equal(p.f.current.selected?.id, p.original.id);
+  await old.connect();
+  await old.setModel('provider::model');
+  await old.setThinking('high');
+  const modelCalls = () =>
+    p.trace.filter((entry) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(entry.method!));
+  assert.deepEqual(modelCalls(), []);
+  p.f.commitState();
+  p.f.flush();
+  await p.f.current.setModel('provider::model');
+  await p.f.settle();
+  assert.deepEqual(modelCalls(), [{ kind: 'call', method: 'setSessionModel', id: c }]);
+});
+
+test('main confirmation snapshots are immutable, monotonic and do not write storage', async (t) => {
+  const p = await mainFixture(t, 'reply');
+  const before = await fs.readFile(path.join(p.store.dir, 'state.json'), 'utf8');
+  const first = p.navigation.confirm();
+  const count = first.state.sessions.length;
+  p.store.createSession('P');
+  const second = p.navigation.confirm();
+  assert.equal(first.state.selectedSessionId, p.original.id);
+  assert.equal(first.state.sessions.length, count);
+  assert.ok(second.revision > first.revision);
+  assert.equal(await fs.readFile(path.join(p.store.dir, 'state.json'), 'utf8'), before);
+});
+
+test('an older confirmation arriving after a newer state cannot roll selection back', async (t) => {
+  const p = await mainFixture(t, 'reply');
+  const confirm = p.navigation.confirm.bind(p.navigation);
+  const entered = deferred(),
+    release = deferred();
+  t.mock.method(p.navigation, 'confirm', () => {
+    const snapshot = confirm();
+    entered.resolve();
+    return release.promise.then(() => snapshot) as unknown as types.StateSnapshot;
+  });
+  const selecting = p.f.current.selectSession(p.original);
+  p.f.flush();
+  await entered.promise;
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  release.resolve();
+  await selecting;
+  await p.f.settle();
+  assert.equal(p.f.current.selected?.id, c);
+  assert.equal(p.f.current.selectionChanging, false);
+  assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+});
+
+test('failed confirmation stays visibly disabled and a fresh valid navigation recovers', async (t) => {
+  const p = await mainFixture(t, 'reply');
+  const confirm = p.navigation.confirm.bind(p.navigation);
+  let calls = 0;
+  t.mock.method(p.navigation, 'confirm', () => {
+    if (++calls === 1) throw new Error('TEST_CONFIRMATION_FAILED');
+    return confirm();
+  });
+  await p.f.current.selectSession(p.original);
+  await p.f.settle();
+  assert.equal(p.f.current.selectionChanging, true);
+  assert.match(p.f.current.error, /无法确认当前会话.*TEST_CONFIRMATION_FAILED/);
+  await p.f.current.connect();
+  assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+  await p.f.current.selectSession(p.original);
+  await p.f.settle();
+  assert.equal(p.f.current.selectionChanging, false);
+  assert.equal(p.f.current.error, '');
+});
+
+test('confirmation failure remains visible when a queued external selection commits later', async (t) => {
+  const p = await mainFixture(t, 'reply', true);
+  const confirm = p.navigation.confirm.bind(p.navigation);
+  let count = 0;
+  t.mock.method(p.navigation, 'confirm', () => {
+    if (++count === 1) throw new Error('TEST_CONFIRMATION_FAILED');
+    return confirm();
+  });
+  await p.f.current.selectSession(p.original);
+  await p.f.settle();
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  p.f.commitState();
+  p.f.flush();
+  assert.equal(p.f.current.selected?.id, c);
+  assert.equal(p.f.current.selectionChanging, true);
+  assert.match(p.f.current.error, /无法确认当前会话.*TEST_CONFIRMATION_FAILED/);
+  p.f.deferStateCommit(false);
+  await p.f.current.selectSession(p.store.session(c));
+  await p.f.settle();
+  assert.equal(p.f.current.selectionChanging, false);
+  assert.equal(p.f.current.error, '');
+});
+
+test('an old held confirmation cannot release a newer request awaiting its own completion', async (t) => {
+  const p = await mainFixture(t, 'reply');
+  const confirm = p.navigation.confirm.bind(p.navigation);
+  const entered = deferred(),
+    release = deferred();
+  let count = 0;
+  t.mock.method(p.navigation, 'confirm', () => {
+    const snapshot = confirm();
+    if (++count !== 1) return snapshot;
+    entered.resolve();
+    return release.promise.then(() => snapshot) as unknown as types.StateSnapshot;
+  });
+  const old = p.f.current.selectSession(p.original);
+  p.f.flush();
+  await entered.promise;
+  await p.navigation.nativeCreate();
+  const c = p.store.state.selectedSessionId!;
+  const selected = p.holdSelection();
+  const latest = p.f.current.selectSession(p.store.session(c));
+  p.f.flush();
+  await selected.entered.promise;
+  release.resolve();
+  await old;
+  await p.f.settle();
+  assert.equal(p.f.current.selected?.id, c);
+  assert.equal(p.f.current.selectionChanging, true);
+  selected.release.resolve();
+  await latest;
+  await p.f.settle();
+  assert.equal(p.f.current.selectionChanging, false);
+  assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+});
+
+for (const phase of ['save', 'reply'] as const) {
+  test(`actual main/store and hook accept ${phase === 'save' ? 'C/C/B' : 'B/C/B'} publication/completion order`, async (t) => {
+    const p = await mainFixture(t, phase);
+    const creating = p.f.current.createSession('P');
+    p.f.flush();
+    await p.entered.promise;
+    const b = p.store.state.sessions.find((s) => s.projectId === 'P')!;
+    assert.ok(b);
+    await p.navigation.nativeCreate();
+    const c = p.store.state.selectedSessionId!;
+    assert.notEqual(c, b.id);
+    p.release.resolve();
+    await creating;
+    await p.f.settle();
+    const protocol = p.trace.filter((entry) => entry.kind !== 'call');
+    assert.deepEqual(
+      protocol.map((entry) => entry.kind),
+      ['state', 'state', 'reply', 'confirmation'],
+    );
+    assert.deepEqual(
+      protocol.map((entry) => entry.id),
+      phase === 'save' ? [c, c, b.id, c] : [b.id, c, b.id, c],
+    );
+    assert.equal(p.f.current.selected?.id, c);
+    assert.equal(p.f.current.selectionChanging, false);
+    assert.equal(p.f.current.sessionEnabled, true);
+    assert.ok(!p.trace.some((entry) => entry.method === 'connect'));
+    assert.ok(p.store.state.sessions.every((s) => !p.agents.connected(s.id)));
+    t.diagnostic(JSON.stringify({ phase, protocol, selected: p.f.current.selected?.id }));
+  });
 }
 
 test('the first selected-ID render never displays the previous session history', async () => {
@@ -645,7 +1026,7 @@ test('the first prompt is sent to the selected cold chat without a separate eage
   f.unmount();
 });
 
-test('selection transition protects the old view and waits for both IPC and target selection', async () => {
+test('selection completion waits for the received authoritative snapshot to render', async () => {
   const selecting = deferred<types.Message[]>();
   const calls: string[] = [];
   const f = harness((method) => {
@@ -653,14 +1034,16 @@ test('selection transition protects the old view and waits for both IPC and targ
     return method === 'selectSession' ? selecting.promise : Promise.resolve([]);
   });
   const operation = f.current.selectSession(session('B'));
+  f.deferStateCommit();
   f.flush();
   assert.equal(f.current.selectionChanging, true);
   assert.equal(f.current.selected?.id, 'A');
+  f.receiveState({ ...f.view.state, selectedSessionId: 'B' });
   selecting.resolve([]);
   await operation;
   await f.settle();
-  assert.equal(f.current.selectionChanging, true, 'an IPC result alone is not a committed target view');
-  f.select('B');
+  assert.equal(f.current.selectionChanging, true, 'an IPC result alone does not commit queued state');
+  f.commitState();
   f.flush();
   assert.equal(f.current.selectionChanging, false);
   assert.ok(!calls.includes('connect'));
@@ -684,11 +1067,13 @@ test('obsolete creation completion cannot unlock a newer transition or restore a
   f.select('B');
   f.flush();
   assert.equal(f.current.selectionChanging, true);
+  f.deferStateCommit();
+  f.receiveState({ ...f.view.state, selectedSessionId: 'C' });
   second.resolve(session('C'));
   await b;
   await f.settle();
   assert.equal(f.current.selectionChanging, true);
-  f.select('C');
+  f.commitState();
   f.flush();
   assert.equal(f.current.selectionChanging, false);
   assert.equal(f.current.selected?.id, 'C');
@@ -850,7 +1235,7 @@ for (const kind of ['selection', 'creation', 'blank reuse'] as const) {
   });
 }
 
-test('an unobserved creation response target stays locked despite a different authoritative selection', async () => {
+test('a creation result cannot override or lock a different authoritative selected session', async () => {
   const response = deferred<types.Session>();
   const calls: string[] = [];
   const f = harness((method) => {
@@ -866,9 +1251,8 @@ test('an unobserved creation response target stays locked despite a different au
   await creating;
   await f.settle();
   assert.equal(f.current.selected?.id, 'C');
-  assert.equal(f.current.selectionChanging, true);
-  assert.equal(f.current.sessionEnabled, false);
-  await f.current.connect();
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.sessionEnabled, true);
   assert.ok(!calls.includes('connect'));
   f.unmount();
 });

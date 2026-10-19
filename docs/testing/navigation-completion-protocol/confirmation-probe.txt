@@ -1,0 +1,10 @@
+PASS quick new from an untrusted project disables the old entry and requires a fresh explicit click
+PASS a selected new target stays disabled until IPC completion; the old picker never carries forward
+PASS failed creation releases the lock, and a newer selection supersedes an old held reply without connecting
+PASS an older completion cannot unlock a newer pending or untrusted target
+PASS native File > New Chat supersedes a held renderer selection without locking model/send
+PASS deleting an observed target keeps the confirmed fallback usable after its late reply
+PASS external navigation does not release a newer unobserved target; its own completion restores it
+PASS a real confirmation failure stays disabled with a visible recovery action; fresh navigation recovers
+PASS real saved C/C/B through normal IPC survives renderer CPU blocking and unlocks C
+PASS real B/C/B through normal IPC unlocks current C without following the returned B

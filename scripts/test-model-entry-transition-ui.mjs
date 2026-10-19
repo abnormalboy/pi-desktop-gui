@@ -8,12 +8,14 @@ import { createLocalProvider, prepareRealPiFixture } from '../tests/support/loca
 const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'model-entry-transition-ui');
 f.store.project(f.projectId).trusted = false;
+f.store.session(f.sessionId).title = 'Protected project chat';
 await f.store.save();
 const output = path.resolve('test-results/model-entry-transition');
 await fs.mkdir(output, { recursive: true });
 let app, page;
 const errors = [],
-  evidence = [];
+  evidence = [],
+  protocolEvidence = [];
 const selected = () => page.evaluate(() => window.entryState.selectedSessionId);
 const calls = () => app.evaluate(() => globalThis.entryProbe.calls);
 const connectCalls = async () => (await calls()).filter((call) => call.method === 'connect');
@@ -72,8 +74,20 @@ try {
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   await page.evaluate(async () => {
     window.entryRuntimes = new Map();
+    window.entryTransport = [];
+    window.entryUnlocks = [];
+    window.__navigationProbe = [];
     window.desktop.onEvent((event) => {
-      if (event.type === 'state') window.entryState = event.state;
+      if (event.type === 'state') {
+        window.entryState = event.state;
+        window.entryTransport.push({
+          kind: 'state',
+          id: event.state.selectedSessionId,
+          phase: window.entryPhase,
+          revision: event.revision,
+          at: Date.now(),
+        });
+      }
       const runtime = event.runtime ?? event.patch;
       if (runtime?.sessionId)
         window.entryRuntimes.set(runtime.sessionId, {
@@ -84,10 +98,44 @@ try {
     const { state, runtime } = await window.desktop.invoke('bootstrap');
     window.entryState = state;
     if (runtime.sessionId) window.entryRuntimes.set(runtime.sessionId, runtime);
+    new MutationObserver(() => {
+      const phase = window.entryPhase;
+      const button = document.querySelector('.model-pill');
+      if (
+        !window.entryAwaitUnlock ||
+        !phase ||
+        !button ||
+        button.disabled ||
+        window.entryUnlocks.some((entry) => entry.phase === phase)
+      )
+        return;
+      window.entryUnlocks.push({
+        phase,
+        id: document.querySelector('.session-row.active')?.dataset.sessionId,
+        eventStateId: window.entryState.selectedSessionId,
+        at: Date.now(),
+      });
+    }).observe(document.body, { subtree: true, attributes: true, childList: true });
   });
-  await app.evaluate(({ ipcMain }) => {
+  await app.evaluate(({ ipcMain, BrowserWindow }) => {
     const handler = ipcMain._invokeHandlers.get('desktop:invoke');
-    globalThis.entryProbe = { gates: [], calls: [], replies: [], wrongId: undefined };
+    globalThis.entryProbe = { gates: [], calls: [], replies: [], stateSent: [], transport: [] };
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const send = contents.send;
+    contents.send = function (channel, event, ...rest) {
+      if (channel === 'desktop:event' && event?.type === 'state') {
+        const entry = {
+          kind: 'state-send',
+          phase: globalThis.entryProbe.phase,
+          id: event.state.selectedSessionId,
+          revision: event.revision,
+          at: Date.now(),
+        };
+        globalThis.entryProbe.stateSent.push(entry);
+        globalThis.entryProbe.transport.push(entry);
+      }
+      return send.call(this, channel, event, ...rest);
+    };
     ipcMain.removeHandler('desktop:invoke');
     ipcMain.handle('desktop:invoke', async (event, method, args) => {
       globalThis.entryProbe.calls.push({ method, id: args?.[0] });
@@ -101,13 +149,22 @@ try {
       }
       const result = await handler(event, method, args);
       if (gate?.phase === 'after') {
+        gate.resultId = result?.id;
         gate.enter();
         await gate.wait;
       }
-      globalThis.entryProbe.replies.push({ method, id: result?.id });
-      return method === 'newSession' && globalThis.entryProbe.wrongId
-        ? { ...result, id: globalThis.entryProbe.wrongId }
-        : result;
+      const reply = {
+        kind: 'reply-send',
+        phase: globalThis.entryProbe.phase,
+        method,
+        id: result?.id,
+        stateId: result?.state?.selectedSessionId,
+        revision: result?.revision,
+        at: Date.now(),
+      };
+      globalThis.entryProbe.replies.push(reply);
+      globalThis.entryProbe.transport.push(reply);
+      return result;
     });
   });
   const button = page.getByRole('button', { name: '选择模型', exact: true });
@@ -115,7 +172,11 @@ try {
   const clickDisabled = async () => {
     await expect(button).toBeDisabled();
     const connectionButtons = page.locator('.run-meta').getByRole('button', { name: /连接|重连/ });
-    for (const control of await connectionButtons.all()) await expect(control).toBeDisabled();
+    await expect
+      .poll(() =>
+        connectionButtons.evaluateAll((controls) => controls.filter((control) => !control.disabled).length),
+      )
+      .toBe(0);
     const bounds = await button.boundingBox();
     await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
     await expect(page.getByRole('dialog', { name: '模型与推理级别' })).toHaveCount(0);
@@ -255,25 +316,6 @@ try {
   await expect(button).toBeEnabled();
   console.log('PASS an older completion cannot unlock a newer pending or untrusted target');
 
-  await app.evaluate((_electron, id) => {
-    globalThis.entryProbe.wrongId = id;
-  }, a);
-  await newChat();
-  await page.waitForFunction((old) => window.entryState.selectedSessionId !== old, b);
-  await clickDisabled();
-  await capture('wrong response target remains locked');
-  assert.equal((await connectCalls()).length, 2);
-  await app.evaluate(() => {
-    globalThis.entryProbe.wrongId = undefined;
-  });
-  await select(b);
-  await expect(button).toBeEnabled();
-  assert.equal(await selected(), b);
-  await capture('valid newer selection recovers from a wrong response target');
-  console.log(
-    'PASS wrong-target responses cannot enable or connect, and a valid new selection recovers without implicit requests',
-  );
-
   await gate('menu-overrides-selection', 'selectSession', 'after', a);
   await select(a);
   await entered('menu-overrides-selection');
@@ -281,7 +323,7 @@ try {
   await nativeNewChat();
   await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, a);
   const menuTarget = await selected();
-  await expect(button).toBeEnabled();
+  await clickDisabled();
   await release('menu-overrides-selection');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), menuTarget);
@@ -312,7 +354,7 @@ try {
   );
   const fallback = await selected();
   assert.notEqual(fallback, menuTarget);
-  await expect(button).toBeEnabled();
+  await clickDisabled();
   await release('delete-observed-selection');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), fallback);
@@ -350,22 +392,233 @@ try {
     'PASS external navigation does not release a newer unobserved target; its own completion restores it',
   );
 
+  await gate('failed-confirmation', 'navigationState', 'before');
+  await select(b);
+  await entered('failed-confirmation');
+  await release('failed-confirmation', true);
+  await page.locator('.error-banner').filter({ hasText: '无法确认当前会话，请重新选择会话' }).waitFor();
+  await clickDisabled();
+  assert.equal((await connectCalls()).length, 3);
+  await select(b);
+  await expect(button).toBeEnabled();
+  await expect(page.locator('.error-banner')).toHaveCount(0);
+  console.log(
+    'PASS a real confirmation failure stays disabled with a visible recovery action; fresh navigation recovers',
+  );
+
+  const projectNew = () =>
+    page
+      .getByRole('button', { name: `在 ${f.store.project(f.projectId).name} 中新建会话`, exact: true })
+      .click();
+  const startPhase = async (phase) => {
+    await app.evaluate((_electron, phase) => {
+      globalThis.entryProbe.phase = phase;
+    }, phase);
+    await page.evaluate((phase) => {
+      window.entryPhase = phase;
+      window.entryAwaitUnlock = false;
+    }, phase);
+  };
+  const recordProtocol = async (phase, resultId) => {
+    await page.waitForFunction(
+      (phase) => window.entryTransport.filter((entry) => entry.phase === phase).length >= 2,
+      phase,
+    );
+    const main = await app.evaluate(
+      (_electron, phase) => globalThis.entryProbe.transport.filter((entry) => entry.phase === phase),
+      phase,
+    );
+    const renderer = await page.evaluate(
+      (phase) => ({
+        events: window.entryTransport.filter((entry) => entry.phase === phase),
+        unlock: window.entryUnlocks.find((entry) => entry.phase === phase),
+        probe: window.__navigationProbe.filter((entry) => entry.phase === phase),
+        busy: window.entryBusy,
+      }),
+      phase,
+    );
+    const id = await selected();
+    assert.equal(renderer.unlock?.id, id);
+    const confirmation = main
+      .filter((entry) => entry.kind === 'reply-send' && entry.method === 'navigationState')
+      .at(-1);
+    assert.equal(confirmation?.stateId, id);
+    assert.ok(
+      confirmation.revision >
+        Math.max(...main.filter((entry) => entry.kind === 'state-send').map((entry) => entry.revision)),
+    );
+    assert.equal(
+      main.find((entry) => entry.kind === 'reply-send' && entry.method === 'newSession')?.id,
+      resultId,
+    );
+    protocolEvidence.push({ phase, resultId, selected: id, main, renderer });
+    await page.evaluate(() => {
+      window.entryAwaitUnlock = false;
+    });
+    return { main, renderer, id };
+  };
+
+  await startPhase('C/C/B-busy');
+  await app.evaluate(
+    async (_electron, { file, projectId }) => {
+      const io = process.getBuiltinModule('fs/promises');
+      const original = io.writeFile;
+      const value = { used: false };
+      value.entered = new Promise((resolve) => {
+        value.enter = resolve;
+      });
+      value.wait = new Promise((resolve) => {
+        value.release = resolve;
+      });
+      globalThis.entryProbe.writeGate = value;
+      globalThis.entryProbe.restoreWrite = () => {
+        io.writeFile = original;
+      };
+      io.writeFile = async (...args) => {
+        if (!value.used && String(args[0]) === file) {
+          const state = JSON.parse(String(args[1]));
+          if (
+            state.sessions.find((session) => session.id === state.selectedSessionId)?.projectId === projectId
+          ) {
+            value.used = true;
+            value.id = state.selectedSessionId;
+            value.enter();
+            await value.wait;
+          }
+        }
+        return original(...args);
+      };
+    },
+    { file: path.join(f.dataDir, 'state.json.tmp'), projectId: f.projectId },
+  );
+  await gate('cc-b-reply', 'newSession', 'after', f.projectId);
+  await projectNew();
+  await app.evaluate(() => globalThis.entryProbe.writeGate.entered);
+  await clickDisabled();
+  const createdButUnpublished = await app.evaluate(() => globalThis.entryProbe.writeGate.id);
+  await nativeNewChat();
+  await page.evaluate(() => {
+    window.entryAwaitUnlock = true;
+  });
+  const busyStarted = page.waitForEvent('console', {
+    predicate: (event) => event.text() === 'ENTRY_CPU_BUSY',
+    timeout: 15000,
+  });
+  const busy = page.evaluate(() => {
+    window.entryBusy = { start: Date.now() };
+    console.log('ENTRY_CPU_BUSY');
+    const end = performance.now() + 2000;
+    while (performance.now() < end) {
+      /* Deliberately queue normal incoming IPC while the renderer is busy. */
+    }
+    window.entryBusy.end = Date.now();
+  });
+  await busyStarted;
+  await app.evaluate(() => globalThis.entryProbe.writeGate.release());
+  await entered('cc-b-reply');
+  await expect
+    .poll(() =>
+      app.evaluate(
+        () => globalThis.entryProbe.stateSent.filter((entry) => entry.phase === 'C/C/B-busy').length,
+      ),
+    )
+    .toBeGreaterThanOrEqual(2);
+  await release('cc-b-reply');
+  await busy;
+  await expect(button).toBeEnabled();
+  const cc = await recordProtocol('C/C/B-busy', createdButUnpublished);
+  assert.notEqual(cc.id, createdButUnpublished);
+  assert.deepEqual(
+    cc.main.filter((entry) => entry.kind === 'state-send').map((entry) => entry.id),
+    [cc.id, cc.id],
+  );
+  assert.deepEqual(
+    cc.renderer.events.map((entry) => entry.id),
+    [cc.id, cc.id],
+  );
+  assert.ok(
+    cc.main
+      .filter((entry) => entry.kind === 'state-send' || entry.method === 'newSession')
+      .every((entry) => entry.at >= cc.renderer.busy.start && entry.at <= cc.renderer.busy.end),
+  );
+  assert.ok(cc.renderer.events.every((entry) => entry.at >= cc.renderer.busy.end));
+  await app.evaluate(() => globalThis.entryProbe.restoreWrite());
+  await capture('normal saved C/C/B IPC with busy renderer unlocks only the authoritative C DOM');
+  await page.screenshot({ path: path.join(output, 'protocol-authoritative-c.png') });
+  console.log('PASS real saved C/C/B through normal IPC survives renderer CPU blocking and unlocks C');
+
+  await startPhase('B/C/B');
+  await gate('bc-b-reply', 'newSession', 'after', f.projectId);
+  await projectNew();
+  await entered('bc-b-reply');
+  await clickDisabled();
+  const earlierTarget = await app.evaluate(
+    () => globalThis.entryProbe.gates.find((gate) => gate.token === 'bc-b-reply').resultId,
+  );
+  await nativeNewChat();
+  await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, earlierTarget);
+  await clickDisabled();
+  await page.evaluate(() => {
+    window.entryAwaitUnlock = true;
+  });
+  await release('bc-b-reply');
+  await expect(button).toBeEnabled();
+  const bc = await recordProtocol('B/C/B', earlierTarget);
+  assert.deepEqual(
+    bc.main.filter((entry) => entry.kind === 'state-send').map((entry) => entry.id),
+    [earlierTarget, bc.id],
+  );
+  assert.deepEqual(
+    bc.renderer.events.map((entry) => entry.id),
+    [earlierTarget, bc.id],
+  );
+  assert.notEqual(bc.id, earlierTarget);
+  assert.equal((await connectCalls()).length, 3);
+  await capture('normal B/C/B IPC does not restore or lock the returned B target');
+  console.log('PASS real B/C/B through normal IPC unlocks current C without following the returned B');
+
   assert.equal(provider.requests.length, 0, 'navigation/model discovery must not send a model prompt');
   assert.ok(!(await connectCalls()).some((call) => call.id === f.sessionId));
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'result.json'),
-    JSON.stringify({ passed: true, evidence, calls: await calls(), rendererErrors: errors }, null, 2),
+    JSON.stringify(
+      { passed: true, evidence, protocolEvidence, calls: await calls(), rendererErrors: errors },
+      null,
+      2,
+    ),
   );
 } catch (error) {
   await capture('failure').catch(() => {});
   await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
   await fs.writeFile(
     path.join(output, 'failure.json'),
-    JSON.stringify({ evidence, calls: await calls().catch(() => []), rendererErrors: errors }, null, 2),
+    JSON.stringify(
+      {
+        evidence,
+        protocolEvidence,
+        calls: await calls().catch(() => []),
+        rendererErrors: errors,
+        rendererTrace: await page
+          ?.evaluate(() => ({
+            events: window.entryTransport,
+            unlocks: window.entryUnlocks,
+            probe: window.__navigationProbe,
+          }))
+          .catch(() => undefined),
+      },
+      null,
+      2,
+    ),
   );
   throw error;
 } finally {
+  await app
+    ?.evaluate(() => {
+      globalThis.entryProbe?.writeGate?.release();
+      globalThis.entryProbe?.restoreWrite?.();
+    })
+    .catch(() => {});
   await app?.close();
   await provider.close();
 }

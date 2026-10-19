@@ -1,5 +1,7 @@
 # Authoritative external selection during a renderer transition
 
+This is the historical `a4ae5b2` report. The observed-target rule below is superseded by [the completion snapshot protocol](navigation-completion-protocol.md): actual main/store execution can publish C/C and legitimately return B without ever publishing B. A result-ID mismatch is not a valid permanent-lock condition.
+
 This corrects the regression in `cff974cbec3603fe633c2b332e741f891d48713e` on the same `fix/chat-ui-model-readiness` branch. Its green CI did not cover this interleaving. The earlier retry fixes (`013966f8`), semantic chat readiness (`fb921ce`) and popup ownership guards (`cff974c`) remain intact.
 
 ## Reproduction before the fix

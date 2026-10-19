@@ -1,0 +1,96 @@
+PASS quick new from an untrusted project disables the old entry and requires a fresh explicit click
+PASS a selected new target stays disabled until IPC completion; the old picker never carries forward
+PASS failed creation releases the lock, and a newer selection supersedes an old held reply without connecting
+PASS an older completion cannot unlock a newer pending or untrusted target
+PASS native File > New Chat supersedes a held renderer selection without locking model/send
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+ExpectError: expect(locator).toBeDisabled() failed
+
+Locator: locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first()
+Expected: disabled
+Timeout: 5000ms
+Error: element(s) not found
+
+Call log:
+  - Expect "toBeDisabled" locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first() with timeout 5000ms
+  - waiting for locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first()
+
+    at captureRawStack (/workspace/pi-desktop-gui/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    at callMatcherAsStep (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    at Object.toBeDisabled (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    at clickDisabled (/workspace/pi-desktop-gui/scripts/test-model-entry-transition-ui.mjs:171:80)
+    at async file:///workspace/pi-desktop-gui/scripts/test-model-entry-transition-ui.mjs:349:3 {
+  matcherResult: {
+    message: 'expect(locator).toBeDisabled() failed\n' +
+      '\n' +
+      "Locator: locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first()\n" +
+      'Expected: disabled\n' +
+      'Timeout: 5000ms\n' +
+      'Error: element(s) not found\n' +
+      '\n' +
+      'Call log:\n' +
+      `  - Expect "toBeDisabled" locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first() with timeout 5000ms\n` +
+      "  - waiting for locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first()\n",
+    pass: false,
+    actual: undefined,
+    name: 'toBeDisabled',
+    expected: 'disabled',
+    log: [
+      `  - Expect "toBeDisabled" locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first() with timeout 5000ms`,
+      "  - waiting for locator('.run-meta').getByRole('button', { name: /连接|重连/ }).first()"
+    ],
+    timeout: 5000,
+    ariaSnapshot: '- banner:\n' +
+      '  - navigation "应用菜单":\n' +
+      '    - button "文件"\n' +
+      '    - button "编辑"\n' +
+      '    - button "视图"\n' +
+      '    - text: Pi Desktop\n' +
+      '- complementary "项目与会话":\n' +
+      '  - text: π Pi Desktop\n' +
+      '  - button "搜索项目与会话 Ctrl+K"\n' +
+      '  - button "新建对话 Ctrl+N"\n' +
+      '  - text: 对话\n' +
+      '  - button "新对话"\n' +
+      '  - button "新对话 会话操作"\n' +
+      '  - button "新对话"\n' +
+      '  - button "新对话 会话操作"\n' +
+      '  - text: 项目\n' +
+      '  - button "添加项目"\n' +
+      '  - button "Pi GUI 验收项目" [expanded]\n' +
+      '  - button "在 Pi GUI 验收项目 中新建会话"\n' +
+      '  - button "Pi GUI 验收项目 项目操作"\n' +
+      '  - button "Protected project chat"\n' +
+      '  - button "Protected project chat 会话操作"\n' +
+      '  - button "清理空会话"\n' +
+      '  - button "设置"\n' +
+      '  - text: Pi Desktop v0.14.21\n' +
+      '- separator "项目侧栏宽度"\n' +
+      '- main:\n' +
+      '  - button "收起项目侧栏 Ctrl+B" [expanded]\n' +
+      '  - heading "新对话" [level=1]\n' +
+      '  - text: 独立对话\n' +
+      '  - button "Pi 功能"\n' +
+      '  - button "查看会话输出": 输出\n' +
+      '  - heading "有什么想聊的？" [level=2]\n' +
+      '  - paragraph: 直接提问、整理思路，或一起打磨一个想法。\n' +
+      '  - button "解释概念": 解释概念 从直觉讲到细节，配上例子\n' +
+      '  - button "整理思路": 整理思路 把零散的想法理成结构\n' +
+      '  - button "一起写作": 一起写作 改稿、润色或换个语气\n' +
+      '  - separator "调整输入框高度"\n' +
+      '  - textbox "任务输入":\n' +
+      '    - /placeholder: 给 Pi 发消息…\n' +
+      '  - button "添加图片"\n' +
+      '  - button "审批模式" [disabled]: 全自动\n' +
+      '  - button "选择模型" [disabled]: 会话切换中…\n' +
+      '  - text: ↵ 发送\n' +
+      '  - button "发送任务" [disabled]\n' +
+      '  - status: 就绪\n' +
+      '  - button "上下文 0% (0 / 32.8k) 累计 0 tokens 估算 $0.0000"'
+  }
+}
+
+Node.js v24.19.0

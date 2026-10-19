@@ -78,6 +78,10 @@ export interface AppState {
   selectedProjectId?: string;
   selectedSessionId?: string;
 }
+export interface StateSnapshot {
+  state: AppState;
+  revision: number;
+}
 export interface IndexRecovery {
   corruptFile?: string;
   recoveredFrom?: string;
@@ -353,7 +357,7 @@ export type AppEvent =
   | { type: 'appDialog'; dialog: AppDialog }
   | { type: 'appDialogsCancelled' }
   | { type: 'workspaceChanged'; projectId: string; changedPaths?: string[] }
-  | { type: 'state'; state: AppState }
+  | ({ type: 'state' } & StateSnapshot)
   | { type: 'storage'; storage: StorageStatus }
   | { type: 'update'; update: UpdateState }
   | { type: 'runtime'; runtime: Runtime }
@@ -374,8 +378,7 @@ export function applyRuntimePatch(previous: Runtime, patch: RuntimePatch): Runti
     tools: applyItems(previous.tools, toolsFrom, tools, toolCount),
   };
 }
-export interface Bootstrap {
-  state: AppState;
+export interface Bootstrap extends StateSnapshot {
   runtime: Runtime;
   environment: Environment;
   dataDir: string;
@@ -387,6 +390,7 @@ export interface ApiMap {
   respondAppDialog: { args: [id: string, response: number]; result: void };
   showAppMenu: { args: [id: AppMenuId, x: number, y: number]; result: void };
   bootstrap: { args: []; result: Bootstrap };
+  navigationState: { args: []; result: StateSnapshot };
   checkUpdate: { args: []; result: void };
   downloadUpdate: { args: []; result: void };
   installUpdate: { args: []; result: void };

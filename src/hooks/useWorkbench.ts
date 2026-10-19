@@ -31,26 +31,23 @@ export function useWorkbench() {
     [settingsOpen, setSettingsOpen] = useState(false),
     [settingsTab, setSettingsTab] = useState('environment'),
     [prefs, setPrefs] = useState<Settings>();
-  const selectionObservation = useRef<{ request: number; lastId?: string; ids: Set<string> } | undefined>(
-    undefined,
-  );
-  function observeSelection(id: string | undefined, fromEvent = false) {
-    const observed = selectionObservation.current;
-    if (observed && (fromEvent || id !== observed.lastId)) {
-      if (id) observed.ids.add(id);
-      observed.lastId = id;
-    }
-  }
-  const { state, runtime, anyRunning, environment, setEnvironment, storage, update } = useRuntime(
-    setError,
-    setPrefs,
-    (id) => observeSelection(id, true),
-  );
+  const {
+    state,
+    stateRevision = 0,
+    receivedState,
+    receiveState,
+    runtime,
+    anyRunning,
+    environment,
+    setEnvironment,
+    storage,
+    update,
+  } = useRuntime(setError, setPrefs);
   const [pendingSessions, setPendingSessions] = useState<Record<string, number>>({});
   const [selectionTransition, setSelectionTransition] = useState<{
     request: number;
-    targetId?: string;
-    settled?: boolean;
+    revision?: number;
+    error?: string;
   }>();
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
@@ -84,54 +81,44 @@ export function useWorkbench() {
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
-  observeSelection(selected?.id);
   const pending = Boolean(pendingSessions[selected?.id ?? '']);
-  // A published selection may supersede a target that this request already reached.
-  // A different, unobserved reply target is not evidence of external navigation.
-  const externallySelected = Boolean(
-    selectionTransition?.targetId &&
-    selected &&
-    selected.id !== selectionTransition.targetId &&
-    selectionObservation.current?.request === selectionTransition.request &&
-    selectionObservation.current.ids.has(selectionTransition.targetId),
-  );
+  // Confirm current main state, then wait for that snapshot or a newer revision
+  // to commit. Operation result IDs do not determine the selected session.
   const selectionChanging = Boolean(
     selectionTransition &&
-    !externallySelected &&
-    (!selectionTransition.settled || selected?.id !== selectionTransition.targetId),
+    (selectionTransition.revision === undefined ||
+      stateRevision < selectionTransition.revision ||
+      stateRevision < (receivedState?.current.revision ?? stateRevision)),
   );
   useEffect(() => {
-    if (externallySelected && selectionTransition?.request === selectionRequest.current) {
-      selectionRequest.current++;
-      selectionObservation.current = undefined;
+    if (selectionTransition && !selectionChanging)
       setSelectionTransition((current) =>
         current?.request === selectionTransition.request ? undefined : current,
       );
-    } else if (selectionTransition?.settled && selected?.id === selectionTransition.targetId) {
-      if (selectionObservation.current?.request === selectionTransition.request)
-        selectionObservation.current = undefined;
-      setSelectionTransition((current) =>
-        current?.request === selectionTransition.request ? undefined : current,
-      );
-    }
-  }, [selectionTransition, selected?.id, externallySelected]);
-  function beginSelection(targetId?: string) {
+  }, [selectionTransition, selectionChanging]);
+  function beginSelection() {
     const request = ++selectionRequest.current;
-    selectionObservation.current = {
-      request,
-      lastId: stateRef.current?.selectedSessionId,
-      ids: new Set(targetId === selected?.id && targetId ? [targetId] : []),
-    };
-    setSelectionTransition({ request, targetId });
+    setSelectionTransition({ request });
     return request;
   }
-  function settleSelection(request: number, targetId?: string) {
-    if (request === selectionRequest.current) {
-      if (!targetId) selectionObservation.current = undefined;
-      setSelectionTransition(targetId ? { request, targetId, settled: true } : undefined);
+  async function settleSelection(request: number) {
+    if (request !== selectionRequest.current) return false;
+    try {
+      const confirmed = await api.invoke('navigationState');
+      if (request !== selectionRequest.current) return false;
+      receiveState(confirmed.state, confirmed.revision);
+      setSelectionTransition({ request, revision: confirmed.revision });
+      return true;
+    } catch (error) {
+      if (request === selectionRequest.current)
+        setSelectionTransition({
+          request,
+          error: `无法确认当前会话，请重新选择会话。${readableError(error)}`,
+        });
+      return false;
     }
   }
-  const error = errors[selected?.id ?? ''] ?? errors[''] ?? '';
+  const error = selectionTransition?.error ?? errors[selected?.id ?? ''] ?? errors[''] ?? '';
   function setError(value: string, id = selected?.id ?? '') {
     setErrors((previous) => ({ ...previous, '': '', [id]: value }));
   }
@@ -447,18 +434,18 @@ export function useWorkbench() {
     });
   }
   async function selectSession(s: Session) {
-    const request = beginSelection(s.id);
+    const request = beginSelection();
     setSearchOpen(false);
     setError('', s.id);
     setPending(true, s.id);
     try {
       // The selected-ID effect owns history; late IPC replies cannot replace it.
       await api.invoke('selectSession', s.id);
-      settleSelection(request, s.id);
+      await settleSelection(request);
     } catch (error) {
       if (request === selectionRequest.current) {
         setError(readableError(error), s.id);
-        settleSelection(request);
+        await settleSelection(request);
       }
     } finally {
       setPending(false, s.id);
@@ -467,8 +454,8 @@ export function useWorkbench() {
   async function createSession(projectId?: string) {
     const request = beginSelection();
     const session = await attempt(() => api.invoke('newSession', projectId));
-    settleSelection(request, session?.id);
-    if (session && request === selectionRequest.current) focusComposer();
+    const confirmed = await settleSelection(request);
+    if (session && confirmed && request === selectionRequest.current) focusComposer();
   }
   function openSettings(tabName = 'environment') {
     setPrefs(stateRef.current?.settings);
@@ -492,6 +479,7 @@ export function useWorkbench() {
     return Boolean(
       selected &&
       selected.id === stateRef.current?.selectedSessionId &&
+      selected.id === (receivedState?.current.state ?? stateRef.current)?.selectedSessionId &&
       renderedSelectionRequest === selectionRequest.current &&
       !selectionChanging &&
       sessionEnabled &&

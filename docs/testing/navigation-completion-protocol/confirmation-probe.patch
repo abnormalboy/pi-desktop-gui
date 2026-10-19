@@ -1,0 +1,76 @@
+--- a/src/hooks/useRuntime.ts
++++ b/src/hooks/useRuntime.ts
+@@ -27,13 +27,17 @@
+     if (!Number.isSafeInteger(revision) || revision <= receivedState.current.revision) return;
+     const next = { state, revision };
+     receivedState.current = next;
++    (window as any).__navigationProbe?.push({ kind: 'accept', phase: (window as any).entryPhase, revision: next.revision, id: state.selectedSessionId, at: Date.now() });
+     setSnapshot(next);
+   };
+   useEffect(() => {
+     let alive = true;
+     const unsubscribe = api.onEvent((event) => {
+       if (!alive) return;
+-      if (event.type === 'state') receiveState(event.state, event.revision);
++      if (event.type === 'state') {
++        (window as any).__navigationProbe?.push({ kind: 'event', phase: (window as any).entryPhase, revision: event.revision, id: event.state.selectedSessionId, stale: event.revision <= receivedState.current.revision, at: Date.now() });
++        receiveState(event.state, event.revision);
++      }
+       else if (event.type === 'storage') setStorage(event.storage);
+       else if (event.type === 'update') setUpdate(event.update);
+       else if (event.type === 'runtimeRemoved') {
+--- a/src/hooks/useWorkbench.ts
++++ b/src/hooks/useWorkbench.ts
+@@ -43,6 +43,14 @@
+     storage,
+     update,
+   } = useRuntime(setError, setPrefs);
++  function observeInvoke<T>(operation: Promise<T>, method: string, request: number) {
++    void operation.then((result: any) => {
++      (window as any).__navigationProbe?.push({ kind: 'invoke', phase: (window as any).entryPhase, method, request, id: result?.id, snapshotId: result?.state?.selectedSessionId, revision: result?.revision, received: receivedState?.current.revision, selected: receivedState?.current.state?.selectedSessionId, at: Date.now() });
++    }, () => {
++      (window as any).__navigationProbe?.push({ kind: 'invoke-rejected', phase: (window as any).entryPhase, method, request, at: Date.now() });
++    });
++    return operation;
++  }
+   const [pendingSessions, setPendingSessions] = useState<Record<string, number>>({});
+   const [selectionTransition, setSelectionTransition] = useState<{
+     request: number;
+@@ -95,6 +103,10 @@
+         current?.request === selectionTransition.request ? undefined : current,
+       );
+   }, [selectionTransition, selectionChanging]);
++  useLayoutEffect(() => {
++    if (selectionTransition && !selectionChanging)
++      (window as any).__navigationProbe?.push({ kind: 'unlock-layout', phase: (window as any).entryPhase, request: selectionTransition.request, confirmed: selectionTransition.revision, committed: stateRevision, received: receivedState?.current.revision, id: selected?.id, domId: (document.querySelector('.session-row.active') as HTMLElement | null)?.dataset.sessionId, disabled: (document.querySelector('.model-pill') as HTMLButtonElement | null)?.disabled, at: Date.now() });
++  }, [selectionTransition, selectionChanging, stateRevision, selected?.id]);
+   function beginSelection() {
+     const request = ++selectionRequest.current;
+     setSelectionTransition({ request });
+@@ -103,7 +115,7 @@
+   async function settleSelection(request: number) {
+     if (request !== selectionRequest.current) return false;
+     try {
+-      const confirmed = await api.invoke('navigationState');
++      const confirmed = await observeInvoke(api.invoke('navigationState'), 'navigationState', request);
+       if (request !== selectionRequest.current) return false;
+       receiveState(confirmed.state, confirmed.revision);
+       setSelectionTransition({ request, revision: confirmed.revision });
+@@ -439,7 +451,7 @@
+     setPending(true, s.id);
+     try {
+       // The selected-ID effect owns history; late IPC replies cannot replace it.
+-      await api.invoke('selectSession', s.id);
++      await observeInvoke(api.invoke('selectSession', s.id), 'selectSession', request);
+       await settleSelection(request);
+     } catch (error) {
+       if (request === selectionRequest.current) {
+@@ -452,7 +464,7 @@
+   }
+   async function createSession(projectId?: string) {
+     const request = beginSelection();
+-    const session = await attempt(() => api.invoke('newSession', projectId));
++    const session = await attempt(() => observeInvoke(api.invoke('newSession', projectId), 'newSession', request));
+     const confirmed = await settleSelection(request);
+     if (session && confirmed && request === selectionRequest.current) focusComposer();
+   }

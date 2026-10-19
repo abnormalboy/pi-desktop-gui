@@ -1,0 +1,30 @@
+✖ actual main/store and hook accept C/C/B publication/completion order (57.761264ms)
+✔ actual main/store and hook accept B/C/B publication/completion order (14.318686ms)
+ℹ {"phase":"reply","protocol":[{"kind":"state","id":"dae6f6cd-e346-42bc-83c5-4566dfa95868"},{"kind":"state","id":"dd2c53b9-ad77-4f3d-8675-cc18211b833a"},{"kind":"reply","id":"dae6f6cd-e346-42bc-83c5-4566dfa95868"}],"selected":"dd2c53b9-ad77-4f3d-8675-cc18211b833a"}
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3002.432216
+
+✖ failing tests:
+
+test at tests/workbench-selection.test.ts:1:7882
+✖ actual main/store and hook accept C/C/B publication/completion order (57.761264ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  true !== false
+
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/workbench-selection.test.ts:344:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

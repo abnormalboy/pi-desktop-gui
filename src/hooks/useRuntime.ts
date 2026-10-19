@@ -1,4 +1,4 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   applyRuntimePatch,
   busy,
@@ -16,22 +16,25 @@ const noRuntime = emptyRuntime();
 export function useRuntime(
   setError: (value: string) => void,
   setPrefs: Dispatch<SetStateAction<Settings | undefined>>,
-  observeSelection?: (id: string | undefined) => void,
 ) {
-  const [state, setState] = useState<AppState>(),
+  const [snapshot, setSnapshot] = useState<{ state: AppState; revision: number }>(),
     [runtimes, setRuntimes] = useState<Record<string, Runtime>>({}),
     [environment, setEnvironment] = useState<Environment>(),
     [update, setUpdate] = useState<UpdateState>(),
     [storage, setStorage] = useState<StorageStatus>({ writable: false });
+  const receivedState = useRef<{ state?: AppState; revision: number }>({ revision: 0 });
+  const receiveState = (state: AppState, revision: number) => {
+    if (!Number.isSafeInteger(revision) || revision <= receivedState.current.revision) return;
+    const next = { state, revision };
+    receivedState.current = next;
+    setSnapshot(next);
+  };
   useEffect(() => {
     let alive = true;
     const unsubscribe = api.onEvent((event) => {
       if (!alive) return;
-      if (event.type === 'state') {
-        // Keep intermediate selections even when React coalesces their renders.
-        observeSelection?.(event.state.selectedSessionId);
-        setState(event.state);
-      } else if (event.type === 'storage') setStorage(event.storage);
+      if (event.type === 'state') receiveState(event.state, event.revision);
+      else if (event.type === 'storage') setStorage(event.storage);
       else if (event.type === 'update') setUpdate(event.update);
       else if (event.type === 'runtimeRemoved') {
         setRuntimes((previous) => {
@@ -54,14 +57,13 @@ export function useRuntime(
       .invoke('bootstrap')
       .then((v) => {
         if (!alive) return;
-        observeSelection?.(v.state.selectedSessionId);
-        setState(v.state);
+        receiveState(v.state, v.revision);
         if (v.runtime.sessionId) {
           const id = v.runtime.sessionId;
           setRuntimes((previous) => ({ ...previous, [id]: v.runtime }));
         }
         setEnvironment(v.environment);
-        setPrefs(v.state.settings);
+        setPrefs((previous) => previous ?? receivedState.current.state?.settings ?? v.state.settings);
         setStorage(v.storage);
         setUpdate(v.update);
       })
@@ -71,7 +73,19 @@ export function useRuntime(
       unsubscribe();
     };
   }, []);
+  const state = snapshot?.state;
   const runtime = (state?.selectedSessionId && runtimes[state.selectedSessionId]) || noRuntime;
   const anyRunning = Object.values(runtimes).some((item) => busy(item.status) || item.dialogs.length > 0);
-  return { state, setState, runtime, anyRunning, environment, setEnvironment, storage, update };
+  return {
+    state,
+    stateRevision: snapshot?.revision ?? 0,
+    receivedState,
+    receiveState,
+    runtime,
+    anyRunning,
+    environment,
+    setEnvironment,
+    storage,
+    update,
+  };
 }

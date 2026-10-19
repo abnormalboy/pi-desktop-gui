@@ -1,0 +1,21 @@
+PASS quick new from an untrusted project disables the old entry and requires a fresh explicit click
+PASS a selected new target stays disabled until IPC completion; the old picker never carries forward
+PASS failed creation releases the lock, and a newer selection supersedes an old held reply without connecting
+PASS an older completion cannot unlock a newer pending or untrusted target
+PASS native File > New Chat supersedes a held renderer selection without locking model/send
+PASS deleting an observed target keeps the confirmed fallback usable after its late reply
+PASS external navigation does not release a newer unobserved target; its own completion restores it
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+electronApplication.evaluate: TypeError: A dynamic import callback was not specified.
+    at importModuleDynamicallyCallback (node:internal/modules/esm/utils:280:9)
+    at eval (eval at evaluate (:370:30), <anonymous>:2:18)
+    at UtilityScript.evaluate (<anonymous>:372:16)
+    at UtilityScript.<anonymous> (<anonymous>:1:44)
+    at <anonymous> (/workspace/pi-desktop-gui/scripts/test-model-entry-transition-ui.mjs:429:13) {
+  log: []
+}
+
+Node.js v24.19.0
