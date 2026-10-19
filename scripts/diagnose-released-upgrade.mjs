@@ -14,7 +14,10 @@ const repository = 'yeyuProject/pi-desktop-gui';
 const branch = 'refs/heads/diagnose/released-upgrade-18-19';
 const oldVersion = '0.14.18';
 const nextVersion = '0.14.19';
-const guid = 'c2d4daf8-9c61-5244-a7f6-36df43dbd96e';
+const appId = 'io.yeyuproject.pi-desktop';
+const nsisUuidNamespace = '50e065bc-3134-11e6-9bab-38c9862bdaf3';
+const guid = 'd2008bbf-a83c-592b-a19d-b5234d5df873';
+const uninstallDisplayNamePattern = '^Pi Desktop(?: [0-9]+\\.[0-9]+\\.[0-9]+)?$';
 const downloadRoot = `https://github.com/${repository}/releases/download/`;
 const assets = [
   {
@@ -233,6 +236,22 @@ async function verifyAsset(asset, file) {
 }
 
 async function selfTest() {
+  const { UUID } = await import('builder-util-runtime');
+  assert.equal(
+    UUID.v5(appId, UUID.parse(nsisUuidNamespace)),
+    guid,
+    'Production NSIS identity derives from the released appId',
+  );
+  const productName = new RegExp(uninstallDisplayNamePattern);
+  for (const name of ['Pi Desktop', 'Pi Desktop 0.14.18', 'Pi Desktop 0.14.19'])
+    assert.equal(productName.test(name), true);
+  for (const name of [
+    'Other Pi Desktop',
+    'Pi Desktop Helper',
+    'Pi Desktop 0x14x18',
+    'Pi Desktop 0.14.18 Helper',
+  ])
+    assert.equal(productName.test(name), false);
   assert.equal(executableVersionMatches('0.14.18', oldVersion), true);
   assert.equal(executableVersionMatches('0.14.18.0', oldVersion), true);
   assert.equal(executableVersionMatches('0.14.18.1', oldVersion), false);
@@ -275,7 +294,7 @@ async function selfTest() {
     assert.equal(metadata.tag_name, 'v0.14.19');
     assert.match(await (await fetch(base + releasePath + '.atom')).text(), /releases\/tag\/v0\.14\.19/);
     console.log(
-      'PASS diagnostic hash guard, URL allowlist, fixed metadata, full/range/error transport self-tests',
+      'PASS diagnostic NSIS identity, bounded uninstall names, hash guard, URL allowlist, fixed metadata, full/range/error transport self-tests',
     );
   } finally {
     server?.closeAllConnections();
@@ -330,7 +349,7 @@ async function diagnose() {
     baseline: 'not-run',
     from: oldVersion,
     to: nextVersion,
-    productionIdentity: { appId: 'io.yeyuproject.pi-desktop', productName: 'Pi Desktop', guid },
+    productionIdentity: { appId, productName: 'Pi Desktop', guid, nsisUuidNamespace },
     installation: { installDir, executable, userData, updaterCache },
     scope:
       'Unmodified released Windows NSIS baseline, default production installation on ephemeral hosted CI only',
@@ -346,7 +365,7 @@ async function diagnose() {
     const data = await psJSON(`
       $install=${quotePS(installDir)};
       $entries=@(); foreach($base in @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')) {
-        if(Test-Path $base) { $entries+=@(Get-ChildItem $base | Get-ItemProperty | Where-Object { $_.DisplayName -eq 'Pi Desktop' } | Select-Object PSChildName,DisplayName,DisplayVersion,InstallLocation,UninstallString,QuietUninstallString) }
+        if(Test-Path $base) { $entries+=@(Get-ChildItem $base | Get-ItemProperty | Where-Object { $_.PSChildName -eq ${quotePS(guid)} -or $_.DisplayName -match ${quotePS(uninstallDisplayNamePattern)} } | Select-Object PSChildName,DisplayName,DisplayVersion,InstallLocation,UninstallString,QuietUninstallString) }
       }
       $keys=@(); foreach($key in @(${quotePS(registry)},${quotePS(uninstallKey)})) {
         if(Test-Path $key) { $value=Get-ItemProperty $key; $keys+=@{ key=$key; installLocation=$value.InstallLocation; displayVersion=$value.DisplayVersion; uninstallString=$value.UninstallString } }
@@ -505,6 +524,12 @@ async function diagnose() {
         (key) => key.installLocation?.toLowerCase() === installDir.toLowerCase(),
       ),
       'Production registry install path',
+    );
+    assert.ok(
+      beforeLaunch.uninstallEntries.some(
+        (entry) => entry.PSChildName?.toLowerCase() === guid && entry.DisplayVersion === oldVersion,
+      ),
+      'Production GUID and old-version uninstall entry',
     );
     assert.ok(
       beforeLaunch.shortcuts.some((link) => link.target?.toLowerCase() === executable.toLowerCase()),
@@ -736,8 +761,18 @@ async function diagnose() {
       'Production shortcut remains on updated path',
     );
     assert.ok(
-      stable.uninstallEntries.some((entry) => entry.DisplayVersion === nextVersion),
-      'Installed registry version updated',
+      stable.uninstallEntries.some(
+        (entry) => entry.PSChildName?.toLowerCase() === guid && entry.DisplayVersion === nextVersion,
+      ),
+      'Production GUID uninstall entry updated to target version',
+    );
+    assert.ok(
+      stable.identityKeys.some(
+        (key) =>
+          key.key.toLowerCase() === registry.toLowerCase() &&
+          key.installLocation?.toLowerCase() === installDir.toLowerCase(),
+      ),
+      'Production GUID preserves the installed target path',
     );
     const restored = JSON.parse(await fs.readFile(path.join(userData, 'state.json'), 'utf8'));
     assert.equal(restored.appVersion, nextVersion, 'New app actually opened the default store');
