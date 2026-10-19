@@ -8,8 +8,9 @@ import { Store } from '../../electron/store';
 const exec = promisify(execFile);
 
 /** Local deterministic OpenAI-compatible endpoint, used with the unmodified Pi CLI. */
-export async function createLocalProvider() {
+export async function createLocalProvider(options: { holdSlowResponses?: boolean } = {}) {
   const requests: any[] = [];
+  const heldSlowResponses = new Set<http.ServerResponse>();
   const server = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -103,6 +104,14 @@ export async function createLocalProvider() {
       });
     }
     if (prompt.includes('E2E_SLOW')) {
+      if (options.holdSlowResponses) {
+        // A fixture-controlled gate: only client cancellation or provider.close ends this stream.
+        // Tests can wait for unrelated startup without racing the default 20-second response.
+        heldSlowResponses.add(res);
+        res.once('close', () => heldSlowResponses.delete(res));
+        chunk({ role: 'assistant', content: '开始流式回复。' });
+        return;
+      }
       chunk({ role: 'assistant', content: '开始流式回复。' });
       const timer = setTimeout(() => {
         if (!res.destroyed) {
@@ -121,6 +130,9 @@ export async function createLocalProvider() {
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    get heldSlowResponseCount() {
+      return heldSlowResponses.size;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

@@ -41,6 +41,20 @@ const until = async (condition: () => boolean) => {
 };
 const settled = () => until(() => !service.hasPendingWork);
 const send = (text: string) => service.send(f.sessionId, text, [], 'steer');
+const normalAfterRetry = async (outcome: string, recover = false) => {
+  provider.reset('success', true);
+  const prompt = `NORMAL_AFTER_${outcome.toUpperCase()}`;
+  if (recover) await service.recover(f.sessionId, prompt);
+  else await send(prompt);
+  await until(() => provider.count === 1);
+  assert.equal(service.runtime.status, 'running');
+  assert.deepEqual(service.runtime.notices, [], 'a new run must not inherit previous retry records');
+  provider.release();
+  await settled();
+  assert.equal(service.runtime.status, 'completed');
+  assert.deepEqual(service.runtime.notices, []);
+  console.log(`PASS a normal run after ${outcome} has no stale retry records while running or settled`);
+};
 try {
   provider.reset('recover', true);
   await service.connect(f.sessionId);
@@ -66,6 +80,7 @@ try {
   );
   assert.ok(!service.runtime.notices.some((n) => /^(正在重试|等待重试)/.test(n)));
   console.log('PASS real Pi retries remain visible until recovery and continue the tool chain once');
+  await normalAfterRetry('recovery');
 
   provider.reset('exhaust');
   await send('RETRY_EXHAUST');
@@ -73,9 +88,11 @@ try {
   assert.equal(service.runtime.status, 'error');
   assert.equal(provider.count, 3);
   assert.equal(service.runtime.retry, undefined);
+  assert.equal(service.runtime.notices.length, 1);
   assert.equal(service.runtime.notices.filter((n) => n.startsWith('重试失败')).length, 1);
   assert.match(service.runtime.notices.at(-1)!, /2\/2/);
   console.log('PASS exhausted retry attempts update one record and settle as an error');
+  await normalAfterRetry('failure');
 
   for (const phase of ['delay', 'requesting'] as const) {
     await service.disconnect();
@@ -93,11 +110,23 @@ try {
     assert.match(service.runtime.notices.at(-1)!, /^重试已取消/);
     await until(() => provider.requests.at(-1)!.closed);
     console.log(`PASS cancelling a retry during ${phase} stops the run and closes its request`);
+    await normalAfterRetry(`cancellation_${phase}`);
   }
 
   await service.disconnect();
   await settings(30);
   await service.connect(f.sessionId);
+  provider.reset('cancel-request');
+  await send('RETRY_CRASH');
+  await until(() => service.runtime.retry?.phase === 'requesting' && provider.count === 2);
+  const internal = service as unknown as { rpc: { killTree(): Promise<unknown> } };
+  await internal.rpc.killTree();
+  await until(
+    () => service.runtime.status === 'interrupted' && service.runtime.crash?.cleanup === 'confirmed',
+  );
+  assert.match(service.runtime.notices.at(-1)!, /^重试已中断/);
+  await normalAfterRetry('interruption', true);
+
   provider.reset('timeout');
   const started = Date.now();
   await send('RETRY_TIMEOUT');

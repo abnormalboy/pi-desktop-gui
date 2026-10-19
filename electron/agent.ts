@@ -76,6 +76,20 @@ export async function argumentHint(file: string) {
   }
 }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+// Connection and configuration status is not conversation activity. Persist content/run boundaries,
+// rather than every streamed token, so browsing does not change recency or unread state.
+const sessionActivityEvents = new Set([
+  'agent_start',
+  'message_start',
+  'message_end',
+  'tool_execution_start',
+  'tool_execution_end',
+  'compaction_start',
+  'compaction_end',
+  'auto_retry_start',
+  'auto_retry_end',
+  'agent_settled',
+]);
 export class AgentService extends EventEmitter {
   runtime: Runtime = emptyRuntime();
   private rpc?: PiRpc;
@@ -247,11 +261,16 @@ export class AgentService extends EventEmitter {
     if (this.runtime.sessionId) {
       const s = this.store.session(this.runtime.sessionId);
       s.lastStatus = status;
-      s.updatedAt = Date.now();
-      if (!busy(status)) s.unread = this.store.state.selectedSessionId !== s.id;
       this.save();
     }
     this.publish(true);
+  }
+  private activity() {
+    if (!this.runtime.sessionId) return;
+    const session = this.store.session(this.runtime.sessionId);
+    session.updatedAt = Date.now();
+    if (!busy(this.runtime.status)) session.unread = this.store.state.selectedSessionId !== session.id;
+    this.save();
   }
   private exclusive<T>(action: () => Promise<T>): Promise<T> {
     this.pendingOperations++;
@@ -538,6 +557,7 @@ export class AgentService extends EventEmitter {
         break;
       // agent_end is deliberately not a terminal state: recovery and queued work may follow.
     }
+    if (!this.connecting && sessionActivityEvents.has(record.type)) this.activity();
     const dropped = Math.max(0, r.notices.length - 20);
     if (dropped) {
       r.notices = r.notices.slice(-20);
@@ -884,6 +904,7 @@ export class AgentService extends EventEmitter {
       if (this.rpc === rpc) {
         this.setError(errorText(e));
         this.status('error');
+        if (!this.connecting) this.activity();
         void rpc.killTree().catch(() => {});
       }
     });
@@ -892,6 +913,7 @@ export class AgentService extends EventEmitter {
         this.setError(errorText(e));
         this.runtime.connected = false;
         this.status('error');
+        if (!this.connecting) this.activity();
       }
     });
     rpc.on('exit', (code: number | null, signal: string | null) => {
@@ -920,6 +942,7 @@ export class AgentService extends EventEmitter {
       }
       if (this.stopRequested) {
         this.status('stopped');
+        if (!this.connecting) this.activity();
         return;
       }
       const at = Date.now();
@@ -950,6 +973,7 @@ export class AgentService extends EventEmitter {
         }
       this.setError('Pi 意外退出，已保留会话和本轮文件快照。请检查文件后重新连接。');
       this.status('interrupted');
+      if (!this.connecting) this.activity();
     });
   }
   private async rebindSession(sessionId: string, resuming: boolean) {
@@ -1047,9 +1071,8 @@ export class AgentService extends EventEmitter {
         throw new Error('这个会话没有等待恢复的中断，请使用正常连接或等待当前操作结束');
       if (continuePrompt !== undefined && !continuePrompt.trim())
         throw new Error('请填写继续任务的内容，或选择“重新连接”');
-      await this.ensureConnected(id);
-      if (continuePrompt !== undefined)
-        await this.sendInOperation(id, continuePrompt, [], 'steer', [], epoch);
+      if (continuePrompt === undefined) await this.ensureConnected(id);
+      else await this.sendInOperation(id, continuePrompt, [], 'steer', [], epoch);
     });
   }
   private async sendInOperation(
@@ -1073,6 +1096,7 @@ export class AgentService extends EventEmitter {
     if (!project && attachments.length) throw new Error('引用本地文件需要在项目会话中进行');
     if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
     const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
+    const previousRuntime = this.runtime;
     await this.ensureConnected(id);
     // A tool continuation or a queued steer/follow-up is still the same user task.
     if (!busy(this.runtime.status)) await this.applyTaskSelection(id);
@@ -1088,6 +1112,11 @@ export class AgentService extends EventEmitter {
       this.retryCancelled = false;
       this.setError();
       this.runtime.tools = [];
+      // A new connection already has a fresh log; retain its startup notifications.
+      if (this.runtime === previousRuntime) {
+        this.runtime.notices = [];
+        this.retryNotice = undefined;
+      }
       this.runtime.startedAt = Date.now();
       this.status('starting');
       if (project)
@@ -1111,6 +1140,7 @@ export class AgentService extends EventEmitter {
       if (shellCommand) {
         if (images.length || attachments.length) throw new Error('终端命令不能附带附件');
         this.status('running');
+        this.activity();
         await this.store.flush();
         if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
         if (project)
@@ -1167,11 +1197,13 @@ export class AgentService extends EventEmitter {
         session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
         void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
       }
-      session.updatedAt = Date.now();
-      this.save();
+      this.activity();
     } catch (e) {
       this.setError(errorText(e));
-      if (!isActive && !this.stopRequested) this.status(this.runtime.crash ? 'interrupted' : 'error');
+      if (!isActive && !this.stopRequested) {
+        this.status(this.runtime.crash ? 'interrupted' : 'error');
+        this.activity();
+      }
       throw e;
     }
   }
@@ -1345,24 +1377,32 @@ export class AgentService extends EventEmitter {
       const entry = await this.readTask(id, (rpc) => this.entryFor(rpc, role, timestamp));
       return this.branch(id, 'fork', entry.id);
     }
-    const restored = await this.idleTask(id, async (rpc) => {
-      const entry = await this.entryFor(rpc, role, timestamp);
-      const content = entry.message.content;
-      const text = typeof content === 'string' ? content : messageText(entry.message);
-      const images: ImageAttachment[] = (Array.isArray(content) ? content : [])
-        .filter((b: any) => b.type === 'image' && typeof b.data === 'string')
-        .map((b: any, i: number) => ({
-          id: randomUUID(),
-          name: `历史图片 ${i + 1}`,
-          data: b.data,
-          mimeType: b.mimeType,
-        }));
-      const result = await rpc.bridge('navigate', { entryId: entry.id, summarize: false, instructions: '' });
-      if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
-      // Tools from the abandoned branch must not be rendered as unpersisted live work.
-      this.runtime.tools = [];
-      return { text, images };
-    });
+    const restored = await this.idleTask(
+      id,
+      async (rpc) => {
+        const entry = await this.entryFor(rpc, role, timestamp);
+        const content = entry.message.content;
+        const text = typeof content === 'string' ? content : messageText(entry.message);
+        const images: ImageAttachment[] = (Array.isArray(content) ? content : [])
+          .filter((b: any) => b.type === 'image' && typeof b.data === 'string')
+          .map((b: any, i: number) => ({
+            id: randomUUID(),
+            name: `历史图片 ${i + 1}`,
+            data: b.data,
+            mimeType: b.mimeType,
+          }));
+        const result = await rpc.bridge('navigate', {
+          entryId: entry.id,
+          summarize: false,
+          instructions: '',
+        });
+        if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+        // Tools from the abandoned branch must not be rendered as unpersisted live work.
+        this.runtime.tools = [];
+        return { text, images };
+      },
+      true,
+    );
     const session = this.store.session(id);
     if (action === 'regenerate') return this.send(id, restored.text, [], 'steer', restored.images);
     const cut = restored.text.indexOf('\n\n<project_file path=');
@@ -1431,21 +1471,29 @@ export class AgentService extends EventEmitter {
     this.runtime.approvalMode = options.approvalMode ?? 'auto';
     this.runtime.approvalGrants = options.approvalGrants;
   }
-  private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
+  private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>, changesContent = false): Promise<T> {
     return this.exclusive(async () => {
       await this.ensureConnected(id);
       if (busy(this.runtime.status)) throw new Error('请先等待当前任务结束');
       this.stopRequested = false;
       this.setError();
       this.status('starting');
+      let changed = false;
       try {
-        return await action(this.rpc!);
+        const result = await action(this.rpc!);
+        changed = changesContent;
+        return result;
       } finally {
         this.clearDialogs();
-        if (!this.stopRequested && this.runtime.connected) {
-          this.status('idle');
-          await this.refresh();
-          await this.applyPendingConfiguration();
+        try {
+          if (!this.stopRequested && this.runtime.connected) {
+            this.status('idle');
+            await this.refresh();
+            await this.applyPendingConfiguration();
+          }
+        } finally {
+          // Selection can change while the operation or its final refresh is awaiting Pi.
+          if (changed) this.activity();
         }
       }
     });
@@ -1526,11 +1574,15 @@ export class AgentService extends EventEmitter {
     instructions = '',
   ) {
     if (kind !== 'navigate') return this.forkCopy(id, kind, entryId);
-    return this.idleTask(id, async (rpc) => {
-      const result = await rpc.bridge('navigate', { entryId, summarize, instructions });
-      if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
-      this.runtime.tools = [];
-    });
+    return this.idleTask(
+      id,
+      async (rpc) => {
+        const result = await rpc.bridge('navigate', { entryId, summarize, instructions });
+        if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+        this.runtime.tools = [];
+      },
+      true,
+    );
   }
   private async forkCopy(id: string, kind: 'fork' | 'clone', entryId?: string) {
     const old = this.store.session(id);
@@ -1664,12 +1716,14 @@ export class AgentService extends EventEmitter {
   }
   async stop() {
     if (!busy(this.runtime.status)) return;
+    const wasConnecting = this.connecting;
     this.stopEpoch++;
     this.stopRequested = true;
     this.runtime.stopStartedAt = Date.now();
     this.status('stopping');
     if (!this.rpc || this.rpc.closed) {
       this.status('stopped');
+      if (!wasConnecting) this.activity();
       return;
     }
     const rpc = this.rpc;
@@ -1698,6 +1752,7 @@ export class AgentService extends EventEmitter {
           .finish(this.runtime.sessionId)
           .catch((error) => this.diagnostic(errorText(error)));
       this.status('stopped');
+      if (!wasConnecting) this.activity();
       this.activeWriteTargets.clear();
       await this.refresh();
       await this.exclusive(async () => {
@@ -1711,6 +1766,7 @@ export class AgentService extends EventEmitter {
     }
   }
   async forceStop() {
+    const wasRunning = busy(this.runtime.status) && !this.connecting;
     this.stopEpoch++;
     this.stopRequested = true;
     await this.rpc?.killTree();
@@ -1722,6 +1778,7 @@ export class AgentService extends EventEmitter {
     this.runtime.connected = false;
     this.clearDialogs();
     this.status('stopped');
+    if (wasRunning) this.activity();
   }
   async disconnect() {
     await this.crashCleanup;
@@ -1817,7 +1874,8 @@ export class AgentService extends EventEmitter {
   async history(id: string): Promise<Message[]> {
     const s = this.store.session(id);
     const live = this.runtime.sessionId === id ? this.runtime.messages : [];
-    if (busy(this.runtime.status) && this.runtime.sessionId === id) return live;
+    if (busy(this.runtime.status) && this.runtime.sessionId === id && !(this.connecting && !live.length))
+      return live;
     return this.readTranscript(s.file, live);
   }
   async dispose() {

@@ -44,6 +44,17 @@ try {
     await input.fill(text);
     await page.getByRole('button', { name: '发送任务', exact: true }).click();
   };
+  const normalAfterRetry = async (outcome) => {
+    provider.reset('success', true);
+    await send(`NORMAL_AFTER_${outcome.toUpperCase()}`);
+    await wait(() => provider.count === 1);
+    await page.locator('.run-meta .running').waitFor();
+    await page.locator('.runtime-notices').waitFor({ state: 'detached' });
+    provider.release();
+    await page.locator('.run-meta .completed').waitFor();
+    assert.equal(await page.locator('.runtime-notices').count(), 0);
+    console.log(`PASS a normal run after ${outcome} has no stale retry history`);
+  };
   provider.reset('recover', true);
   await send('RETRY_RECOVER');
   await wait(() => provider.count === 2);
@@ -88,6 +99,7 @@ try {
   assert.equal(provider.count, 2);
   await page.screenshot({ path: path.join(output, 'cancelled.png'), animations: 'disabled' });
   console.log('PASS cancel button stops an in-flight retry and closes the silent HTTP request');
+  await normalAfterRetry('cancellation');
 
   provider.reset('exhaust');
   await send('RETRY_EXHAUST');
@@ -98,6 +110,8 @@ try {
   assert.match(await page.locator('.runtime-notices p').last().innerText(), /^重试失败（2\/2）/);
   assert.ok((await page.locator('.message.assistant .inline-error').count()) > 0);
   assert.equal(provider.count, 3);
+  assert.equal(await page.locator('.runtime-notices p').count(), 1);
+  await normalAfterRetry('failure');
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'result.json'),
@@ -105,7 +119,13 @@ try {
       {
         passed: true,
         packaged: Boolean(process.env.PI_DESKTOP_EXE),
-        checks: ['requesting banner', 'recovery toast auto-dismiss', 'cancel active request', 'exhaustion'],
+        checks: [
+          'requesting banner',
+          'recovery toast auto-dismiss',
+          'cancel active request',
+          'exhaustion',
+          'new run after cancellation and failure',
+        ],
         rendererErrors: errors,
       },
       null,

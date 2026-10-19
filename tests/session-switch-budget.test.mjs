@@ -4,7 +4,7 @@ import { reportSessionSwitchBudget } from '../scripts/session-switch-budget.mjs'
 
 const measurement = (maxMs) => ({
   durations: [...Array(9).fill(35.5), maxMs],
-  backendDurations: Array(10).fill(29.6),
+  selectionSettledMs: Array(10).fill(29.6),
   maxMs,
   budgetMs: 200,
 });
@@ -38,9 +38,9 @@ test('over-budget timing stays visible as a warning and allows later functional 
 test('missing or invalid measurements still fail rather than becoming performance warnings', () => {
   for (const change of [
     { durations: [] },
-    { backendDurations: [] },
+    { selectionSettledMs: [] },
     { durations: [...Array(9).fill(40), NaN] },
-    { backendDurations: [...Array(9).fill(30), Infinity] },
+    { selectionSettledMs: [...Array(9).fill(30), Infinity] },
     { durations: [...Array(9).fill(40), -1] },
     { maxMs: Infinity },
     { maxMs: 99 },

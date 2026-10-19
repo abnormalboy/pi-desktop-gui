@@ -67,7 +67,7 @@ import {
   samePath,
   terminalOpen,
 } from './platform';
-import { busy, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
+import { busy, messageText, type AppEvent, type ApiMap, type Runtime, type Session } from '../shared/types';
 
 let window: BrowserWindow | undefined, store: Store, service: SessionAgents, workspace: Workspace;
 let updates: UpdateService;
@@ -316,6 +316,38 @@ async function assertTerminalClosed(id: string) {
   if (await terminalOpen(terminalLock(id)))
     throw new Error('当前会话已交给 Pi 终端，请关闭该终端后再使用桌面会话');
 }
+const selectionConnections = new Map<
+  string,
+  { agent: ReturnType<SessionAgents['get']>; promise: Promise<void> }
+>();
+function connectSelectedSession(session: Session, agent: ReturnType<SessionAgents['get']>) {
+  const existing = selectionConnections.get(session.id);
+  if (existing?.agent === agent) return existing.promise;
+  const canConnect = () =>
+    !closing &&
+    !quitting &&
+    store.state.selectedSessionId === session.id &&
+    store.state.sessions.includes(session) &&
+    store.storage.writable &&
+    (!session.projectId || store.project(session.projectId).trusted) &&
+    !agent.runtime.connected &&
+    !agent.hasPendingWork;
+  if (!canConnect()) return Promise.resolve();
+  // Share only this connection, not an arbitrary background task. In particular,
+  // a second click must receive failures raised before a runtime error exists.
+  const connection = {
+    agent,
+    promise: (async () => {
+      const inTerminal = await service.inTerminal(session.id);
+      if (!inTerminal && canConnect()) await agent.connect(session.id);
+    })(),
+  };
+  selectionConnections.set(session.id, connection);
+  connection.promise = connection.promise.finally(() => {
+    if (selectionConnections.get(session.id) === connection) selectionConnections.delete(session.id);
+  });
+  return connection.promise;
+}
 async function assertWorkspaceTerminalsClosed(root: string) {
   const real = await canonicalWritePath(root);
   for (const session of store.state.sessions) {
@@ -518,27 +550,17 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const selection = ++sessionSelection;
     const s = store.session(id);
     const agent = service.get(id);
-    if (
-      store.storage.writable &&
-      !agent.runtime.connected &&
-      !agent.hasPendingWork &&
-      !(await service.inTerminal(id)) &&
-      (!s.projectId || store.project(s.projectId).trusted)
-    ) {
-      await agent.connect(id);
-    }
-    if (selection !== sessionSelection) return agent.history(id);
     store.selectSession(s.id);
     if (store.storage.writable) {
-      if (agent.runtime.connected) {
-        // The loaded runtime can render now; completion still waits for persistence.
-        const saving = store.save();
-        try {
-          send({ type: 'state', state: store.state });
-        } finally {
-          await saving;
-        }
-      } else await save();
+      // Browsing saved history does not depend on cold Pi startup. Persistence
+      // still completes before connection, and the invoke waits for both.
+      const saving = store.save();
+      try {
+        send({ type: 'state', state: store.state });
+      } finally {
+        await saving;
+      }
+      if (selection === sessionSelection) await connectSelectedSession(s, agent);
     } else send({ type: 'state', state: store.state });
     return agent.history(id);
   },

@@ -1,6 +1,6 @@
 import http from 'node:http';
 
-export type RetryScenario = 'recover' | 'exhaust' | 'cancel-delay' | 'cancel-request' | 'timeout';
+export type RetryScenario = 'success' | 'recover' | 'exhaust' | 'cancel-delay' | 'cancel-request' | 'timeout';
 
 /** Faults at the transport boundary of the unmodified Pi CLI; never uses a real provider. */
 export async function createRetryProvider() {
@@ -24,7 +24,11 @@ export async function createRetryProvider() {
     res.on('close', () => {
       entry.closed = true;
     });
-    if (scenario === 'exhaust' || attempt === 1 || (scenario === 'recover' && attempt === 3)) {
+    if (
+      scenario === 'exhaust' ||
+      (scenario !== 'success' && attempt === 1) ||
+      (scenario === 'recover' && attempt === 3)
+    ) {
       if (scenario !== 'timeout' || attempt !== 1) req.socket.destroy();
       return;
     }

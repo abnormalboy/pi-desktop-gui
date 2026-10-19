@@ -1,0 +1,330 @@
+import test, { type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Store } from '../electron/store';
+import { AgentService } from '../electron/agent';
+import type { PiRpc } from '../electron/rpc';
+import { SessionAgents } from '../electron/session-agents';
+import { Workspace } from '../electron/workspace';
+import { isOlderSession } from '../shared/usage';
+
+async function fixture(t: TestContext) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-session-activity-'));
+  const store = new Store(dir);
+  await store.load();
+  const older = store.createSession(),
+    newer = store.createSession();
+  older.cwd = newer.cwd = dir;
+  older.updatedAt = 1;
+  newer.updatedAt = 2;
+  older.unread = newer.unread = false;
+  Object.assign(store.state.settings, {
+    agentDir: dir,
+    nodePath: process.execPath,
+    piPath: path.resolve('tests/support/fixture-pi.mjs'),
+  });
+  const service = new AgentService(store, new Workspace(dir));
+  t.after(async () => {
+    await service.dispose();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+  const recency = () => store.state.sessions.map(({ id, updatedAt, unread }) => ({ id, updatedAt, unread }));
+  return { dir, store, service, older, newer, recency };
+}
+
+async function settled(service: AgentService) {
+  const start = Date.now();
+  while (service.hasPendingWork) {
+    if (Date.now() - start > 5000) throw new Error('Fixture did not settle: ' + service.runtime.status);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test('cold connect, reused switching and history reads preserve recency, older grouping and unread', async (t) => {
+  const f = await fixture(t);
+  const before = f.recency();
+  for (const session of [f.older, f.newer, f.older]) {
+    await f.service.connect(session.id);
+    await f.service.history(session.id);
+    assert.deepEqual(f.recency(), before);
+    assert.equal(isOlderSession(f.older), true);
+    assert.deepEqual(
+      [...f.store.state.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.id),
+      [f.newer.id, f.older.id],
+    );
+  }
+  assert.equal(f.service.lastSwitch?.mode, 'reuse');
+  await f.service.disconnect();
+  await f.service.connect(f.older.id);
+  assert.equal(f.service.lastSwitch?.mode, 'restart');
+  assert.deepEqual(f.recency(), before);
+  await f.store.flush();
+  const saved = new Store(f.dir);
+  await saved.load();
+  assert.equal(saved.session(f.older.id).updatedAt, 1);
+  assert.equal(saved.session(f.older.id).unread, false);
+});
+
+test('tree, settings, admin queries and export do not create content activity', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect(f.older.id);
+  f.older.updatedAt = 1;
+  f.older.unread = false;
+  const before = f.recency();
+  await f.service.tree(f.older.id);
+  await f.service.option(f.older.id, 'autoRetry', true);
+  await f.service.admin(f.older.id, 'providers');
+  await f.service.exportHtml(f.older.id, path.join(f.dir, 'export.html'));
+  assert.deepEqual(f.recency(), before);
+});
+
+test('cancelled and failed connection attempts preserve activity and unread', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect(f.older.id);
+  f.service.runtime.status = 'completed';
+  f.older.updatedAt = 1;
+  f.older.unread = false;
+  const before = f.recency();
+  await fs.writeFile(path.join(f.dir, 'control.json'), JSON.stringify({ cancelSwitch: true }));
+  await assert.rejects(f.service.connect(f.newer.id), /取消了会话切换/);
+  assert.deepEqual(f.recency(), before);
+  await f.service.disconnect();
+  await fs.writeFile(path.join(f.dir, 'control.json'), JSON.stringify({ exitOnStats: true }));
+  await assert.rejects(f.service.connect(f.older.id), /Pi 在加载会话时已退出/);
+  assert.deepEqual(f.recency(), before);
+});
+
+test('accepted messages and background completion still advance activity and mark unread', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect(f.older.id);
+  f.older.updatedAt = 1;
+  await f.service.send(f.older.id, '/handled', [], 'steer');
+  assert.ok(f.older.updatedAt > f.newer.updatedAt);
+  f.older.unread = false;
+  f.older.updatedAt = 1;
+  await f.service.send(f.older.id, 'reply', [], 'steer');
+  await settled(f.service);
+  assert.equal(f.service.runtime.status, 'completed');
+  assert.ok(f.older.updatedAt > f.newer.updatedAt);
+  assert.equal(f.older.unread, true);
+  f.store.selectSession(f.older.id);
+  assert.equal(f.older.unread, false);
+  f.store.selectSession(f.newer.id);
+  for (const command of ['hold', 'crash']) {
+    f.older.unread = false;
+    f.older.updatedAt = 1;
+    await f.service.send(f.older.id, command, [], 'steer');
+    if (command === 'hold') await f.service.stop();
+    await settled(f.service);
+    assert.equal(f.service.runtime.status, command === 'hold' ? 'stopped' : 'interrupted');
+    assert.ok(f.older.updatedAt > f.newer.updatedAt);
+    assert.equal(f.older.unread, true);
+  }
+});
+
+test('message, tool and run boundaries update activity without per-token persistence', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect(f.older.id);
+  const internal = f.service as unknown as { onEvent(record: unknown): void };
+  f.service.runtime.status = 'running';
+  for (const record of [
+    { type: 'message_start', message: { role: 'assistant', content: [] } },
+    { type: 'message_end', message: { role: 'assistant', content: 'answer' } },
+    { type: 'tool_execution_start', toolCallId: 'tool', toolName: 'read' },
+    { type: 'tool_execution_end', toolCallId: 'tool', result: { content: 'contents' } },
+    { type: 'compaction_start' },
+    { type: 'compaction_end', reason: 'manual' },
+  ]) {
+    f.older.updatedAt = 1;
+    internal.onEvent(record);
+    assert.ok(f.older.updatedAt > 1, record.type);
+  }
+  f.older.updatedAt = 1;
+  f.service.runtime.status = 'running';
+  const saves = t.mock.method(f.store, 'save');
+  internal.onEvent({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'next token' },
+  });
+  assert.equal(f.older.updatedAt, 1);
+  assert.equal(saves.mock.callCount(), 0);
+});
+
+for (const status of ['completed', 'stopped', 'error'] as const)
+  test(`configuration reload preserves ${status} activity and unread`, async (t) => {
+    const f = await fixture(t);
+    await f.service.connect(f.older.id);
+    f.service.runtime.status = status;
+    f.older.updatedAt = 1;
+    f.older.unread = false;
+    const before = f.recency();
+    assert.equal(await f.service.scheduleReload(), true);
+    assert.equal(f.service.runtime.status, status);
+    assert.deepEqual(f.recency(), before);
+    await fs.writeFile(path.join(f.dir, 'control.json'), JSON.stringify({ exitOnStats: true }));
+    await assert.rejects(f.service.scheduleReload(), /Pi 在加载会话时已退出/);
+    assert.deepEqual(f.recency(), before);
+  });
+
+test('SessionAgents browsing stays separate from a real background completion', async (t) => {
+  const f = await fixture(t);
+  const agents = new SessionAgents(f.store, new Workspace(f.dir));
+  t.after(() => agents.dispose());
+  const background = agents.get(f.older.id);
+  const foreground = agents.get(f.newer.id);
+  await background.send(f.older.id, 'extension confirm', [], 'steer');
+  const deadline = Date.now() + 5000;
+  while (!background.runtime.dialogs.length) {
+    assert.ok(Date.now() < deadline);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  f.older.updatedAt = 1;
+  f.newer.updatedAt = 2;
+  f.older.unread = f.newer.unread = false;
+  const before = f.recency();
+  await foreground.connect(f.newer.id);
+  await foreground.history(f.newer.id);
+  assert.deepEqual(f.recency(), before, 'opening another process must not move either session');
+  assert.equal(agents.runtime, foreground.runtime);
+  await background.respond(background.runtime.dialogs[0].id, { confirmed: true });
+  await settled(background);
+  assert.equal(background.runtime.status, 'completed');
+  assert.ok(f.older.updatedAt > f.newer.updatedAt);
+  assert.equal(f.older.unread, true);
+  assert.equal(f.newer.updatedAt, 2);
+  assert.equal(f.newer.unread, false);
+  const completed = f.recency();
+  await foreground.history(f.newer.id);
+  await foreground.tree(f.newer.id);
+  assert.deepEqual(f.recency(), completed);
+  assert.deepEqual(
+    [...f.store.state.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.id),
+    [f.older.id, f.newer.id],
+  );
+});
+
+for (const operation of ['navigate', 'edit'] as const)
+  for (const phase of ['navigation', 'refresh', 'refresh-failure'] as const)
+    test(`${operation} completing after selection changes during ${phase} marks only its session unread`, async (t) => {
+      const f = await fixture(t);
+      await f.service.connect(f.older.id);
+      f.store.selectSession(f.older.id);
+      const rpc = (f.service as unknown as { rpc: PiRpc }).rpc;
+      const bridge = rpc.bridge.bind(rpc),
+        request = rpc.request.bind(rpc);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const block = async () => {
+        entered();
+        await held;
+      };
+      t.after(release);
+      rpc.bridge = async (method, ...args) => {
+        if (method === 'navigate') {
+          if (phase === 'navigation') await block();
+          return { cancelled: false };
+        }
+        return bridge(method, ...args);
+      };
+      rpc.request = async (method, ...args): Promise<any> => {
+        if (method === 'get_entries')
+          return {
+            leafId: 'user-entry',
+            entries: [
+              {
+                id: 'user-entry',
+                type: 'message',
+                message: { role: 'user', content: 'edited task', timestamp: 1 },
+              },
+            ],
+          };
+        if (method === 'get_messages' && phase.startsWith('refresh')) {
+          await block();
+          if (phase === 'refresh-failure') throw new Error('refresh failed after navigation');
+        }
+        return request(method, ...args);
+      };
+      const work =
+        operation === 'navigate'
+          ? f.service.branch(f.older.id, 'navigate', 'target-entry')
+          : f.service.messageAction(f.older.id, 'edit', 'user', 1);
+      const completion =
+        phase === 'refresh-failure' ? assert.rejects(work, /refresh failed after navigation/) : work;
+      await waiting;
+      f.store.selectSession(f.newer.id);
+      release();
+      await completion;
+      assert.equal(f.service.runtime.status, 'idle');
+      assert.ok(f.older.updatedAt > f.newer.updatedAt);
+      assert.equal(f.older.unread, true);
+      assert.equal(f.newer.updatedAt, 2);
+      assert.equal(f.newer.unread, false);
+      if (operation === 'edit' && phase !== 'refresh-failure') assert.equal(f.older.draft, 'edited task');
+      await f.store.flush();
+      const saved = new Store(f.dir);
+      await saved.load();
+      assert.equal(saved.session(f.older.id).unread, true);
+    });
+
+for (const operation of ['navigate', 'edit', 'reload'] as const)
+  for (const outcome of operation === 'reload' ? (['success'] as const) : (['cancelled', 'failed'] as const))
+    test(`${operation} ${outcome} after a selection change does not create activity or unread`, async (t) => {
+      const f = await fixture(t);
+      await f.service.connect(f.older.id);
+      f.store.selectSession(f.older.id);
+      const before = f.recency();
+      const rpc = (f.service as unknown as { rpc: PiRpc }).rpc;
+      const bridge = rpc.bridge.bind(rpc),
+        request = rpc.request.bind(rpc);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      t.after(release);
+      rpc.bridge = async (method, ...args) => {
+        if (method === (operation === 'reload' ? 'reload' : 'navigate')) {
+          entered();
+          await held;
+          if (outcome === 'failed') throw new Error('navigation failed');
+          return { cancelled: outcome === 'cancelled' };
+        }
+        return bridge(method, ...args);
+      };
+      rpc.request = async (method, ...args): Promise<any> => {
+        if (method === 'get_entries')
+          return {
+            leafId: 'user-entry',
+            entries: [
+              {
+                id: 'user-entry',
+                type: 'message',
+                message: { role: 'user', content: 'unchanged task', timestamp: 1 },
+              },
+            ],
+          };
+        return request(method, ...args);
+      };
+      const work =
+        operation === 'navigate'
+          ? f.service.branch(f.older.id, 'navigate', 'target-entry')
+          : operation === 'edit'
+            ? f.service.messageAction(f.older.id, 'edit', 'user', 1)
+            : f.service.admin(f.older.id, 'reload');
+      const result = outcome === 'success' ? work : assert.rejects(work, /取消了这次操作|navigation failed/);
+      await waiting;
+      f.store.selectSession(f.newer.id);
+      release();
+      await result;
+      assert.deepEqual(f.recency(), before);
+      assert.equal(f.older.draft, '');
+    });

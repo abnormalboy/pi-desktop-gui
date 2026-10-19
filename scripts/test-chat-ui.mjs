@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider.ts';
 
-const provider = await createLocalProvider();
+const provider = await createLocalProvider({ holdSlowResponses: true });
 const fixture = await prepareRealPiFixture(provider.baseUrl, 'chat-ui');
 fixture.store.state.projects = [];
 fixture.store.state.sessions = [];
@@ -27,7 +27,7 @@ const output = path.resolve('test-results');
 const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
 await fs.mkdir(output, { recursive: true });
 const errors = [];
-let app, page;
+let app, page, testError;
 const launch = async () => {
   app = await electron.launch({
     executablePath: process.env.PI_DESKTOP_EXE,
@@ -41,6 +41,21 @@ const launch = async () => {
     if (message.type() === 'error') errors.push(message.text());
   });
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.evaluate(async () => {
+    window.chatUiRuntimes = new Map();
+    window.desktop.onEvent((event) => {
+      if (event.type === 'state') window.chatUiState = event.state;
+      if (event.type === 'runtime' && event.runtime.sessionId)
+        window.chatUiRuntimes.set(event.runtime.sessionId, event.runtime);
+      if (event.type === 'runtimePatch' && event.patch.sessionId)
+        window.chatUiRuntimes.set(event.patch.sessionId, event.patch);
+      if (event.type === 'runtimeRemoved') window.chatUiRuntimes.delete(event.sessionId);
+    });
+    // Bootstrap once after subscribing, rather than repeatedly resyncing during readiness waits.
+    const { state, runtime } = await window.desktop.invoke('bootstrap');
+    window.chatUiState = state;
+    if (runtime.sessionId) window.chatUiRuntimes.set(runtime.sessionId, runtime);
+  });
 };
 const waitForSaved = async (predicate) => {
   const start = Date.now();
@@ -51,13 +66,48 @@ const waitForSaved = async (predicate) => {
   }
   throw new Error('Conversation state was not saved');
 };
+// These predicates deliberately return booleans, never Promises (Playwright 1.64).
+function chatSelectionReady({ id, draft, modelId }) {
+  const selectedId = id ?? window.chatUiState?.selectedSessionId;
+  const runtime = window.chatUiRuntimes.get(selectedId);
+  const input = document.querySelector('textarea[aria-label="任务输入"]');
+  const send = document.querySelector('button[aria-label="发送任务"]');
+  return Boolean(
+    selectedId &&
+    window.chatUiState?.selectedSessionId === selectedId &&
+    document
+      .querySelector(`.session-row[data-session-id="${selectedId}"] > button`)
+      ?.getAttribute('aria-current') === 'page' &&
+    runtime?.connected &&
+    ['idle', 'completed', 'stopped'].includes(runtime.status) &&
+    !runtime.configurationPending &&
+    (!modelId || runtime.model?.id === modelId) &&
+    (draft === undefined || input?.value === draft) &&
+    send &&
+    !send.querySelector('.spin') &&
+    (!draft || !send.disabled),
+  );
+}
+function allChatRuntimesSettled() {
+  return [...window.chatUiRuntimes.values()].every(
+    (runtime) =>
+      !['starting', 'running', 'waiting', 'retrying', 'compacting', 'stopping'].includes(runtime.status) &&
+      !runtime.configurationPending &&
+      !runtime.dialogs?.length,
+  );
+}
+const waitForSelection = (expected) => page.waitForFunction(chatSelectionReady, expected, { timeout: 30000 });
 const expectSelectedModel = async (model) => {
   await page.waitForFunction(
     (name) => document.querySelector('.model-pill > span')?.textContent === name,
     model.name,
     { timeout: 25000 },
   );
-  const { state, runtime } = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  await waitForSelection({ modelId: model.id });
+  const { state, runtime } = await page.evaluate(() => ({
+    state: window.chatUiState,
+    runtime: window.chatUiRuntimes.get(window.chatUiState.selectedSessionId),
+  }));
   assert.equal(runtime.connected, true);
   assert.equal(runtime.sessionId, state.selectedSessionId);
   assert.equal(runtime.model.id, model.id);
@@ -68,14 +118,63 @@ const expectSelectedModel = async (model) => {
   await page.keyboard.press('Escape');
   await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
 };
+const within = async (operation, ms, label) => {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+const cleanupApp = async () => {
+  if (!app) return;
+  if (page && !page.isClosed())
+    await within(
+      page.evaluate(() => {
+        // Cleanup only: handle future exit requests and a request already shown by a failed close.
+        window.desktop.onEvent((event) => {
+          if (event.type === 'appDialog')
+            void window.desktop
+              .invoke(
+                'respondAppDialog',
+                event.dialog.id,
+                event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId,
+              )
+              .catch(() => {});
+        });
+        const existing = [...document.querySelectorAll('[data-app-dialog] button')].find(
+          (button) => button.textContent === '停止并退出',
+        );
+        existing?.click();
+      }),
+      3000,
+      'Installing exit cleanup',
+    ).catch((error) => console.warn(error.message));
+  try {
+    await within(app.close(), 15000, 'Electron cleanup');
+  } catch (error) {
+    // Never leave CI waiting indefinitely, or replace the original assertion with a cleanup failure.
+    try {
+      app.process().kill('SIGKILL');
+    } catch {}
+    return error;
+  }
+};
 try {
   await launch();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.project-row').count(), 0);
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 1);
   assert.equal(await page.locator('.trust-banner').count(), 0);
+  const standaloneOutput = page.getByRole('button', { name: '查看会话输出', exact: true });
+  assert.equal(await standaloneOutput.isVisible(), true);
+  assert.equal(await standaloneOutput.isEnabled(), true);
   assert.equal(await page.getByRole('button', { name: '查看工作区变更', exact: true }).count(), 0);
-  assert.equal(await page.getByRole('button', { name: '查看会话输出', exact: true }).count(), 1);
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).isEnabled(), true);
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: path.join(output, 'standalone-empty.png'), animations: 'disabled' });
@@ -190,8 +289,12 @@ try {
   await waitForSaved((state) => state.selectedSessionId === first.id);
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '独立对话未发送草稿');
   assert.equal(await page.locator('.message').filter({ hasText: '第二条独立对话' }).count(), 0);
+  // Previewed history/draft can precede selectSession completion and background initialization.
+  // Normal restart never auto-confirms a running-work exit dialog.
+  await waitForSelection({ id: first.id, draft: '独立对话未发送草稿' });
+  await page.waitForFunction(allChatRuntimesSettled, undefined, { timeout: 30000 });
   await page.screenshot({ path: path.join(output, 'standalone-conversation.png'), animations: 'disabled' });
-  await app.close();
+  await within(app.close(), 15000, 'Normal conversation restart');
   app = undefined;
   await launch();
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '独立对话未发送草稿');
@@ -227,13 +330,17 @@ try {
   await page.locator('.trust-banner').waitFor();
   await page.getByRole('textbox', { name: '任务输入' }).fill('项目仍然需要启用');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
-  const untrusted = await page.evaluate(() => window.desktop.invoke('bootstrap'));
-  assert.equal(untrusted.runtime.connected, false, 'an untrusted project must not start Pi automatically');
+  const untrustedConnected = await page.evaluate(
+    () => window.chatUiRuntimes.get(window.chatUiState.selectedSessionId)?.connected ?? false,
+  );
+  assert.equal(untrustedConnected, false, 'an untrusted project must not start Pi automatically');
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.trust-banner').count(), 0);
+  const newStandaloneOutput = page.getByRole('button', { name: '查看会话输出', exact: true });
+  assert.equal(await newStandaloneOutput.isVisible(), true);
+  assert.equal(await newStandaloneOutput.isEnabled(), true);
   assert.equal(await page.getByRole('button', { name: '查看工作区变更', exact: true }).count(), 0);
-  assert.equal(await page.getByRole('button', { name: '查看会话输出', exact: true }).count(), 1);
   await expectSelectedModel(baseModel);
   assert.equal(await page.locator('.readiness').count(), 0);
   await page.getByRole('textbox', { name: '任务输入' }).fill('从项目中直接新建独立对话');
@@ -289,32 +396,51 @@ try {
   await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW 新会话不能中断当前回复');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.getByText('开始流式回复。', { exact: true }).waitFor();
-  const active = (await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime;
+  const active = await page.evaluate(() => window.chatUiRuntimes.get(window.chatUiState.selectedSessionId));
+  assert.equal(provider.heldSlowResponseCount, 1, 'The response gate must be held before creating B');
   const requestsDuringReply = provider.requests.length;
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
+  // Each session owns its Pi process: the new chat resolves its own model while A keeps streaming.
   await expectSelectedModel(baseModel);
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   assert.equal(await page.getByRole('option').first().isEnabled(), true);
   await page.keyboard.press('Escape');
-  const duringReply = (await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime;
-  assert.notEqual(duringReply.sessionId, active.sessionId);
-  assert.equal(duringReply.status, 'idle');
-  const background = JSON.parse(
-    await page.evaluate(() => window.desktop.invoke('diagnostics')),
-  ).sessions.find((session) => session.sessionId === active.sessionId);
-  assert.equal(background.status, 'running', 'creating a chat must not interrupt the background response');
-  assert.equal(await page.locator('.error-banner').count(), 0);
-  await page.evaluate((id) => window.desktop.invoke('stop', id), active.sessionId);
-  await expectSelectedModel(baseModel);
+  await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
+  const independent = await page.evaluate(() => ({
+    selectedId: window.chatUiState.selectedSessionId,
+    runtime: window.chatUiRuntimes.get(window.chatUiState.selectedSessionId),
+  }));
+  assert.notEqual(independent.selectedId, active.sessionId);
+  assert.equal(independent.runtime.connected, true);
+  assert.equal(independent.runtime.model.id, baseModel.id);
+  const duringReply = await page.evaluate((id) => window.chatUiRuntimes.get(id), active.sessionId);
+  assert.equal(duringReply.status, 'running', 'creating a chat must leave the existing response running');
+  assert.equal(duringReply.connected, true);
+  assert.equal(provider.heldSlowResponseCount, 1, 'A stays held until the explicit targeted stop');
   assert.equal(await page.locator('.error-banner').count(), 0);
   assert.equal(
     provider.requests.length,
     requestsDuringReply,
-    'independent initialization must not send a prompt',
+    'independent model initialization must not send a prompt',
   );
+  await page.evaluate((id) => window.desktop.invoke('stop', id), active.sessionId);
+  await page.waitForFunction((id) => window.chatUiRuntimes.get(id)?.status === 'stopped', active.sessionId);
+  await waitForSelection({ id: independent.selectedId, modelId: baseModel.id });
+  assert.equal(
+    await page.evaluate((id) => window.chatUiRuntimes.get(id)?.status, independent.selectedId),
+    'idle',
+    'Stopping A must not stop the independent new chat',
+  );
+  assert.equal(await page.locator('.error-banner').count(), 0);
+  assert.equal(
+    provider.requests.length,
+    requestsDuringReply,
+    'stopping the original chat must not send a prompt',
+  );
+  await page.waitForFunction(allChatRuntimesSettled, undefined, { timeout: 30000 });
   console.log(
-    'PASS new chat initializes independently while the original response continues in the background',
+    'PASS a new chat initializes independently while the existing response keeps running; stop targets only that response',
   );
   assert.deepEqual(errors, []);
   await fs.writeFile(
@@ -335,7 +461,8 @@ try {
           'new chat automatically selects the actual Pi default before the first prompt',
           'cold new chat model initialization and checked picker item',
           'model initialization sends no provider request and respects project trust',
-          'model initialization is independent of the background response',
+          'new chat initializes independently without interrupting a running response',
+          'stopping a background response leaves the selected chat connected',
           'independent histories',
           'draft/history restart',
           'search',
@@ -352,31 +479,17 @@ try {
     ),
   );
 } catch (error) {
+  testError = error;
   console.error(error);
-  if (page && !page.isClosed()) await page.screenshot({ path: path.join(output, 'chat-ui-failure.png') });
+  if (page && !page.isClosed())
+    await page.screenshot({ path: path.join(output, 'chat-ui-failure.png'), timeout: 5000 }).catch(() => {});
   console.error('Renderer errors:', errors);
   throw error;
 } finally {
-  if (app) {
-    await app
-      .evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
-          `void window.desktop.onEvent(event => {
-            if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
-              event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
-          })`,
-        ),
-      )
-      .catch(() => {});
-    if (page && !page.isClosed()) {
-      const pendingExit = page.getByRole('dialog').filter({ hasText: 'Pi 仍在执行任务' });
-      if (await pendingExit.isVisible())
-        await pendingExit
-          .getByRole('button', { name: '停止并退出', exact: true })
-          .click()
-          .catch(() => {});
-    }
-    await app.close();
-  }
+  const cleanupError = await cleanupApp();
   await provider.close();
+  if (cleanupError) {
+    if (!testError) throw cleanupError;
+    console.warn('Cleanup after the original failure:', cleanupError.message);
+  }
 }

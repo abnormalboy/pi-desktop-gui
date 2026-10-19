@@ -47,10 +47,17 @@ const textHelpers = source.statements.filter(
   (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'text',
 );
 assert.equal(textHelpers.length, 1);
+const connectionHelpers = source.statements.filter(
+  (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'connectSelectedSession',
+);
+assert.equal(connectionHelpers.length, 1);
 const { code } = transformSync(
   `const createHandler = (store, service, send, busy) => {
     let sessionSelection = 0;
+    let closing = false, quitting = false;
+    const selectionConnections = ${variable('selectionConnections').getText(source)};
     ${textHelpers[0].getText(source)}
+    ${connectionHelpers[0].getText(source)}
     const save = ${variable('save').getText(source)};
     return ${selection.initializer.getText(source)};
   };`,
@@ -153,17 +160,39 @@ function blockWrites(t: TestContext, store: Store, count = 1) {
   return { gates, snapshots };
 }
 
-test('selection is visible behind a blocked agent save, but invoke/history and flush still wait', async (t) => {
+test('cold selection exposes saved history before Pi readiness while the invocation stays pending', async (t) => {
+  const f = await fixture(t);
+  const backend = deferred();
+  t.mock.method(f.service, 'connect', async () => {
+    await backend.promise;
+    f.service.runtime.sessionId = f.b.id;
+    f.service.runtime.connected = true;
+  });
+  const selected = observe(f.select(f.b.id));
+  try {
+    await nextTurn();
+    assert.equal(f.store.state.selectedSessionId, f.b.id);
+    assert.equal(f.selectedEvents()[0]?.selectedSessionId, f.b.id);
+    assert.equal(selected.settled, false);
+    assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
+  } finally {
+    backend.resolve();
+    await selected.promise;
+  }
+});
+
+test('selection is visible before its save, while connection, history and flush still wait', async (t) => {
   const f = await fixture(t);
   const {
     gates: [gate],
     snapshots,
   } = blockWrites(t, f.store);
   let agentSave!: Promise<void>;
-  t.mock.method(f.service, 'connect', async (id: string) => {
+  const connect = t.mock.method(f.service, 'connect', async (id: string) => {
     f.service.runtime.sessionId = id;
     f.service.runtime.connected = true;
-    agentSave = f.store.save(); // The backend saved while the previous session was still selected.
+    agentSave = f.store.save();
+    await agentSave;
   });
   const history = t.mock.method(f.service, 'history');
   const selected = observe(f.select(f.b.id));
@@ -175,19 +204,19 @@ test('selection is visible behind a blocked agent save, but invoke/history and f
       f.selectedEvents().map((state) => state.selectedSessionId),
       [f.b.id],
     );
-    assert.equal(snapshots[0].selectedSessionId, f.a.id);
+    assert.equal(snapshots[0].selectedSessionId, f.b.id);
+    assert.equal(connect.mock.callCount(), 0, 'persistence must finish before startup');
     assert.equal((await f.persisted()).selectedSessionId, f.a.id);
     assert.equal(selected.settled, false);
     assert.equal(flushed.settled, false);
     assert.equal(history.mock.callCount(), 0);
     gate.release.resolve();
-    await agentSave;
     assert.deepEqual(await selected.promise, [{ role: 'user', content: 'history-1' }]);
     await flushed.promise;
     assert.equal((await f.persisted()).selectedSessionId, f.b.id);
     assert.deepEqual(
       snapshots.map((state) => state.selectedSessionId),
-      [f.a.id, f.b.id],
+      [f.b.id, f.b.id],
     );
     assert.equal(f.selectedEvents().length, 1, 'saving must not duplicate the selection event');
   } finally {
@@ -196,11 +225,13 @@ test('selection is visible behind a blocked agent save, but invoke/history and f
   }
 });
 
-test('selection waits for its own connection, and cancellation preserves the old selection', async (t) => {
+test('selection waits for its connection, but failure keeps the target history available for explicit retry', async (t) => {
   const f = await fixture(t);
-  const backend = deferred();
+  const backend = deferred(),
+    entered = deferred();
   let canceled = true;
   const rpc = t.mock.method(f.service, 'connect', async () => {
+    entered.resolve();
     await backend.promise;
     if (canceled) throw new Error('switch canceled');
     f.service.runtime.connected = true;
@@ -208,16 +239,16 @@ test('selection waits for its own connection, and cancellation preserves the old
   });
   const save = t.mock.method(f.store, 'save');
   const selected = observe(f.select(f.b.id));
-  await nextTurn();
+  await entered.promise;
   assert.equal(rpc.mock.callCount(), 1);
-  assert.equal(f.store.state.selectedSessionId, f.a.id);
-  assert.deepEqual(f.events, []);
-  assert.equal(save.mock.callCount(), 0);
+  assert.equal(f.store.state.selectedSessionId, f.b.id);
+  assert.equal(f.selectedEvents()[0]?.selectedSessionId, f.b.id);
+  assert.equal(save.mock.callCount(), 1);
   backend.resolve();
   await assert.rejects(selected.promise, /switch canceled/);
-  assert.equal(f.store.state.selectedSessionId, f.a.id);
-  assert.deepEqual(f.events, []);
-  assert.equal(save.mock.callCount(), 0);
+  assert.equal(f.store.state.selectedSessionId, f.b.id);
+  assert.equal(f.selectedEvents()[0]?.selectedSessionId, f.b.id);
+  assert.equal(save.mock.callCount(), 1);
 
   canceled = false;
   const {
@@ -226,12 +257,12 @@ test('selection waits for its own connection, and cancellation preserves the old
   const successful = observe(f.select(f.b.id));
   try {
     await gate.entered.promise;
-    assert.equal(f.selectedEvents().length, 1);
+    assert.equal(f.selectedEvents().length, 2);
     assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
     assert.equal(successful.settled, false);
     gate.release.resolve();
     assert.deepEqual(await successful.promise, [{ role: 'user', content: 'history-1' }]);
-    assert.equal(f.selectedEvents().length, 1);
+    assert.equal(f.selectedEvents().length, 2);
     assert.equal(f.selectedEvents()[0].selectedProjectId, f.b.projectId);
   } finally {
     gate.release.resolve();
@@ -241,21 +272,23 @@ test('selection waits for its own connection, and cancellation preserves the old
 
 test('a slow earlier connection cannot replace the most recently selected chat', async (t) => {
   const f = await fixture(t);
-  const backend = deferred();
+  const backend = deferred(),
+    entered = deferred();
   t.mock.method(f.service, 'connect', async () => {
+    entered.resolve();
     await backend.promise;
     f.service.runtime.connected = true;
     f.service.runtime.sessionId = f.b.id;
   });
   const earlier = f.select(f.b.id);
-  await nextTurn();
+  await entered.promise;
   await f.select(f.c.id);
   backend.resolve();
   assert.deepEqual(await earlier, [{ role: 'user', content: 'history-1' }]);
   assert.equal(f.store.state.selectedSessionId, f.c.id);
   assert.deepEqual(
     f.selectedEvents().map((state) => state.selectedSessionId),
-    [f.c.id],
+    [f.b.id, f.c.id],
   );
 });
 
@@ -365,13 +398,14 @@ for (const status of ['disconnected', 'busy elsewhere'] as const) {
       await nextTurn();
       assert.equal(f.store.state.selectedSessionId, f.b.id);
       assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
-      assert.equal(connect.mock.callCount(), 1);
+      assert.equal(connect.mock.callCount(), 0);
       assert.equal(f.current.runtime.connected, status !== 'disconnected');
       assert.equal(f.current.runtime.status, status === 'busy elsewhere' ? 'running' : 'idle');
       assert.equal(history.mock.callCount(), 0);
       assert.equal(selected.settled, false);
       gate.release.resolve();
       assert.deepEqual(await selected.promise, [{ role: 'user', content: 'history-1' }]);
+      assert.equal(connect.mock.callCount(), 1);
       assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
       assert.equal(f.selectedEvents().length, 1);
     } finally {
@@ -412,5 +446,178 @@ test('a failed state delivery still waits for the selected-session save and flus
   } finally {
     gate.release.resolve();
     await selected.promise.catch(() => {});
+  }
+});
+
+for (const fails of [false, true]) {
+  test(`two clicks share one in-flight connection and its ${fails ? 'pre-runtime failure' : 'success'}`, async (t) => {
+    const f = await fixture(t);
+    const entered = deferred(),
+      backend = deferred();
+    const connect = t.mock.method(f.service, 'connect', () =>
+      (f.service as any).exclusive(async () => {
+        entered.resolve();
+        await backend.promise;
+        if (fails) throw new Error('resource guard rejected before reset');
+        f.service.runtime.sessionId = f.b.id;
+        f.service.runtime.connected = true;
+      }),
+    );
+    const first = observe(f.select(f.b.id));
+    let second: ReturnType<typeof observe<Message[]>> | undefined;
+    try {
+      await entered.promise;
+      second = observe(f.select(f.b.id));
+      await f.store.flush();
+      await nextTurn();
+      assert.equal(f.service.hasPendingWork, true);
+      assert.equal(first.settled || second.settled, false);
+      assert.equal(connect.mock.callCount(), 1);
+      backend.resolve();
+      const result = await Promise.allSettled([first.promise, second.promise]);
+      assert.deepEqual(
+        result.map((item) => item.status),
+        fails ? ['rejected', 'rejected'] : ['fulfilled', 'fulfilled'],
+      );
+      if (fails) {
+        assert.equal(f.service.runtime.error, undefined);
+        for (const item of result) {
+          assert.equal(item.status, 'rejected');
+          if (item.status === 'rejected') assert.match(item.reason.message, /resource guard/);
+        }
+        t.mock.method(f.service, 'connect', async () => {
+          f.service.runtime.connected = true;
+        });
+        await f.select(f.b.id);
+        assert.equal(
+          f.service.runtime.connected,
+          true,
+          'explicit retry must not reuse a rejected connection',
+        );
+      }
+    } finally {
+      backend.resolve();
+      await Promise.allSettled([first.promise, second?.promise]);
+    }
+  });
+}
+
+test('B to C to B shares the pending terminal check without canceling the latest B request', async (t) => {
+  const f = await fixture(t);
+  const entered = deferred(),
+    terminal = deferred();
+  const terminalCheck = t.mock.method(f.agents, 'inTerminal', async (id: string) => {
+    if (id === f.b.id) {
+      entered.resolve();
+      await terminal.promise;
+    }
+    return false;
+  });
+  const connect = t.mock.method(f.service, 'connect');
+  const first = observe(f.select(f.b.id));
+  let last: ReturnType<typeof observe<Message[]>> | undefined;
+  try {
+    await entered.promise;
+    await f.select(f.c.id);
+    last = observe(f.select(f.b.id));
+    await f.store.flush();
+    await nextTurn();
+    assert.equal(first.settled || last.settled, false);
+    assert.equal(terminalCheck.mock.calls.filter((call) => call.arguments[0] === f.b.id).length, 1);
+    terminal.resolve();
+    await Promise.all([first.promise, last.promise]);
+    assert.equal(connect.mock.callCount(), 1);
+    assert.equal(f.store.state.selectedSessionId, f.b.id);
+    assert.deepEqual(
+      f.selectedEvents().map((s) => s.selectedSessionId),
+      [f.b.id, f.c.id, f.b.id],
+    );
+  } finally {
+    terminal.resolve();
+    await Promise.allSettled([first.promise, last?.promise]);
+  }
+});
+
+for (const change of ['selection', 'storage', 'trust', 'deleted', 'disposed'] as const) {
+  test(`the terminal check revalidates ${change} before cold startup`, async (t) => {
+    const f = await fixture(t);
+    const entered = deferred(),
+      terminal = deferred();
+    let project: ReturnType<Store['project']> | undefined;
+    if (change === 'trust') {
+      project = {
+        id: 'trusted-project',
+        name: 'Fixture',
+        path: f.store.dir,
+        trusted: true,
+        createdAt: 0,
+      } as any;
+      f.store.state.projects.push(project!);
+      f.b.projectId = project!.id;
+    }
+    t.mock.method(f.agents, 'inTerminal', async (id: string) => {
+      if (id === f.b.id) {
+        entered.resolve();
+        await terminal.promise;
+      }
+      return false;
+    });
+    const connect = t.mock.method(
+      f.service,
+      'connect',
+      change === 'disposed'
+        ? (id: string) => AgentService.prototype.connect.call(f.service, id)
+        : async () => {
+            f.service.runtime.connected = true;
+          },
+    );
+    const selected = observe(f.select(f.b.id));
+    try {
+      await entered.promise;
+      if (change === 'selection') await f.select(f.c.id);
+      if (change === 'storage') f.store.storage.writable = false;
+      if (change === 'trust') project!.trusted = false;
+      if (change === 'deleted') {
+        await f.agents.release(f.b.id);
+        f.store.state.sessions = f.store.state.sessions.filter((s) => s !== f.b);
+        f.store.selectSession(f.c.id);
+      }
+      if (change === 'disposed') await f.service.dispose();
+      terminal.resolve();
+      if (change === 'deleted') await assert.rejects(selected.promise);
+      else if (change === 'disposed') await assert.rejects(selected.promise, /应用正在关闭/);
+      else await selected.promise;
+      assert.equal(connect.mock.callCount(), change === 'disposed' ? 1 : 0);
+      assert.equal(f.service.runtime.connected, false);
+      assert.equal(f.service.lastSwitch, undefined);
+    } finally {
+      terminal.resolve();
+      await selected.promise.catch(() => {});
+    }
+  });
+}
+
+test('cold history fallback is confined to connecting with no live messages', async (t) => {
+  const f = await fixture(t);
+  f.service.runtime.sessionId = f.b.id;
+  f.service.runtime.status = 'starting';
+  (f.service as any).connecting = true;
+  try {
+    assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
+    f.service.runtime.status = 'waiting';
+    assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
+    f.service.runtime.messages = [{ role: 'assistant', content: 'live-only' }];
+    assert.deepEqual(await f.service.history(f.b.id), f.service.runtime.messages);
+    (f.service as any).connecting = false;
+    f.service.runtime.status = 'running';
+    f.service.runtime.messages = [];
+    assert.deepEqual(
+      await f.service.history(f.b.id),
+      [],
+      'a real empty running task must not replay disk history',
+    );
+  } finally {
+    (f.service as any).connecting = false;
+    f.service.runtime.status = 'idle';
   }
 });

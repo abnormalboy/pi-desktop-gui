@@ -23,8 +23,9 @@ import { useFocusScope } from './useFocusScope';
 import { type MessageContext } from '../components/conversation/ChatMessage';
 const api = window.desktop;
 const noTools: ToolActivity[] = [];
+const noMessages: Message[] = [];
 export function useWorkbench() {
-  const [history, setHistory] = useState<Message[]>([]);
+  const [history, setHistory] = useState<{ sessionId: string; messages: Message[] }>();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState(''),
     [settingsOpen, setSettingsOpen] = useState(false),
@@ -59,9 +60,9 @@ export function useWorkbench() {
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
     autoScroll = useRef(true),
-    selectedRef = useRef<string | undefined>(undefined),
     stateRef = useRef(state),
     runtimeRef = useRef(runtime);
+  const selectionRequest = useRef(0);
   const initializedSessions = useRef(new Set<string>());
   stateRef.current = state;
   runtimeRef.current = runtime;
@@ -69,12 +70,10 @@ export function useWorkbench() {
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
   const pending = Boolean(pendingSessions[selected?.id ?? '']);
   const error = errors[selected?.id ?? ''] ?? errors[''] ?? '';
-  function setError(value: string) {
-    const id = selected?.id ?? '';
+  function setError(value: string, id = selected?.id ?? '') {
     setErrors((previous) => ({ ...previous, '': '', [id]: value }));
   }
-  function setPending(value: boolean) {
-    const id = selected?.id ?? '';
+  function setPending(value: boolean, id = selected?.id ?? '') {
     setPendingSessions((previous) => ({
       ...previous,
       [id]: Math.max(0, (previous[id] ?? 0) + (value ? 1 : -1)),
@@ -146,8 +145,15 @@ export function useWorkbench() {
     setCheckpointRevision((value) => value + 1);
   }, [checkpoints]);
   const messages = useMemo(
-    () => hideRecoveredErrors(ownRuntime ? runtime.messages : history),
-    [ownRuntime, runtime.messages, history],
+    () =>
+      hideRecoveredErrors(
+        ownRuntime && (runtime.connected || runtime.messages.length)
+          ? runtime.messages
+          : history?.sessionId === selected?.id
+            ? (history?.messages ?? noMessages)
+            : noMessages,
+      ),
+    [ownRuntime, runtime.connected, runtime.messages, history, selected?.id],
   );
   const approvals = runtime.dialogs.filter((d) => d.approval);
   const prompts = runtime.dialogs.filter((d) => !d.approval);
@@ -164,18 +170,21 @@ export function useWorkbench() {
     .filter((t, i, all) => t && t !== all[i - 1]);
 
   useFocusScope(inspectorPanel, inspector && compact, () => setInspector(false));
-  async function attempt<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  async function attempt<T>(fn: () => Promise<T>, sessionId = selected?.id ?? ''): Promise<T | undefined> {
     try {
       return await fn();
     } catch (e) {
-      setError(readableError(e));
+      setError(readableError(e), sessionId);
       return undefined;
     }
   }
-  async function action(fn: () => Promise<unknown>) {
-    setPending(true);
-    await attempt(fn);
-    setPending(false);
+  async function action(fn: () => Promise<unknown>, sessionId = selected?.id ?? '') {
+    setPending(true, sessionId);
+    try {
+      await attempt(fn, sessionId);
+    } finally {
+      setPending(false, sessionId);
+    }
   }
 
   useEffect(() => {
@@ -205,9 +214,9 @@ export function useWorkbench() {
   }, [runtime.title]);
   useEffect(() => {
     if (!selected) return;
-    selectedRef.current = selected.id;
+    let active = true;
     recall.current = -1;
-    setHistory([]);
+    setHistory({ sessionId: selected.id, messages: [] });
     setFileQuery(null);
     setFileResults([]);
     if (!selected.projectId) setInspector(false);
@@ -217,12 +226,18 @@ export function useWorkbench() {
     api
       .invoke('readHistory', selected.id)
       .then((m) => {
-        if (selectedRef.current === selected.id) setHistory(m);
+        if (active) setHistory({ sessionId: selected.id, messages: m });
       })
-      .catch((e) => setError(readableError(e)));
-    setTimeout(() => {
+      .catch((e) => {
+        if (active) setError(readableError(e), selected.id);
+      });
+    const timer = setTimeout(() => {
       if (thread.current) thread.current.scrollTop = selected.scrollTop ?? thread.current.scrollHeight;
     }, 80);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [selected?.id]);
   useEffect(() => {
     if (
@@ -407,13 +422,21 @@ export function useWorkbench() {
     });
   }
   async function selectSession(s: Session) {
-    await action(async () => {
-      const m = await api.invoke('selectSession', s.id);
-      if (stateRef.current?.selectedSessionId === s.id) setHistory(m);
-    });
+    const request = ++selectionRequest.current;
     setSearchOpen(false);
+    setError('', s.id);
+    setPending(true, s.id);
+    try {
+      // The selected-ID effect owns history; late IPC replies cannot replace it.
+      await api.invoke('selectSession', s.id);
+    } catch (error) {
+      if (request === selectionRequest.current) setError(readableError(error), s.id);
+    } finally {
+      setPending(false, s.id);
+    }
   }
   async function createSession(projectId?: string) {
+    selectionRequest.current++;
     const session = await attempt(() => api.invoke('newSession', projectId));
     if (session) focusComposer();
   }
