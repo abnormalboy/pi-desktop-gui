@@ -10,9 +10,33 @@ import { reportSessionSwitchBudget } from './session-switch-budget.mjs';
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'session-ui');
+// Trust only the generated fixture project. These are real Pi extensions,
+// whose descriptions expose the child process's cwd rather than the app's intended cwd.
+const settingsFile = path.join(f.agentDir, 'settings.json');
+await fs.writeFile(
+  settingsFile,
+  JSON.stringify({
+    ...JSON.parse(await fs.readFile(settingsFile, 'utf8')),
+    defaultProjectTrust: 'always',
+  }),
+);
+for (const [directory, command] of [
+  [f.agentDir, 'session-ui-process-cwd'],
+  [path.join(f.projectDir, '.pi'), 'session-ui-project-only'],
+]) {
+  await fs.mkdir(path.join(directory, 'extensions'), { recursive: true });
+  await fs.writeFile(
+    path.join(directory, 'extensions', 'session-ui-context.js'),
+    `export default function(pi) {
+      pi.registerCommand(${JSON.stringify(command)}, { description: process.cwd(), handler: async () => {} });
+    }`,
+  );
+}
 const seed = new AgentService(f.store, new Workspace(f.dataDir));
 const a = f.store.session(f.sessionId),
-  b = f.store.createSession(f.projectId);
+  b = f.store.createSession(f.projectId),
+  cross = f.store.createSession();
+const crossCwd = await f.store.sessionDirectory(cross.id);
 const wait = async (condition) => {
   const start = Date.now();
   while (!(await condition())) {
@@ -24,6 +48,7 @@ try {
   for (const [session, marker] of [
     [a, 'SESSION_A_ONLY'],
     [b, 'SESSION_B_ONLY'],
+    [cross, 'SESSION_CROSS_ONLY'],
   ]) {
     await seed.send(session.id, marker, [], 'steer');
     await wait(() => !seed.hasPendingWork);
@@ -33,8 +58,10 @@ try {
 }
 a.title = '切换验收 A';
 b.title = '切换验收 B';
+cross.title = '独立对话切换验收';
 a.draft = 'A 的草稿';
 b.draft = 'B 的草稿';
+cross.draft = '跨目录会话的草稿';
 f.store.selectSession(a.id);
 await f.store.save();
 const packaged = process.argv.includes('--packaged');
@@ -133,6 +160,16 @@ try {
       { timeout: 5000 },
     );
     assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), target.draft);
+    // Preview and draft can arrive before rebinding finishes. Keep readiness outside
+    // the existing click-to-message sample, and never read the previous switch's diagnostics.
+    await page.waitForFunction(
+      async (id) => {
+        const { runtime } = await window.desktop.invoke('bootstrap');
+        return runtime.sessionId === id && runtime.connected && runtime.status === 'idle';
+      },
+      target.id,
+      { timeout: 30000 },
+    );
     const info = (await diagnostic()).sessionSwitch;
     assert.equal(info.mode, 'reuse');
     assert.equal(info.pid, originalPid);
@@ -180,6 +217,127 @@ try {
   );
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), b.draft);
   console.log('PASS the first sidebar selection after an idle Pi exit reconnects and restores the target');
+
+  const crossDirectory = [];
+  const requestsBeforeSwitching = provider.requests.length;
+  let previousPid = restarted.pid;
+  for (const target of [cross, b, cross, b]) {
+    const marker = target === cross ? 'SESSION_CROSS_ONLY' : 'SESSION_B_ONLY';
+    await page.evaluate(
+      ({ id, marker }) => {
+        window.crossDirectoryMeasurement = new Promise((resolve, reject) => {
+          let started, messageDomMs, messageRafMs, runtimeReadyMs, otherHistoryVisible;
+          const click = () => {
+            started = performance.now();
+          };
+          const cleanup = () => {
+            clearTimeout(timeout);
+            observer.disconnect();
+            unsubscribe();
+            document.removeEventListener('click', click, true);
+          };
+          const finish = () => {
+            if (messageRafMs === undefined || runtimeReadyMs === undefined) return;
+            cleanup();
+            resolve({ messageDomMs, messageRafMs, runtimeReadyMs, otherHistoryVisible });
+          };
+          // Observe public runtime readiness directly, without bootstrap/diagnostics polling latency.
+          const unsubscribe = window.desktop.onEvent((event) => {
+            const runtime =
+              event.type === 'runtime'
+                ? event.runtime
+                : event.type === 'runtimePatch'
+                  ? event.patch
+                  : undefined;
+            if (
+              started !== undefined &&
+              runtimeReadyMs === undefined &&
+              runtime?.sessionId === id &&
+              runtime.connected &&
+              runtime.status === 'idle'
+            ) {
+              runtimeReadyMs = performance.now() - started;
+              finish();
+            }
+          });
+          const observer = new MutationObserver(() => {
+            const text = document.querySelector('.thread')?.textContent ?? '';
+            if (started === undefined || messageDomMs !== undefined || !text.includes(marker)) return;
+            messageDomMs = performance.now() - started;
+            otherHistoryVisible = ['SESSION_A_ONLY', 'SESSION_B_ONLY', 'SESSION_CROSS_ONLY'].some(
+              (other) => other !== marker && text.includes(other),
+            );
+            // This is DOM observation followed by the next rAF, not proof of screen presentation.
+            requestAnimationFrame(() => {
+              messageRafMs = performance.now() - started;
+              finish();
+            });
+          });
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error('Cross-directory target history or runtime readiness timed out'));
+          }, 30000);
+          document.addEventListener('click', click, { once: true, capture: true });
+          observer.observe(document.querySelector('.thread'), {
+            subtree: true,
+            childList: true,
+            characterData: true,
+          });
+        });
+      },
+      { id: target.id, marker },
+    );
+    await page.getByRole('button', { name: target.title, exact: true }).click();
+    const timing = await page.evaluate(() => window.crossDirectoryMeasurement);
+    assert.ok(
+      timing.messageDomMs < timing.runtimeReadyMs,
+      'Target history must appear before cold Pi is ready',
+    );
+    assert.equal(timing.otherHistoryVisible, false, 'Preview must not contain another session history');
+    await page.waitForFunction(
+      (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
+      target.draft,
+      { timeout: 5000 },
+    );
+    const { state, runtime } = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+    assert.equal(state.selectedSessionId, target.id);
+    assert.equal(state.selectedProjectId, target.projectId);
+    assert.equal(runtime.sessionId, target.id);
+    assert.equal(runtime.connected, true);
+    assert.equal(runtime.status, 'idle');
+    await page.locator('.thread').getByText(marker, { exact: true }).waitFor();
+    const cwd = target === cross ? crossCwd : f.projectDir;
+    assert.equal(runtime.cwd, cwd);
+    assert.equal(
+      runtime.commands.find((item) => item.name === 'session-ui-process-cwd')?.description,
+      await fs.realpath(cwd),
+      'Pi must use the target process cwd',
+    );
+    assert.equal(
+      runtime.commands.some((item) => item.name === 'session-ui-project-only'),
+      target !== cross,
+      'Project resources must not leak into the standalone session',
+    );
+    for (const session of [a, b, cross])
+      assert.equal(state.sessions.find((item) => item.id === session.id).draft, session.draft);
+    const info = (await diagnostic()).sessionSwitch;
+    assert.equal(info.mode, 'restart');
+    assert.notEqual(info.pid, previousPid);
+    assert.equal(provider.requests.length, requestsBeforeSwitching, 'Switching must not send a model prompt');
+    previousPid = info.pid;
+    crossDirectory.push({ sessionId: target.id, ...timing, backendReadyMs: info.elapsedMs });
+  }
+  await fs.writeFile(
+    `test-results/session-ui-cross-directory-${process.platform}.json`,
+    JSON.stringify({ platform: process.platform, ...buildInfo, crossDirectory }, null, 2),
+  );
+  console.log(
+    'Cross-directory click-to-DOM/next-rAF and runtime-ready measurements:',
+    JSON.stringify(crossDirectory),
+  );
+  console.log(
+    'PASS two cross-directory round trips preview target history before readiness and isolate cwd, project resources and drafts',
+  );
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
   console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
 

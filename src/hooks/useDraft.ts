@@ -67,7 +67,7 @@ export function useDraft({
   const piOnly = commandMatch?.[1] === '//';
   const allCommands: (PiCommand & { prefix: string })[] = [
     ...(piOnly ? [] : builtinCommands.map((c) => ({ ...c, prefix: '/' }))),
-    ...runtime.commands.map((c) => ({
+    ...(runtime.sessionId === selected?.id && runtime.connected ? runtime.commands : []).map((c) => ({
       ...c,
       prefix: piOnly || builtinCommands.some((b) => b.name === c.name) ? '//' : '/',
     })),

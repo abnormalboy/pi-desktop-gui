@@ -620,8 +620,8 @@ export class AgentService extends EventEmitter {
     }
     return fallback.map(redactMessageError);
   }
-  connect(sessionId: string) {
-    return this.exclusive(() => this.ensureConnected(sessionId));
+  connect(sessionId: string, onAccepted?: () => Promise<void>) {
+    return this.exclusive(() => this.ensureConnected(sessionId, onAccepted));
   }
   assertCommandsStopped() {
     if (this.unsafeExit)
@@ -629,7 +629,7 @@ export class AgentService extends EventEmitter {
         '无法确认 Pi 启动的命令已结束，已暂停启动任务、切换会话和撤销文件。请在系统任务管理器或终端结束残留命令，再重新启动 Pi Desktop；可先打开诊断查看最后的命令。',
       );
   }
-  private async ensureConnected(sessionId: string) {
+  private async ensureConnected(sessionId: string, onAccepted?: () => Promise<void>) {
     const started = performance.now();
     const epoch = this.stopEpoch;
     await this.crashCleanup;
@@ -648,6 +648,22 @@ export class AgentService extends EventEmitter {
       return;
     }
     const cwd = await this.store.sessionDirectory(sessionId);
+    // A local preview belongs only to this transition. Pi still reloads the authoritative
+    // transcript and project resources below; no model or command cache crosses contexts.
+    const preview = onAccepted ? await this.readTranscript(session.file, []) : [];
+    let accepted = false;
+    let acceptanceFailed = false;
+    const accept = async () => {
+      if (accepted || !onAccepted) return;
+      accepted = true;
+      this.publish(true);
+      try {
+        await onAccepted();
+      } catch (error) {
+        acceptanceFailed = true;
+        throw error;
+      }
+    };
     let reason = this.rpc?.closed ? 'Pi 进程已退出' : '当前没有 Pi 连接';
     const outgoing = this.store.state.sessions.find((s) => s.id === this.runtime.sessionId);
     // Pi's new_session inherits the open file's directory. A legacy desktop
@@ -680,12 +696,28 @@ export class AgentService extends EventEmitter {
         this.switchEvents = undefined;
         // A before-switch dialog temporarily changes the outgoing session's status.
         this.store.session(this.runtime.sessionId!).lastStatus = previousStatus;
-        this.resetSession(sessionId, cwd);
+        this.resetSession(sessionId, cwd, preview);
         for (const event of events) if (event.type !== 'session_info_changed') this.onEvent(event);
+        await accept();
+        if (epoch !== this.stopEpoch || this.shutdown) throw new Error('会话切换已取消');
         await this.rebindSession(sessionId, resuming);
         this.recordSwitch('reuse', started);
         return;
       } catch (error) {
+        if (acceptanceFailed) {
+          const rpc = this.rpc;
+          this.rpc = undefined;
+          try {
+            await rpc?.close();
+          } finally {
+            if (!this.store.state.sessions.some((item) => item.id === this.runtime.sessionId))
+              this.runtime = emptyRuntime();
+            this.setError(errorText(error));
+            this.runtime.connected = false;
+            this.status('error');
+          }
+          throw error;
+        }
         if (cancelled) {
           this.clearDialogs();
           this.status(previousStatus);
@@ -705,10 +737,12 @@ export class AgentService extends EventEmitter {
       await old.close();
     }
     if (epoch !== this.stopEpoch || this.shutdown) throw new Error('会话切换已取消');
-    this.resetSession(sessionId, cwd);
+    this.resetSession(sessionId, cwd, preview);
     this.connecting = true;
-    this.status('starting');
     try {
+      await accept();
+      if (epoch !== this.stopEpoch || this.shutdown) throw new Error('会话切换已取消');
+      this.status('starting');
       const environment = await requireSupportedPi(this.store.state.settings, this.developmentRoot);
       const resolved = await resolvePi(this.store.state.settings, this.developmentRoot);
       if (this.stopRequested) throw new Error('启动已取消');
@@ -737,22 +771,27 @@ export class AgentService extends EventEmitter {
       this.recordSwitch('restart', started, reason);
       if (reason.startsWith('复用切换失败')) this.diagnostic(reason);
     } catch (e) {
-      this.setError(errorText(e));
-      this.runtime.connected = false;
-      this.status(this.stopRequested ? 'stopped' : this.runtime.crash ? 'interrupted' : 'error');
       const rpc = this.rpc;
       this.rpc = undefined;
-      await rpc?.close();
+      try {
+        await rpc?.close();
+      } finally {
+        if (!this.store.state.sessions.some((item) => item.id === this.runtime.sessionId))
+          this.runtime = emptyRuntime();
+        this.setError(errorText(e));
+        this.runtime.connected = false;
+        this.status(this.stopRequested ? 'stopped' : this.runtime.crash ? 'interrupted' : 'error');
+      }
       throw e;
     } finally {
       this.connecting = false;
     }
   }
-  private resetSession(sessionId: string, cwd: string) {
+  private resetSession(sessionId: string, cwd: string, messages: Message[]) {
     this.checkpointRecorder.reset();
     this.clearDialogs();
     const crash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
-    this.runtime = { ...emptyRuntime(), sessionId, cwd, crash };
+    this.runtime = { ...emptyRuntime(), sessionId, cwd, crash, messages };
     this.retryNotice = undefined;
     this.retryCancelled = false;
     this.queuedImages = [];
@@ -1362,6 +1401,7 @@ export class AgentService extends EventEmitter {
       await this.rpc!.request('set_session_name', { name });
   }
   async stop() {
+    if (this.connecting) return this.forceStop();
     if (!busy(this.runtime.status)) return;
     this.stopEpoch++;
     this.stopRequested = true;

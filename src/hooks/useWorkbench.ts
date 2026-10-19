@@ -30,7 +30,8 @@ export function useWorkbench() {
     [settingsTab, setSettingsTab] = useState('environment'),
     [prefs, setPrefs] = useState<Settings>();
   const { state, runtime, environment, setEnvironment, storage, update } = useRuntime(setError, setPrefs);
-  const [pending, setPending] = useState(false);
+  const [pendingOperations, setPendingOperations] = useState(0);
+  const pending = pendingOperations > 0;
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
     [compact, setCompact] = useState(false),
@@ -55,10 +56,10 @@ export function useWorkbench() {
     columns = useRef<HTMLDivElement>(null),
     inspectorPanel = useRef<HTMLElement>(null),
     autoScroll = useRef(true),
-    selectedRef = useRef<string | undefined>(undefined),
     stateRef = useRef(state),
     runtimeRef = useRef(runtime);
   const initializedSessions = useRef(new Set<string>());
+  const selectionRequest = useRef(0);
   stateRef.current = state;
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
@@ -156,9 +157,12 @@ export function useWorkbench() {
     }
   }
   async function action(fn: () => Promise<unknown>) {
-    setPending(true);
-    await attempt(fn);
-    setPending(false);
+    setPendingOperations((count) => count + 1);
+    try {
+      await attempt(fn);
+    } finally {
+      setPendingOperations((count) => count - 1);
+    }
   }
 
   useEffect(() => {
@@ -188,7 +192,7 @@ export function useWorkbench() {
   }, [runtime.title]);
   useEffect(() => {
     if (!selected) return;
-    selectedRef.current = selected.id;
+    let active = true;
     recall.current = -1;
     setHistory([]);
     setFileQuery(null);
@@ -200,12 +204,18 @@ export function useWorkbench() {
     api
       .invoke('readHistory', selected.id)
       .then((m) => {
-        if (selectedRef.current === selected.id) setHistory(m);
+        if (active) setHistory(m);
       })
-      .catch((e) => setError(readableError(e)));
-    setTimeout(() => {
+      .catch((e) => {
+        if (active) setError(readableError(e));
+      });
+    const scroll = setTimeout(() => {
       if (thread.current) thread.current.scrollTop = selected.scrollTop ?? thread.current.scrollHeight;
     }, 80);
+    return () => {
+      active = false;
+      clearTimeout(scroll);
+    };
   }, [selected?.id]);
   useEffect(() => {
     if (
@@ -315,8 +325,7 @@ export function useWorkbench() {
     const sent = composeDraft();
     if (!selected || (!sent.trim() && !images.length) || pending) return;
     setError('');
-    setPending(true);
-    await attempt(async () => {
+    await action(async () => {
       if (await handleBuiltin(sent)) {
         await api.invoke('consumeDraft', selected.id, sent);
         setHideCommands(true);
@@ -325,7 +334,6 @@ export function useWorkbench() {
         await api.invoke('consumeDraft', selected.id, sent);
       } else await api.invoke('send', selected.id, sent, attachments, sendMode, images);
     });
-    setPending(false);
     autoScroll.current = true;
     input.current?.focus();
   }
@@ -389,13 +397,21 @@ export function useWorkbench() {
     });
   }
   async function selectSession(s: Session) {
+    const request = ++selectionRequest.current;
+    const previous = stateRef.current?.selectedSessionId;
     await action(async () => {
-      const m = await api.invoke('selectSession', s.id);
-      setHistory(m);
+      try {
+        // The selected-ID effect owns history; late IPC replies must not replace it.
+        await api.invoke('selectSession', s.id);
+      } catch (error) {
+        const current = stateRef.current?.selectedSessionId;
+        if (request === selectionRequest.current && (current === s.id || current === previous)) throw error;
+      }
     });
-    setSearchOpen(false);
+    if (request === selectionRequest.current) setSearchOpen(false);
   }
   async function createSession(projectId?: string) {
+    selectionRequest.current++;
     const session = await attempt(() => api.invoke('newSession', projectId));
     if (session) focusComposer();
   }

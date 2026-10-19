@@ -49,6 +49,7 @@ assert.equal(textHelpers.length, 1);
 const { code } = transformSync(
   `const createHandler = (store, service, send, busy) => {
     ${textHelpers[0].getText(source)}
+    let sessionSelection = 0;
     const save = ${variable('save').getText(source)};
     return ${selection.initializer.getText(source)};
   };`,
@@ -397,4 +398,154 @@ test('a failed state delivery still waits for the selected-session save and flus
     gate.release.resolve();
     await selected.promise.catch(() => {});
   }
+});
+
+test('accepted target history and selection are visible while connection remains gated', async (t) => {
+  const f = await fixture(t);
+  const entered = deferred(),
+    release = deferred();
+  t.mock.method(f.service, 'connect', async (id: string, accepted?: () => Promise<void>) => {
+    const preview = await f.service.history(id);
+    f.service.runtime.sessionId = id;
+    f.service.runtime.messages = preview;
+    f.service.runtime.connected = false;
+    f.service.runtime.status = 'starting';
+    await accepted?.();
+    entered.resolve();
+    await release.promise;
+    f.service.runtime.connected = true;
+    f.service.runtime.status = 'idle';
+  });
+  const selected = observe(f.select(f.b.id));
+  try {
+    await entered.promise;
+    assert.equal(f.store.state.selectedSessionId, f.b.id);
+    assert.equal((await f.persisted()).selectedSessionId, f.b.id);
+    assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
+    assert.equal(f.selectedEvents().length, 1);
+    assert.equal(f.service.runtime.connected, false);
+    assert.equal(selected.settled, false);
+  } finally {
+    release.resolve();
+    await selected.promise;
+  }
+  assert.equal(f.selectedEvents().length, 1, 'completion does not publish the selection twice');
+});
+
+test('connection failure after acceptance leaves the target selected, persisted and browsable', async (t) => {
+  const f = await fixture(t);
+  t.mock.method(f.service, 'connect', async (id: string, accepted?: () => Promise<void>) => {
+    f.service.runtime.messages = await f.service.history(id);
+    f.service.runtime.sessionId = id;
+    f.service.runtime.connected = false;
+    await accepted?.();
+    throw new Error('cold start failed');
+  });
+  await assert.rejects(f.select(f.b.id), /cold start failed/);
+  assert.equal(f.store.state.selectedSessionId, f.b.id);
+  assert.equal((await f.persisted()).selectedSessionId, f.b.id);
+  assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
+  assert.equal(f.selectedEvents().length, 1);
+});
+
+test('a late B acceptance and completion never replace newer C selection', async (t) => {
+  const f = await fixture(t);
+  const entered = deferred(),
+    release = deferred();
+  t.mock.method(f.service, 'connect', async (id: string, accepted?: () => Promise<void>) => {
+    if (id === f.b.id) {
+      entered.resolve();
+      await release.promise;
+    }
+    await accepted?.();
+  });
+  const b = f.select(f.b.id);
+  try {
+    await entered.promise;
+    await f.select(f.c.id);
+    release.resolve();
+    assert.deepEqual(await b, [{ role: 'user', content: 'history-1' }]);
+    assert.equal(f.store.state.selectedSessionId, f.c.id);
+    assert.equal((await f.persisted()).selectedSessionId, f.c.id);
+    assert.deepEqual(
+      f.selectedEvents().map((state) => state.selectedSessionId),
+      [f.c.id],
+    );
+  } finally {
+    release.resolve();
+    await b;
+  }
+});
+
+test('a new-session navigation invalidates an old acceptance even if navigation returns to the original ID', async (t) => {
+  const f = await fixture(t);
+  const entered = deferred(),
+    release = deferred();
+  t.mock.method(f.service, 'connect', async (_id: string, accepted?: () => Promise<void>) => {
+    entered.resolve();
+    await release.promise;
+    await accepted?.();
+  });
+  const b = f.select(f.b.id);
+  try {
+    await entered.promise;
+    f.store.createSession();
+    f.store.selectSession(f.a.id);
+    await f.store.save();
+    release.resolve();
+    await b;
+    assert.equal(f.store.state.selectedSessionId, f.a.id);
+    assert.deepEqual(f.selectedEvents(), []);
+  } finally {
+    release.resolve();
+    await b;
+  }
+});
+
+test('an accepted selection still waits for its save after state delivery fails', async (t) => {
+  const f = await fixture(t);
+  const {
+    gates: [gate],
+  } = blockWrites(t, f.store);
+  t.mock.method(f.service, 'connect', async (_id: string, accepted?: () => Promise<void>) => {
+    await accepted?.();
+  });
+  const select = createHandler(
+    f.store,
+    f.service,
+    () => {
+      throw new Error('window closed');
+    },
+    busy,
+  );
+  const selected = observe(select(f.b.id));
+  try {
+    await gate.entered.promise;
+    assert.equal(selected.settled, false);
+    gate.release.resolve();
+    await assert.rejects(selected.promise, /window closed/);
+    await f.store.flush();
+    assert.equal((await f.persisted()).selectedSessionId, f.b.id);
+  } finally {
+    gate.release.resolve();
+    await selected.promise.catch(() => {});
+  }
+});
+
+test('an accepted selection rejects a failed save and leaves read-only history available', async (t) => {
+  const f = await fixture(t);
+  const write = fs.writeFile;
+  t.mock.method(fs, 'writeFile', async (...args: Parameters<typeof fs.writeFile>) => {
+    if (String(args[0]) === path.join(f.store.dir, 'state.json.tmp'))
+      throw Object.assign(new Error('full'), { code: 'ENOSPC' });
+    return write(...args);
+  });
+  t.mock.method(f.service, 'connect', async (_id: string, accepted?: () => Promise<void>) => {
+    await accepted?.();
+    assert.fail('failed acceptance must not continue connecting');
+  });
+  await assert.rejects(f.select(f.b.id), /ENOSPC/);
+  assert.equal(f.store.state.selectedSessionId, f.b.id);
+  assert.equal(f.store.storage.writable, false);
+  assert.deepEqual(await f.service.history(f.b.id), [{ role: 'user', content: 'history-1' }]);
 });

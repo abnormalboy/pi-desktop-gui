@@ -73,6 +73,7 @@ let closing = false;
 let sessionEnding = false;
 let activeOperations = 0;
 let activeEngineOperations = 0;
+let sessionSelection = 0;
 let workspaceWatcher: WorkspaceWatcher | undefined;
 let watchedProject = '';
 let watcherRevision = 0;
@@ -495,15 +496,33 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   selectSession: async (id) => {
     text(id, 100);
     const s = store.session(id);
+    const request = ++sessionSelection;
+    let revision = store.selectionRevision;
+    let accepted = false;
+    const ownsSelection = () => request === sessionSelection && revision === store.selectionRevision;
+    const accept = async () => {
+      if (!ownsSelection()) return;
+      store.selectSession(s.id);
+      revision = store.selectionRevision;
+      accepted = true;
+      const saving = store.save();
+      try {
+        send({ type: 'state', state: store.state });
+      } finally {
+        await saving;
+      }
+    };
     if (
       store.storage.writable &&
       (service.runtime.connected || service.runtime.crash?.cleanup === 'confirmed') &&
       !busy(service.runtime.status) &&
       service.runtime.sessionId !== id
     ) {
-      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id);
+      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id, accept);
       else await service.disconnect();
     }
+    // A newer sidebar click or another navigation (new/import/delete) owns the view.
+    if (accepted || !ownsSelection()) return service.history(id);
     store.selectSession(s.id);
     if (store.storage.writable) {
       if (service.runtime.connected && service.runtime.sessionId === s.id) {

@@ -98,6 +98,8 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 
 With Pi and a model provider configured, a new empty chat connects automatically and shows the actual selected model and reasoning level before you send a message. It uses your saved model preference or Pi's effective defaults, including project settings. Initialization waits while another task is running, and projects still require trust before Pi starts.
 
+When switching conversations, the selected history and draft appear once the transition is accepted, while its model and project resources finish loading. Switching between working directories still restarts Pi so commands use the correct project context; sending and model changes wait until the connection is ready. An extension can still cancel a same-directory switch before the selection changes.
+
 New session logs use Pi's native directory (`~/.pi/agent/sessions/<encoded-cwd>/` by default), so tools such as CC Switch can discover their usage. Pi's `sessionDir` settings and environment overrides remain effective. Existing desktop session files can still be resumed from their original locations.
 
 ## Usage

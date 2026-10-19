@@ -12,6 +12,7 @@ export { defaultSettings } from './store-state';
 const BACKUP_INTERVAL = 10 * 60 * 1000;
 export class Store extends EventEmitter {
   state = emptyState();
+  selectionRevision = 0;
   storage: StorageStatus = { writable: true };
   private writing = Promise.resolve();
   constructor(
@@ -219,6 +220,7 @@ export class Store extends EventEmitter {
   }
   selectSession(id: string) {
     const session = this.session(id);
+    this.selectionRevision++;
     this.state.selectedSessionId = id;
     this.state.selectedProjectId = session.projectId;
     session.unread = false;
