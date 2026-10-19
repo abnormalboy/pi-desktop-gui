@@ -147,9 +147,24 @@ try {
   await atBottom('.thread');
   await page.locator('.runtime-notices summary').click();
   await atBottom('.thread');
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1050, 720));
-  await atBottom('.thread');
-  await atBottom('.thinking pre');
+  for (const size of [
+    [1050, 720],
+    [1400, 900],
+    [1000, 650],
+  ]) {
+    const contentSize = await app.evaluate(({ BrowserWindow }, [width, height]) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.setSize(width, height);
+      return window.getContentSize();
+    }, size);
+    await page.waitForFunction(
+      ([width, height]) => innerWidth === width && innerHeight === height,
+      contentSize,
+    );
+    await frames();
+    await atBottom('.thread');
+    await atBottom('.thinking pre');
+  }
   console.log('PASS expanded content and window resizing keep the latest output in view');
 
   await page

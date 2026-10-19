@@ -14,6 +14,7 @@ export function ThinkingBlock({
 }) {
   const output = useRef<HTMLPreElement>(null);
   const following = useRef(streaming && !match);
+  const viewport = useRef({ width: 0, height: 0 });
   const [paused, setPaused] = useState(false);
 
   useLayoutEffect(() => {
@@ -30,6 +31,7 @@ export function ThinkingBlock({
     // Opening the details or changing the available width can reveal more lines.
     const observer = new ResizeObserver(() => {
       if (following.current) element.scrollTop = element.scrollHeight;
+      viewport.current = { width: element.clientWidth, height: element.clientHeight };
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -43,7 +45,11 @@ export function ThinkingBlock({
         onScroll={(event) => {
           const element = event.currentTarget;
           if (!element.clientHeight) return;
-          following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+          const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+          const sameViewport =
+            element.clientWidth === viewport.current.width &&
+            element.clientHeight === viewport.current.height;
+          if (atBottom || sameViewport) following.current = atBottom;
           setPaused(!following.current);
         }}
       >

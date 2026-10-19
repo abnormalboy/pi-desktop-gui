@@ -96,6 +96,7 @@ export function Conversation(
     [jumpIndex, setJumpIndex] = useState<number | null>(null);
   const findInput = useRef<HTMLInputElement>(null);
   const threadContent = useRef<HTMLDivElement>(null);
+  const threadViewport = useRef({ width: 0, height: 0 });
   const tools = ownRuntime ? runtime.tools : [];
   const modelState = sessionModelState(runtime, selected, state.settings);
   const matches = useMemo(
@@ -146,6 +147,7 @@ export function Conversation(
         container.scrollTop = container.scrollHeight;
         setNewContent(false);
       }
+      threadViewport.current = { width: container.clientWidth, height: container.clientHeight };
     });
     observer.observe(container);
     observer.observe(content);
@@ -315,7 +317,12 @@ export function Conversation(
         onScroll={() => {
           const el = thread.current;
           if (!el) return;
-          autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          // Resizing can emit a scroll event before the ResizeObserver catches up.
+          const sameViewport =
+            el.clientWidth === threadViewport.current.width &&
+            el.clientHeight === threadViewport.current.height;
+          if (atBottom || sameViewport) autoScroll.current = atBottom;
           setNewContent(!autoScroll.current);
           const top = el.getBoundingClientRect().top;
           const visible = [...el.querySelectorAll<HTMLElement>('[data-turn]')].findLast(

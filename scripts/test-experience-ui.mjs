@@ -168,6 +168,7 @@ try {
   );
   await page.evaluate((id) => window.desktop.invoke('connect', id), fixture.sessionId);
   await input.fill('E2E_SLOW Esc repeat regression');
+  await savedSession(fixture.sessionId, (session) => session.draft === 'E2E_SLOW Esc repeat regression');
   await input.press('Enter');
   await page.locator('.run-meta .status.running').waitFor();
   await page.getByText('开始流式回复。', { exact: true }).waitFor();
