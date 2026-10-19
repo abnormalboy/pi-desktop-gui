@@ -1,0 +1,62 @@
+Producer definitions and state injections
+
+tests/retry-display-fixture.test.mjs:175:    ['desktop:event', { type: 'state', state: { selectedSessionId: sessionId } }],
+tests/thinking-message.test.ts:13:  value: { desktop: { platform: 'linux' } },
+tests/runtime-state-revisions.test.ts:74:      desktop: {
+tests/runtime-state-revisions.test.ts:101:    emit: (id: string, revision: number) => listener?.({ type: 'state', state: state(id), revision }),
+tests/workbench-selection.test.ts:193:    { desktop: { invoke: invokeApi, platform: 'linux' } },
+tests/theme-ui-selectors.test.ts:11:  value: { desktop: { platform: 'linux', invoke: async () => {} } },
+scripts/test-pi-settings-ui.mjs:116:    window.desktop = {
+tests/session-model-ui.test.ts:11:  value: { desktop: { platform: 'darwin' } },
+scripts/test-management.ts:61:        desktop: {
+electron/main.ts:101:  event: Exclude<AppEvent, { type: 'state' }> | { type: 'state'; state: StateSnapshot['state'] },
+electron/main.ts:103:  const value: AppEvent = event.type === 'state' ? { type: 'state', ...stateSnapshot(event.state) } : event;
+electron/main.ts:152:  send({ type: 'state', state: store.state });
+electron/main.ts:438:  bootstrap: async () => {
+electron/main.ts:551:        send({ type: 'state', state: store.state });
+electron/main.ts:555:    } else send({ type: 'state', state: store.state });
+electron/main.ts:1514:      service.on('state', (state) => send({ type: 'state', state }));
+scripts/readme-screenshots.mjs:298:    bootstrap: () => ({
+scripts/readme-screenshots.mjs:353:  window.desktop = {
+scripts/readme-demo.mjs:193:    emit({ type: 'state', state });
+scripts/readme-demo.mjs:202:    emit({ type: 'state', state });
+scripts/readme-demo.mjs:265:    emit({ type: 'state', state });
+scripts/readme-demo.mjs:270:    bootstrap: () =>
+scripts/readme-demo.mjs:339:  window.desktop = {
+
+Event and bootstrap forwarding paths
+
+electron/preload.ts:5:  onEvent: (listener) => {
+electron/preload.ts:7:    ipcRenderer.on('desktop:event', handler);
+electron/preload.ts:8:    return () => ipcRenderer.removeListener('desktop:event', handler);
+electron/preload.ts:13:contextBridge.exposeInMainWorld('desktop', api);
+tests/retry-display-fixture.test.mjs:54:      if (channel !== 'desktop:event') return;
+tests/retry-display-fixture.test.mjs:67:          return method === 'bootstrap'
+tests/retry-display-fixture.test.mjs:86:  webContents.send('desktop:event', {
+tests/retry-display-fixture.test.mjs:91:  webContents.send('desktop:event', { type: 'runtimePatch', patch: livePatch });
+tests/retry-display-fixture.test.mjs:142:      webContents.send('desktop:event', event);
+tests/retry-display-fixture.test.mjs:169:    ['desktop:event', { type: 'runtime', runtime: other }],
+tests/retry-display-fixture.test.mjs:171:      'desktop:event',
+tests/retry-display-fixture.test.mjs:174:    ['desktop:event', { type: 'runtimeRemoved', sessionId: other.sessionId }],
+tests/retry-display-fixture.test.mjs:175:    ['desktop:event', { type: 'state', state: { selectedSessionId: sessionId } }],
+tests/retry-display-fixture.test.mjs:176:    ['desktop:event', { type: 'storage', storage: { writable: true } }],
+scripts/test-model-entry-transition-ui.mjs:126:      if (channel === 'desktop:event' && event?.type === 'state') {
+electron/main.ts:105:    window.webContents.send('desktop:event', value);
+scripts/test-polish-ui.mjs:173:      return method === 'bootstrap' ? { ...value, runtime: globalThis.polishRuntime } : value;
+scripts/test-polish-ui.mjs:227:      BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', {
+tests/support/retry-display-fixture.mjs:12:      send('desktop:event', { type: 'runtime', runtime });
+tests/support/retry-display-fixture.mjs:27:    if (fixture.runtime && channel === 'desktop:event' && eventSession === sessionId) {
+tests/support/retry-display-fixture.mjs:44:    return method === 'bootstrap' && fixture.runtime ? { ...result, runtime: fixture.runtime } : result;
+scripts/test-update-ui.mjs:45:      contents.send('desktop:event', { type: 'update', update: globalThis.updateUiFixture.update });
+scripts/test-update-ui.mjs:47:        contents.send('desktop:event', {
+scripts/test-update-ui.mjs:103:      return method === 'bootstrap' ? { ...result, update: globalThis.updateUiFixture.update } : result;
+scripts/test-theme-ui.mjs:137:      if (channel === 'desktop:event' && ['appDialog', 'appDialogsCancelled'].includes(args[0]?.type))
+tests/runtime-state-revisions.test.ts:76:        onEvent: (next: typeof listener) => {
+scripts/test-scroll-ui.mjs:35:    BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', { type: 'runtime', runtime });
+scripts/test-scroll-ui.mjs:76:      return method === 'bootstrap' ? { ...result, runtime: globalThis.scrollRuntime } : result;
+scripts/test-conversation-v014-ui.mjs:134:      return method === 'bootstrap' ? { ...result, runtime } : result;
+scripts/test-conversation-v014-ui.mjs:425:        BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', { type: 'runtime', runtime }),
+scripts/readme-demo.mjs:342:    onEvent: (listener) => {
+scripts/perf-ui.mjs:60:      return method === 'bootstrap' ? { ...result, runtime } : result;
+scripts/perf-ui.mjs:99:        BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', { type: 'runtimePatch', patch });
+scripts/readme-screenshots.mjs:360:    onEvent: () => () => {},

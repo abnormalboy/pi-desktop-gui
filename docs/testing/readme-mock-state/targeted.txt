@@ -1,0 +1,16 @@
+✔ light screenshot provides versioned independent bootstrap and completion snapshots (5.903704ms)
+✔ dark screenshot provides versioned independent bootstrap and completion snapshots (2.601944ms)
+✔ approval screenshot provides versioned independent bootstrap and completion snapshots (2.169573ms)
+✔ README demo provides versioned independent bootstrap and completion snapshots (6.985236ms)
+✔ production useRuntime drops old state events and a late bootstrap from the same main revision stream (20.556787ms)
+✔ a late bootstrap cannot replace an already edited settings draft (7.290838ms)
+✔ a completion snapshot cannot replace a newer authoritative event or a newer confirmation (1.273136ms)
+✔ state and its revision commit together, while the received snapshot invalidates old actions immediately (1.111987ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 621.680798

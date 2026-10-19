@@ -294,15 +294,19 @@ const mock = ({ theme, approval }) => {
     enabled: true,
     installing: false,
   };
+  let stateRevision = 0;
   const handlers = {
-    bootstrap: () => ({
-      state,
-      runtime,
-      environment,
-      dataDir: '/home/dev/.pi-desktop',
-      storage: { writable: true },
-      update,
-    }),
+    navigationState: () => structuredClone({ state, revision: ++stateRevision }),
+    bootstrap: () =>
+      structuredClone({
+        state,
+        revision: ++stateRevision,
+        runtime,
+        environment,
+        dataDir: '/home/dev/.pi-desktop',
+        storage: { writable: true },
+        update,
+      }),
     selectSession: () => messages,
     readHistory: () => messages,
     changes: () => changes,

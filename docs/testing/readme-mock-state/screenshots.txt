@@ -1,0 +1,3 @@
+wrote /workspace/pi-desktop-gui/test-results/readme-mock-protocol-fix/workspace-light.png
+wrote /workspace/pi-desktop-gui/test-results/readme-mock-protocol-fix/workspace-dark.png
+wrote /workspace/pi-desktop-gui/test-results/readme-mock-protocol-fix/approval.png

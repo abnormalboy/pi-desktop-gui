@@ -1,0 +1,65 @@
+✖ light screenshot provides versioned independent bootstrap and completion snapshots (37.198617ms)
+✖ dark screenshot provides versioned independent bootstrap and completion snapshots (5.835486ms)
+✖ approval screenshot provides versioned independent bootstrap and completion snapshots (6.179641ms)
+✔ README demo provides versioned independent bootstrap and completion snapshots (5.59834ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 1
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 314.240275
+
+✖ failing tests:
+
+test at tests/readme-mock-state.test.mjs:23:3
+✖ light screenshot provides versioned independent bootstrap and completion snapshots (37.198617ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+    assert.ok(Number.isSafeInteger(initial.revision) && initial.revision > 0)
+
+      at TestContext.<anonymous> (file:///workspace/pi-desktop-gui/tests/readme-mock-state.test.mjs:26:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests/readme-mock-state.test.mjs:23:3
+✖ dark screenshot provides versioned independent bootstrap and completion snapshots (5.835486ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+    assert.ok(Number.isSafeInteger(initial.revision) && initial.revision > 0)
+
+      at TestContext.<anonymous> (file:///workspace/pi-desktop-gui/tests/readme-mock-state.test.mjs:26:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests/readme-mock-state.test.mjs:23:3
+✖ approval screenshot provides versioned independent bootstrap and completion snapshots (6.179641ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+    assert.ok(Number.isSafeInteger(initial.revision) && initial.revision > 0)
+
+      at TestContext.<anonymous> (file:///workspace/pi-desktop-gui/tests/readme-mock-state.test.mjs:26:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

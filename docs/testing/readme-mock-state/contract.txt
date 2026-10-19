@@ -1,0 +1,12 @@
+✔ light screenshot provides versioned independent bootstrap and completion snapshots (6.447503ms)
+✔ dark screenshot provides versioned independent bootstrap and completion snapshots (1.928298ms)
+✔ approval screenshot provides versioned independent bootstrap and completion snapshots (1.001774ms)
+✔ README demo provides versioned independent bootstrap and completion snapshots (7.886611ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 151.35369
