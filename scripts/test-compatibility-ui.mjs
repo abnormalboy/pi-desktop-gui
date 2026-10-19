@@ -34,15 +34,15 @@ try {
     const input = page.getByRole('textbox', { name: '任务输入' });
     await input.waitFor();
     const notice = page.getByLabel('Pi 版本兼容性');
-    await notice.waitFor();
     if (recognized) {
-      assert.match(await notice.innerText(), /未验证.*可以继续使用/s);
-      assert.equal(await notice.getByRole('button', { name: '复制代码' }).count(), 0);
       await page.evaluate((id) => window.desktop.invoke('connect', id), session.id);
+      await page.getByRole('region', { name: '开始前检查' }).waitFor({ state: 'detached' });
+      assert.equal(await notice.count(), 0);
       await input.fill('compatibility UI test');
       await page.getByRole('button', { name: '发送任务', exact: true }).click();
       await page.locator('.run-meta .completed').waitFor();
     } else {
+      await notice.waitFor();
       assert.match(await notice.innerText(), /未检测到可识别的 Pi 版本/);
       await input.fill('blocked by unrecognized entry');
       assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);

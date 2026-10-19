@@ -26,7 +26,7 @@ export function ReadinessChecklist({
   const connected = ownRuntime && runtime.connected;
   const piReady = environment.supported;
   const modelReady = connected ? Boolean(runtime.model) : Boolean(modelLabel);
-  if (piReady && modelReady) return <PiCompatibilityNotice environment={environment} />;
+  if (piReady && modelReady) return null;
   const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();
   const steps: { done: boolean; title: string; detail: string; action?: [string, () => void] }[] = [
     {
@@ -64,7 +64,7 @@ export function ReadinessChecklist({
   return (
     <div className="readiness" role="region" aria-label="开始前检查">
       <strong>开始前还差一步</strong>
-      <PiCompatibilityNotice environment={environment} />
+      {!piReady && <PiCompatibilityNotice environment={environment} />}
       {steps.map((s, i) => (
         <div key={i} className={'readiness-step' + (s.done ? ' done' : '')}>
           {s.done ? <CheckCircle2 size={17} /> : <span className="step-number">{i + 1}</span>}

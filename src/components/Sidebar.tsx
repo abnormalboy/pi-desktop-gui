@@ -267,27 +267,29 @@ export function Sidebar(
         </div>
         {state.projects.map((p) => (
           <div className={'project-group ' + (p.id === project?.id ? 'selected' : '')} key={p.id}>
-            <button
-              className="project-row"
-              aria-expanded={expandedProjects.has(p.id)}
-              onClick={() => toggleProject(p.id)}
-            >
-              <FolderOpen size={16} />
-              <span title={p.path}>{p.name}</span>
-              {!expandedProjects.has(p.id) && projectStatus(p.id)}
-              <ChevronDown size={13} className="project-chevron" />
-            </button>
-            <div className="project-actions">
-              <IconButton title={`在 ${p.name} 中新建会话`} onClick={() => void createSession(p.id)}>
-                <Plus size={15} />
-              </IconButton>
-              <IconButton
-                title={`${p.name} 项目操作`}
-                expanded={menuId === p.id}
-                onClick={() => setMenuId(menuId === p.id ? '' : p.id)}
+            <div className="project-header">
+              <button
+                className="project-row"
+                aria-expanded={expandedProjects.has(p.id)}
+                onClick={() => toggleProject(p.id)}
               >
-                <MoreHorizontal size={15} />
-              </IconButton>
+                <FolderOpen size={16} />
+                <span title={p.path}>{p.name}</span>
+                {!expandedProjects.has(p.id) && projectStatus(p.id)}
+                <ChevronDown size={13} className="project-chevron" />
+              </button>
+              <div className="project-actions">
+                <IconButton title={`在 ${p.name} 中新建会话`} onClick={() => void createSession(p.id)}>
+                  <Plus size={15} />
+                </IconButton>
+                <IconButton
+                  title={`${p.name} 项目操作`}
+                  expanded={menuId === p.id}
+                  onClick={() => setMenuId(menuId === p.id ? '' : p.id)}
+                >
+                  <MoreHorizontal size={15} />
+                </IconButton>
+              </div>
             </div>
             {menuId === p.id && (
               <div className="context-menu">
