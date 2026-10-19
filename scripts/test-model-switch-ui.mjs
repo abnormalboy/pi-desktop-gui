@@ -85,6 +85,22 @@ f.store.selectSession(f.sessionId);
 await f.store.save();
 let app, page;
 const errors = [];
+function coldSelectionReady({ id, title, draft }) {
+  const input = document.querySelector('textarea[aria-label="任务输入"]');
+  const send = document.querySelector('.send-button');
+  return Boolean(
+    window.modelSwitchState?.selectedSessionId === id &&
+    !window.modelSwitchRuntimes.get(id)?.connected &&
+    document.querySelector('.workspace-title h1')?.textContent === title &&
+    input &&
+    !input.disabled &&
+    (draft === undefined || input.value === draft) &&
+    send &&
+    !send.querySelector('.spin') &&
+    (!draft || !send.disabled) &&
+    !document.querySelector('.stop-button'),
+  );
+}
 const observeModelSwitchState = () =>
   page.evaluate(async () => {
     window.modelSwitchRuntimes = new Map();
@@ -115,6 +131,10 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   await observeModelSwitchState();
+  // Opening the model picker explicitly connects; browsing alone leaves Pi stopped.
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await page.getByRole('option', { name: /本地验收接口/ }).waitFor();
+  await page.keyboard.press('Escape');
   // A visible composer and bootstrap response can precede Pi's model/capability handshake.
   await page.waitForFunction(modelSwitchReady, {
     id: f.sessionId,
@@ -213,21 +233,16 @@ try {
   await page.locator('footer').getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: other.title, exact: true }).click();
-  await page.waitForFunction(modelSwitchReady, {
+  await page.waitForFunction(coldSelectionReady, {
     id: other.id,
     title: other.title,
-    connected: true,
-    status: 'idle',
-    readyToType: true,
   });
-  await page.locator('.run-meta .idle').waitFor();
   await page.locator('.workspace-title h1').filter({ hasText: other.title }).waitFor();
   await page.getByRole('textbox', { name: '任务输入' }).fill('CONCURRENT_B');
-  await page.waitForFunction(modelSwitchReady, {
+  await page.waitForFunction(coldSelectionReady, {
     id: other.id,
     title: other.title,
     draft: 'CONCURRENT_B',
-    canSend: true,
   });
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isEnabled(), true);
   await page.getByRole('textbox', { name: '任务输入' }).press('Enter');
@@ -349,15 +364,11 @@ try {
     'changing B model must not restart its in-flight request',
   );
   const standalone = await page.evaluate(() => window.desktop.invoke('newSession'));
-  await page.waitForFunction(modelSwitchReady, {
+  await page.waitForFunction(coldSelectionReady, {
     id: standalone.id,
     title: standalone.title,
-    readyToType: true,
-    connected: true,
-    status: 'idle',
   });
   await page.locator('.workspace-title h1').filter({ hasText: standalone.title }).waitFor();
-  await page.locator('.run-meta .idle').waitFor();
   await page.waitForFunction(
     () =>
       !document.querySelector('.stop-button') &&

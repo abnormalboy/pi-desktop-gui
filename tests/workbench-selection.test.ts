@@ -202,6 +202,7 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
   flush();
   return {
     view,
+    draft,
     render,
     flush,
     settle,
@@ -385,7 +386,7 @@ test('reopening search during the current selection survives its eventual comple
   f.unmount();
 });
 
-test('B startup is pending on B, while A and C remain independently usable', async () => {
+test('B selection is pending on B, while A and C remain independently usable', async () => {
   const connection = deferred<types.Message[]>();
   const f = harness((method) => (method === 'readHistory' ? Promise.resolve([]) : connection.promise));
   const selecting = f.current.selectSession(session('B'));
@@ -435,10 +436,10 @@ test('current B selection failure belongs to B, never the click-time A closure',
   const selecting = f.current.selectSession(session('B'));
   f.select('B');
   f.flush();
-  connection.reject(new Error('B cold start failed'));
+  connection.reject(new Error('B selection failed'));
   await selecting;
   await f.settle();
-  assert.match(f.current.error, /B cold start failed/);
+  assert.match(f.current.error, /B selection failed/);
   assert.equal(f.current.pending, false);
   f.select('A');
   f.flush();
@@ -509,7 +510,7 @@ test('B to C to B ignores an old failure after newer success and clears the prev
   f.unmount();
 });
 
-test('same-ID callers sharing the backend connection still expose its real latest failure', async () => {
+test('same-ID callers still expose the latest selection failure', async () => {
   const shared = deferred<types.Message[]>();
   const f = harness((method) => (method === 'readHistory' ? Promise.resolve([]) : shared.promise));
   const one = f.current.selectSession(session('B'));
@@ -558,84 +559,78 @@ test('new-session intent invalidates an old selection failure without unlocking 
   f.unmount();
 });
 
-test('automatic model resolution respects readiness and does not retry a failed connection on rerender', async () => {
-  const calls: string[] = [];
-  const f = harness((method) => {
-    calls.push(method);
-    return method === 'connect'
-      ? Promise.reject(new Error('initial connection failed'))
-      : Promise.resolve([]);
+for (const empty of [false, true]) {
+  test(`opening and revisiting a ${empty ? 'new empty' : 'saved'} chat never automatically connects`, async () => {
+    const calls: string[] = [];
+    const f = harness((method) => {
+      calls.push(method);
+      return Promise.resolve([]);
+    });
+    f.view.environment = { supported: true, authExists: true, modelsExist: true };
+    if (empty)
+      f.view.state.sessions = f.view.state.sessions.map((s) =>
+        s.id === 'B' ? { ...s, file: undefined } : s,
+      );
+    const selecting = f.current.selectSession(session('B'));
+    f.select('B');
+    f.flush();
+    await selecting;
+    await f.settle();
+    f.select('C');
+    f.flush();
+    f.select('B');
+    f.flush();
+    await f.settle();
+    assert.equal(f.current.pending, false);
+    assert.equal(f.current.ownRunning, false);
+    assert.equal(calls.includes('connect'), false);
+    assert.equal(calls.includes('send'), false);
+    f.unmount();
   });
-  f.view.state.sessions.push({ ...session('new'), file: undefined });
-  f.select('new');
+}
+
+test('an explicit connection still reads Pi models without sending a task', async () => {
+  const calls: { method: string; id?: string }[] = [];
+  const f = harness((method, id) => {
+    calls.push({ method, id });
+    return Promise.resolve([]);
+  });
+  f.select('B');
   f.flush();
+  await f.current.connect();
   await f.settle();
-  assert.equal(calls.includes('connect'), false, 'unsupported environment');
-  f.view.environment = { supported: true, authExists: false, modelsExist: false };
-  f.render();
-  f.flush();
-  await f.settle();
-  assert.equal(calls.includes('connect'), false, 'no model or auth source');
-  f.view.environment.modelsExist = true;
-  f.view.storage.writable = false;
-  f.render();
-  f.flush();
-  await f.settle();
-  assert.equal(calls.includes('connect'), false, 'read-only storage');
-  f.view.storage.writable = true;
-  f.view.storage.recovery = {
-    restarted: true,
-    discardedProjects: 0,
-    discardedSessions: 0,
-    repairedSettings: 0,
-  };
-  f.render();
-  f.flush();
-  await f.settle();
-  assert.equal(calls.includes('connect'), false, 'unresolved storage recovery');
-  f.view.storage.recovery = undefined;
-  f.render();
-  f.flush();
-  await f.settle();
-  assert.match(f.current.error, /initial connection failed/);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'connect'),
+    [{ method: 'connect', id: 'B' }],
+  );
+  assert.equal(
+    calls.some((call) => call.method === 'send'),
+    false,
+  );
   assert.equal(f.current.pending, false);
-  f.select('A');
-  f.flush();
-  f.select('new');
-  f.flush();
-  await f.settle();
-  assert.equal(calls.filter((method) => method === 'connect').length, 1);
-  assert.equal(calls.includes('send'), false);
   f.unmount();
 });
 
-test('empty-session autoconnect is gated and not duplicated while selection is pending', async () => {
-  const selection = deferred<types.Message[]>();
-  const calls: string[] = [];
-  const f = harness((method) => {
-    calls.push(method);
-    return method === 'selectSession' ? selection.promise : Promise.resolve([]);
+test('the first prompt is sent to the selected cold chat without a separate eager connection', async () => {
+  const calls: { method: string; id?: string }[] = [];
+  const f = harness((method, id) => {
+    calls.push({ method, id });
+    return Promise.resolve([]);
   });
-  f.view.state.sessions = f.view.state.sessions.map((s) => (s.id === 'B' ? { ...s, file: undefined } : s));
   f.view.environment = { supported: true, authExists: true, modelsExist: true };
-  const selecting = f.current.selectSession(session('B', undefined));
+  f.draft.composeDraft = () => 'First task in B';
   f.select('B');
   f.flush();
-  assert.equal(calls.filter((method) => method === 'connect').length, 0);
-  f.view.runtime = { ...types.emptyRuntime(), sessionId: 'B', connected: true };
-  selection.resolve([]);
-  await selecting;
+  await f.current.send();
   await f.settle();
-  assert.equal(calls.filter((method) => method === 'connect').length, 0);
-  // A genuinely new empty session still resolves Pi defaults once, before a prompt.
-  f.view.state.sessions.push({ ...session('new'), file: undefined });
-  f.select('new');
-  f.flush();
-  await f.settle();
-  f.render();
-  f.flush();
-  await f.settle();
-  assert.equal(calls.filter((method) => method === 'connect').length, 1);
-  assert.equal(calls.includes('send'), false);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'send'),
+    [{ method: 'send', id: 'B' }],
+  );
+  assert.equal(
+    calls.some((call) => call.method === 'connect'),
+    false,
+  );
+  assert.equal(f.current.pending, false);
   f.unmount();
 });

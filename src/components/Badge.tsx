@@ -2,7 +2,7 @@ import { AlertCircle, LoaderCircle } from 'lucide-react';
 import { busy } from '../../shared/types';
 import { statusNames } from '../lib/status';
 
-export function Badge({ status }: { status: string }) {
+export function Badge({ status, label }: { status: string; label?: string }) {
   return (
     <span className={'status ' + status}>
       {busy(status) ? (
@@ -12,7 +12,7 @@ export function Badge({ status }: { status: string }) {
       ) : (
         <span className="status-dot" />
       )}
-      {statusNames[status] || status}
+      {label || statusNames[status] || status}
     </span>
   );
 }

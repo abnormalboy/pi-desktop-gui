@@ -75,7 +75,6 @@ let quitting = false;
 let closing = false;
 let sessionEnding = false;
 let activeOperations = 0;
-let sessionSelection = 0;
 let workspaceWatcher: WorkspaceWatcher | undefined;
 let watchedProject = '';
 let watcherRevision = 0;
@@ -166,7 +165,6 @@ function notifyAttention(runtime: Runtime) {
     window.show();
     window.focus();
     if (store.state.sessions.some((s) => s.id === session.id)) {
-      sessionSelection++;
       store.selectSession(session.id);
       void save();
     }
@@ -233,7 +231,6 @@ function strings(value: unknown): asserts value is string[] {
     throw new Error('列表格式无效');
 }
 async function newSession(projectId?: string) {
-  sessionSelection++;
   const s = store.createSession(projectId);
   await save();
   return s;
@@ -256,7 +253,6 @@ function sessionRoots() {
   return [path.join(agentDirectory(store.state.settings), 'sessions'), path.join(store.dir, 'sessions')];
 }
 async function adoptSessionFile(file: string, projectId?: string) {
-  sessionSelection++;
   const existing = store.state.sessions.find((s) => s.file && samePath(s.file, file));
   if (existing) {
     store.selectSession(existing.id);
@@ -315,38 +311,6 @@ const terminalLock = (id: string) => path.join(store.dir, 'terminal-' + encodeUR
 async function assertTerminalClosed(id: string) {
   if (await terminalOpen(terminalLock(id)))
     throw new Error('当前会话已交给 Pi 终端，请关闭该终端后再使用桌面会话');
-}
-const selectionConnections = new Map<
-  string,
-  { agent: ReturnType<SessionAgents['get']>; promise: Promise<void> }
->();
-function connectSelectedSession(session: Session, agent: ReturnType<SessionAgents['get']>) {
-  const existing = selectionConnections.get(session.id);
-  if (existing?.agent === agent) return existing.promise;
-  const canConnect = () =>
-    !closing &&
-    !quitting &&
-    store.state.selectedSessionId === session.id &&
-    store.state.sessions.includes(session) &&
-    store.storage.writable &&
-    (!session.projectId || store.project(session.projectId).trusted) &&
-    !agent.runtime.connected &&
-    !agent.hasPendingWork;
-  if (!canConnect()) return Promise.resolve();
-  // Share only this connection, not an arbitrary background task. In particular,
-  // a second click must receive failures raised before a runtime error exists.
-  const connection = {
-    agent,
-    promise: (async () => {
-      const inTerminal = await service.inTerminal(session.id);
-      if (!inTerminal && canConnect()) await agent.connect(session.id);
-    })(),
-  };
-  selectionConnections.set(session.id, connection);
-  connection.promise = connection.promise.finally(() => {
-    if (selectionConnections.get(session.id) === connection) selectionConnections.delete(session.id);
-  });
-  return connection.promise;
 }
 async function assertWorkspaceTerminalsClosed(root: string) {
   const real = await canonicalWritePath(root);
@@ -466,7 +430,6 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const folder = await fs.realpath(chosen.filePaths[0]);
     const existing = store.state.projects.find((p) => samePath(p.path, folder));
     if (existing) {
-      sessionSelection++;
       store.state.selectedProjectId = existing.id;
       store.state.selectedSessionId = store.state.sessions.find((s) => s.projectId === existing.id)?.id;
       await save();
@@ -547,20 +510,18 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   selectSession: async (id) => {
     text(id, 100);
-    const selection = ++sessionSelection;
     const s = store.session(id);
     const agent = service.get(id);
     store.selectSession(s.id);
     if (store.storage.writable) {
-      // Browsing saved history does not depend on cold Pi startup. Persistence
-      // still completes before connection, and the invoke waits for both.
+      // Browsing only selects and reads history. Sending or an explicit connection
+      // starts Pi; existing background tasks keep their own process and runtime.
       const saving = store.save();
       try {
         send({ type: 'state', state: store.state });
       } finally {
         await saving;
       }
-      if (selection === sessionSelection) await connectSelectedSession(s, agent);
     } else send({ type: 'state', state: store.state });
     return agent.history(id);
   },

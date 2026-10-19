@@ -87,12 +87,16 @@ const screenshot = async (name) => {
   await page.screenshot({ path: path.join(output, filename), animations: 'disabled' });
   report.screenshots.push(filename);
 };
-const modelInitialized = async () => {
+const connectModel = async () => {
+  await page.evaluate(async () => {
+    const { state } = await window.desktop.invoke('bootstrap');
+    await window.desktop.invoke('connect', state.selectedSessionId);
+  });
   await eventually(
     bootstrap,
     ({ state, runtime }) =>
       runtime.sessionId === state.selectedSessionId && runtime.connected && !busy(runtime.status),
-    'Automatic model initialization did not settle',
+    'Explicit model connection did not settle',
   );
   await page.waitForFunction(() => !!document.querySelector('.run-meta .status.idle'));
 };
@@ -189,7 +193,7 @@ async function launch() {
       }
     });
   }, dir);
-  await modelInitialized();
+  await connectModel();
 }
 
 async function checkTheme(source, { changed = false } = {}) {
@@ -420,7 +424,7 @@ try {
     (value) => value.state.sessions.length === beforeShortcut + 1,
     'New-session accelerator did not create exactly one session',
   );
-  await modelInitialized();
+  await connectModel();
   pass('Ctrl/Cmd+N creates exactly one session');
 
   if (process.platform !== 'darwin') {
@@ -610,7 +614,7 @@ try {
 
   // Native-modal equivalence: a second business action cannot run behind a pending dialog.
   const second = await page.evaluate(() => window.desktop.invoke('newSession'));
-  await modelInitialized();
+  await connectModel();
   await beginDelete(disposable.id);
   const firstId = await app.evaluate(
     () => globalThis.themeUi.events.findLast((event) => event.type === 'appDialog').dialog.id,

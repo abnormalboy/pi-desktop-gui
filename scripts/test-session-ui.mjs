@@ -138,23 +138,26 @@ const launch = async () => {
 };
 // Playwright 1.64 treats an async waitForFunction predicate's Promise as truthy.
 // These predicates must stay synchronous and use the already-observed public state.
-function selectionReady({ id, draft }) {
+function selectionReady({ id, draft, requireConnection = true }) {
   const runtime = window.sessionUiRuntimes.get(id);
   const send = document.querySelector('button[aria-label="发送任务"]');
   return Boolean(
     window.sessionUiState?.selectedSessionId === id &&
     document.querySelector(`.session-row[data-session-id="${id}"] > button`)?.getAttribute('aria-current') ===
       'page' &&
-    runtime?.connected &&
-    runtime.status === 'idle' &&
+    (!requireConnection || (runtime?.connected && runtime.status === 'idle')) &&
     document.querySelector('textarea[aria-label="任务输入"]')?.value === draft &&
     draft &&
     send &&
     !send.disabled,
   );
 }
-const selectionSettled = (session) =>
-  page.waitForFunction(selectionReady, { id: session.id, draft: session.draft }, { timeout: 30000 });
+const selectionSettled = (session, requireConnection = true) =>
+  page.waitForFunction(
+    selectionReady,
+    { id: session.id, draft: session.draft, requireConnection },
+    { timeout: 30000 },
+  );
 const diagnostic = async () => JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics')));
 const sidebarOrder = () =>
   page.locator('.sidebar .session-row').evaluateAll((rows) => rows.map((row) => row.dataset.sessionId));
@@ -168,10 +171,10 @@ const assertBrowsingUnchanged = async () => {
   );
   assert.deepEqual(await sidebarOrder(), originalOrder, 'Browsing must not reorder sidebar sessions');
 };
-const measureSelection = async (fixture) => {
+const measureSelection = async (fixture, requireConnection = true) => {
   const { session, marker } = fixture;
   await page.evaluate(
-    ({ id, marker, draft, markers }) => {
+    ({ id, marker, draft, markers, requireConnection }) => {
       window.switchMeasurement = new Promise((resolve, reject) => {
         let started, messageDomMs, nextAnimationFrameMs, runtimeReadyMs, selectionSettledMs;
         let otherHistoryVisible = false,
@@ -208,8 +211,9 @@ const measureSelection = async (fixture) => {
             selectionSettledMs === undefined &&
             window.sessionUiState?.selectedSessionId === id &&
             selected?.getAttribute('aria-current') === 'page' &&
-            window.sessionUiRuntimes.get(id)?.connected &&
-            window.sessionUiRuntimes.get(id)?.status === 'idle' &&
+            (!requireConnection ||
+              (window.sessionUiRuntimes.get(id)?.connected &&
+                window.sessionUiRuntimes.get(id)?.status === 'idle')) &&
             document.querySelector('textarea[aria-label="任务输入"]')?.value === draft &&
             draft &&
             send &&
@@ -218,7 +222,7 @@ const measureSelection = async (fixture) => {
             selectionSettledMs = performance.now() - started;
           if (
             nextAnimationFrameMs !== undefined &&
-            runtimeReadyMs !== undefined &&
+            (!requireConnection || runtimeReadyMs !== undefined) &&
             selectionSettledMs !== undefined
           ) {
             cleanup();
@@ -264,6 +268,7 @@ const measureSelection = async (fixture) => {
       marker,
       draft: session.draft,
       markers: fixtures.map((item) => item.marker),
+      requireConnection,
     },
   );
   await page.locator(`.session-row[data-session-id="${session.id}"] > button`).first().click();
@@ -279,7 +284,7 @@ const measureSelection = async (fixture) => {
     false,
     'Completed selection must not contain another session history',
   );
-  await selectionSettled(session);
+  await selectionSettled(session, requireConnection);
   return timing;
 };
 const within = async (operation, ms, label) => {
@@ -342,6 +347,8 @@ try {
   const originalPid = (await diagnostic()).sessionSwitch.pid;
   assert.ok(Number.isInteger(originalPid));
   const sessionPids = new Map([[a.id, originalPid]]);
+  // Warm B explicitly so the hot-switch measurements only cover existing connections.
+  await page.evaluate((id) => window.desktop.invoke('connect', id), b.id);
   const hotSwitches = [];
   const requestsBeforeSwitching = provider.requests.length;
   for (let i = 0; i < 12; i++) {
@@ -419,13 +426,17 @@ try {
   assert.equal((await diagnostic()).sessionSwitch.pid, sessionPids.get(b.id));
   await assertBrowsingUnchanged();
   console.log('PASS an idle process exit in A leaves B connected to its original process');
-  await measureSelection(fixtures[0]);
+  await measureSelection(fixtures[0], false);
+  assert.equal(await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected, a.id), false);
+  // Browsing an exited chat preserves its interrupted state until the user reconnects.
+  await page.evaluate((id) => window.desktop.invoke('connect', id), a.id);
+  await selectionSettled(a);
   const reconnectedPid = (await diagnostic()).sessionSwitch.pid;
   assert.notEqual(reconnectedPid, originalPid);
   assert.notEqual(reconnectedPid, sessionPids.get(b.id));
   sessionPids.set(a.id, reconnectedPid);
   await assertBrowsingUnchanged();
-  console.log('PASS selecting the exited chat reconnects only that chat without changing activity order');
+  console.log('PASS browsing an exited chat does not reconnect; explicit recovery affects only that chat');
 
   const crossDirectory = [];
   // Every cold target has saved real Pi history but has never been visited in this app process.
@@ -441,11 +452,21 @@ try {
       false,
       'The target must be cold before its first UI selection',
     );
-    const timing = await measureSelection(fixture);
-    assert.ok(
-      timing.messageDomMs < timing.runtimeReadyMs,
-      'Cold target history must appear before Pi is ready',
+    const timing = await measureSelection(fixture, false);
+    assert.equal(
+      await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, session.id),
+      false,
+      'Browsing saved history must not start a Pi process',
     );
+    assert.equal((await diagnostic()).sessionSwitch, undefined);
+    assert.equal(
+      await page.locator('.stop-button, .elapsed, select[aria-label="运行中发送方式"]').count(),
+      0,
+    );
+    // Only opening the model picker should connect and load project resources.
+    await page.getByRole('button', { name: '选择模型', exact: true }).click();
+    await selectionSettled(session);
+    await page.keyboard.press('Escape');
     const { state, runtime } = await page.evaluate(
       (id) => ({
         state: window.sessionUiState,
@@ -507,10 +528,28 @@ try {
     JSON.stringify(crossDirectory),
   );
   console.log(
-    'PASS cold cross-directory history previews and hot return visits preserve cwd, resources, drafts and activity order',
+    'PASS cold browsing starts no Pi process; explicit model loading and hot return visits preserve cwd, drafts and activity',
   );
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
   console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
+
+  const fresh = await page.evaluate(() => window.desktop.invoke('newSession'));
+  const task = 'FIRST_SEND_WITHOUT_PRECONNECT';
+  await page.getByRole('textbox', { name: '任务输入' }).fill(task);
+  await page.waitForFunction(
+    (id) =>
+      window.sessionUiState?.selectedSessionId === id &&
+      !window.sessionUiRuntimes.get(id)?.connected &&
+      !document.querySelector('.send-button')?.disabled &&
+      !document.querySelector('.send-button .spin'),
+    fresh.id,
+  );
+  assert.equal((await diagnostic()).sessionSwitch, undefined);
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await page.waitForFunction((id) => window.sessionUiRuntimes.get(id)?.status === 'completed', fresh.id);
+  assert.equal(provider.requests.length, requestsBeforeSwitching + 1);
+  assert.ok(JSON.stringify(provider.requests.at(-1).messages).includes(task));
+  console.log('PASS a new chat starts Pi on its first send and completes without a prior connection');
 
   assert.deepEqual(errors, []);
 } catch (error) {

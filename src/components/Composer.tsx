@@ -150,6 +150,7 @@ export function Composer(props: ComposerProps) {
     inspectFile,
   } = props;
   const modelState = sessionModelState(runtime, selected, state.settings);
+  const connecting = ownRunning && !runtime.connected;
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null),
     [snippetId, setSnippetId] = useState('');
@@ -567,7 +568,7 @@ export function Composer(props: ComposerProps) {
                 {attachmentBytes > 1024 * 1024 && <small>占用最多：{largest.name}；请移除或按行引用</small>}
               </span>
             )}
-            {ownRunning ? (
+            {ownRunning && !connecting ? (
               <select
                 aria-label="运行中发送方式"
                 value={sendMode}
@@ -584,12 +585,12 @@ export function Composer(props: ComposerProps) {
             {ownRunning && (
               <button
                 className={'stop-button' + (stopArmed ? ' armed' : '')}
-                title="停止当前会话（连按两次 Esc）"
+                title={connecting ? '取消本次连接（连按两次 Esc）' : '停止当前会话（连按两次 Esc）'}
                 onClick={() => selected && void attempt(() => api.invoke('stop', selected.id))}
                 disabled={runtime.status === 'stopping'}
               >
                 <Square size={12} fill="currentColor" />
-                {runtime.status === 'stopping' ? '停止中' : '停止任务'}
+                {runtime.status === 'stopping' ? '停止中' : connecting ? '取消连接' : '停止任务'}
               </button>
             )}
             <button

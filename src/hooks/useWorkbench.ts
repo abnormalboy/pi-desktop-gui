@@ -63,7 +63,6 @@ export function useWorkbench() {
     stateRef = useRef(state),
     runtimeRef = useRef(runtime);
   const selectionRequest = useRef(0);
-  const initializedSessions = useRef(new Set<string>());
   stateRef.current = state;
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
@@ -239,44 +238,6 @@ export function useWorkbench() {
       clearTimeout(timer);
     };
   }, [selected?.id]);
-  useEffect(() => {
-    if (
-      !selected ||
-      selected.file ||
-      !environment?.supported ||
-      !(
-        environment.authExists ||
-        environment.modelsExist ||
-        state?.settings.modelId ||
-        runtime.models.length
-      ) ||
-      !sessionEnabled ||
-      (storage.recovery && !storage.recovery.recoveredFrom) ||
-      pending ||
-      running ||
-      (ownRuntime && runtime.connected) ||
-      initializedSessions.current.has(selected.id)
-    )
-      return;
-    // Resolve Pi's effective model and thinking before the first prompt. Keep this
-    // behind the existing connection guards and retry failures only on user action.
-    initializedSessions.current.add(selected.id);
-    void action(() => api.invoke('connect', selected.id));
-  }, [
-    selected?.id,
-    selected?.file,
-    environment?.supported,
-    environment?.authExists,
-    environment?.modelsExist,
-    state?.settings.modelId,
-    runtime.models.length,
-    sessionEnabled,
-    storage.recovery,
-    pending,
-    running,
-    ownRuntime,
-    runtime.connected,
-  ]);
   useLayoutEffect(() => {
     if (!thread.current) return;
     if (autoScroll.current) {

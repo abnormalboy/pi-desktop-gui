@@ -97,7 +97,7 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 2. Open **Pi features → Providers & login** to set up a model provider. If you already configured Pi in the terminal (`~/.pi`), it is picked up automatically.
 3. Pick a model and reasoning level in the composer, then start a chat or open a project folder.
 
-With Pi and a model provider configured, a new empty chat connects automatically and shows the actual selected model and reasoning level before you send a message. It uses your saved model preference or Pi's effective defaults, including project settings. Initialization waits while another task is running, and projects still require trust before Pi starts.
+Opening or switching chats restores saved history and drafts without starting Pi. Pi connects when you send a task, open the model picker, or explicitly connect; existing connections and background tasks stay with their own chat. The model picker reads Pi's actual models and reasoning levels. Sending uses your saved model preference or Pi's effective defaults, including project settings. Projects still require trust before Pi starts.
 
 New session logs use Pi's native directory (`~/.pi/agent/sessions/<encoded-cwd>/` by default), so tools such as CC Switch can discover their usage. Pi's `sessionDir` settings and environment overrides remain effective. Existing desktop session files can still be resumed from their original locations.
 

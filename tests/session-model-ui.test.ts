@@ -4,6 +4,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { emptyRuntime, type Environment, type Model, type Runtime, type Session } from '../shared/types';
 import { sessionModelState } from '../src/lib/session-model';
+import type { ComposerProps } from '../src/components/Composer';
 
 Object.defineProperty(globalThis, 'window', {
   configurable: true,
@@ -11,6 +12,7 @@ Object.defineProperty(globalThis, 'window', {
 });
 const { ReadinessChecklist } = await import('../src/components/ReadinessChecklist');
 const { ModelPicker } = await import('../src/components/ModelPicker');
+const { ComposerFooter } = await import('../src/components/conversation/ComposerStatus');
 const session: Session = {
   id: 'new-chat',
   title: '新对话',
@@ -131,4 +133,33 @@ test('fresh installation and missing Pi retain actionable setup instructions', (
     }),
     /检查运行环境/,
   );
+});
+
+test('connection progress is shown without a task timer; real task startup retains its timer', () => {
+  const footer = (runtime: Runtime) =>
+    renderToStaticMarkup(
+      React.createElement(ComposerFooter, {
+        runtime,
+        ownRuntime: true,
+        ownRunning: true,
+        elapsed: 0,
+        selected: session,
+        pending: true,
+        sessionEnabled: true,
+        running: true,
+      } as ComposerProps),
+    );
+  const connecting = footer({ ...emptyRuntime(), sessionId: session.id, status: 'starting' });
+  assert.match(connecting, /正在连接 Pi/);
+  assert.doesNotMatch(connecting, /class="elapsed"|0:00/);
+  const starting = footer({
+    ...emptyRuntime(),
+    sessionId: session.id,
+    connected: true,
+    status: 'starting',
+    startedAt: 1,
+  });
+  assert.match(starting, /启动中/);
+  assert.match(starting, /class="elapsed"/);
+  assert.doesNotMatch(starting, /正在连接 Pi/);
 });

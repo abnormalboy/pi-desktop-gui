@@ -144,6 +144,7 @@ export function ComposerFooter(props: ComposerProps) {
     selected,
     setShortcutsOpen,
   } = props;
+  const connecting = ownRunning && !runtime.connected;
   return (
     <>
       {ownRuntime &&
@@ -158,8 +159,11 @@ export function ComposerFooter(props: ComposerProps) {
         <div className="run-meta" role="status" aria-live="polite">
           {ownRuntime ? (
             <>
-              <Badge status={runtime.status} />
-              {ownRunning && (
+              <Badge
+                status={runtime.status}
+                label={connecting && runtime.status === 'starting' ? '正在连接 Pi' : undefined}
+              />
+              {ownRunning && !connecting && Boolean(runtime.startedAt) && (
                 <span className="elapsed" aria-hidden="true">
                   {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
                 </span>

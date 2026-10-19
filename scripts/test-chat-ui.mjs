@@ -98,6 +98,7 @@ function allChatRuntimesSettled() {
 }
 const waitForSelection = (expected) => page.waitForFunction(chatSelectionReady, expected, { timeout: 30000 });
 const expectSelectedModel = async (model) => {
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
   await page.waitForFunction(
     (name) => document.querySelector('.model-pill > span')?.textContent === name,
     model.name,
@@ -111,7 +112,6 @@ const expectSelectedModel = async (model) => {
   assert.equal(runtime.connected, true);
   assert.equal(runtime.sessionId, state.selectedSessionId);
   assert.equal(runtime.model.id, model.id);
-  await page.getByRole('button', { name: '选择模型', exact: true }).click();
   const current = page.locator('.model-list [aria-current="true"]');
   assert.equal(await current.count(), 1, 'the actual Pi model must be checked before sending a message');
   assert.ok((await current.textContent()).includes(model.name));
@@ -186,6 +186,13 @@ try {
   await page.evaluate((value) => window.desktop.invoke('saveSettings', { piPath: value }), piPath);
   await picker.getByRole('button', { name: '重新连接 Pi', exact: true }).click();
   await picker.getByText('正在连接 Pi 读取模型…', { exact: true }).waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.stop-button')?.textContent.trim() === '取消连接' &&
+      document.querySelector('.run-meta')?.textContent.includes('正在连接 Pi') &&
+      !document.querySelector('select[aria-label="运行中发送方式"]') &&
+      !document.querySelector('.elapsed'),
+  );
   await picker
     .getByRole('option', { name: /local-e2e/ })
     .first()
@@ -275,7 +282,7 @@ try {
     'model initialization must not send a prompt',
   );
   console.log(
-    'PASS new chat automatically selects the actual Pi default without repeated setup or a model request',
+    'PASS opening the model picker reads the actual Pi default without repeated setup or a model request',
   );
   await input.fill('第二条独立对话');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
@@ -289,7 +296,7 @@ try {
   await waitForSaved((state) => state.selectedSessionId === first.id);
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '独立对话未发送草稿');
   assert.equal(await page.locator('.message').filter({ hasText: '第二条独立对话' }).count(), 0);
-  // Previewed history/draft can precede selectSession completion and background initialization.
+  // Previewed history/draft can precede selectSession persistence completion.
   // Normal restart never auto-confirms a running-work exit dialog.
   await waitForSelection({ id: first.id, draft: '独立对话未发送草稿' });
   await page.waitForFunction(allChatRuntimesSettled, undefined, { timeout: 30000 });
@@ -319,8 +326,8 @@ try {
     .getByRole('option', { name: /第二条独立对话/ })
     .click();
   await page.getByRole('heading', { level: 1, name: '第二条独立对话' }).waitFor();
-  // Restart clears the registry cache. A new chat must resolve Pi's actual default
-  // without a desktop preference, a warm connection, or a model-picker click.
+  // Restart clears the registry cache. Explicit model loading must resolve Pi's actual
+  // default without a desktop preference or a warm connection.
   await fs.writeFile(piSettingsFile, JSON.stringify({ ...piSettings, defaultModel: baseModel.id }));
   // Native picker is supplied a temporary test project; no user folders or settings are touched.
   await app.evaluate(({ dialog }, folder) => {
@@ -401,7 +408,7 @@ try {
   const requestsDuringReply = provider.requests.length;
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
-  // Each session owns its Pi process: the new chat resolves its own model while A keeps streaming.
+  // Explicit model loading connects the new chat while A keeps streaming.
   await expectSelectedModel(baseModel);
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   assert.equal(await page.getByRole('option').first().isEnabled(), true);
