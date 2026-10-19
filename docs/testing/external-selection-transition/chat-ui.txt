@@ -1,0 +1,23 @@
+
+> pi-desktop-gui@0.14.21 test:chat-ui
+> node --import tsx scripts/test-chat-ui.mjs && node --import tsx scripts/test-model-entry-transition-ui.mjs
+
+PASS model picker connection failure/retry, IME confirmation and reopen scroll
+PASS opening the model picker reads the actual Pi default without repeated setup or a model request
+PASS fresh startup, model selection/probe, send, Ctrl/Cmd+N, separate histories and restart
+PASS standalone search, global new chat from project, project creation and trust retained
+PASS IME session search and deletion after the session file is missing
+PASS a new chat initializes independently while the existing response keeps running; stop targets only that response
+PASS quick new from an untrusted project disables the old entry and requires a fresh explicit click
+PASS a selected new target stays disabled until IPC completion; the old picker never carries forward
+PASS failed creation releases the lock, and a newer selection supersedes an old held reply without connecting
+PASS an older completion cannot unlock a newer pending or untrusted target
+PASS wrong-target responses cannot enable or connect, and a valid new selection recovers without implicit requests
+PASS native File > New Chat supersedes a held renderer selection without locking model/send
+PASS deleting an observed target keeps the confirmed fallback usable after its late reply
+PASS external navigation does not release a newer unobserved target; its own completion restores it
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

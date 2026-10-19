@@ -1,0 +1,28 @@
+✖ a native-menu selection supersedes an in-flight renderer selection before its late success reply (12.460588ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 461.502544
+
+✖ failing tests:
+
+test at tests/workbench-selection.test.ts:1:18719
+✖ a native-menu selection supersedes an in-flight renderer selection before its late success reply (12.460588ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  true !== false
+
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/workbench-selection.test.ts:740:10)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

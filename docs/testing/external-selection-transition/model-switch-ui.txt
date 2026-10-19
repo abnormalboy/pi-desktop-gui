@@ -1,0 +1,3 @@
+PASS real Pi preserves model/thinking through tool continuation and runtime supplements; new user task uses the saved choice
+PASS two sessions run concurrently, change models independently, survive renderer reload and stop independently
+PASS idle controls hide without an operation; standalone chats retain output and hide project-only controls

@@ -1,0 +1,819 @@
+{
+  "passed": true,
+  "evidence": [
+    {
+      "label": "old untrusted target: early mouse click is disabled",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679",
+      "projectId": "7710c430-f542-4b0b-a67b-d0d27b75454d",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": []
+    },
+    {
+      "label": "new target selected but reply held: entry remains disabled",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        }
+      ]
+    },
+    {
+      "label": "stale A click after B settles cannot open or connect in the new context",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+      "disabled": false,
+      "buttonLabel": "local-e2e",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        }
+      ]
+    },
+    {
+      "label": "wrong response target remains locked",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        },
+        {
+          "method": "connect",
+          "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+        }
+      ]
+    },
+    {
+      "label": "valid newer selection recovers from a wrong response target",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+      "disabled": false,
+      "buttonLabel": "本地验收接口",
+      "open": "false",
+      "runtime": {
+        "status": "idle",
+        "steering": [],
+        "followUp": [],
+        "dialogs": [],
+        "notices": [],
+        "widgets": {},
+        "statuses": {},
+        "models": [
+          {
+            "id": "local-e2e",
+            "provider": "local-e2e",
+            "name": "本地验收接口",
+            "reasoning": false,
+            "contextWindow": 32768,
+            "input": [
+              "text",
+              "image"
+            ]
+          }
+        ],
+        "thinkingLevels": [
+          "off"
+        ],
+        "connected": true,
+        "diagnostic": [
+          "Warning: No project session found with id '20907dfd-34eb-4c09-be1b-9020448eed8d'; creating a new session with that id.\n"
+        ],
+        "commands": [
+          {
+            "name": "gui-pid",
+            "description": "Return the isolated test process identifier",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-select",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-confirm",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-input",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-editor",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-timeout",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "llama",
+            "description": "Manage llama.cpp router models",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:llama.cpp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          },
+          {
+            "name": "mcp",
+            "description": "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:mcp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          }
+        ],
+        "sessionId": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "cwd": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/app-data/chats/chat-20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "messagesFrom": 0,
+        "messages": [],
+        "messageCount": 0,
+        "toolsFrom": 0,
+        "tools": [],
+        "toolCount": 0,
+        "approvalGrants": [],
+        "model": {
+          "id": "local-e2e",
+          "provider": "local-e2e",
+          "name": "本地验收接口",
+          "reasoning": false,
+          "contextWindow": 32768,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        "thinking": "off",
+        "autoRetry": false,
+        "approvalMode": "auto",
+        "autoCompaction": false,
+        "steeringMode": "one-at-a-time",
+        "followUpMode": "one-at-a-time",
+        "stats": {
+          "tokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "cost": 0,
+          "contextPercent": 0,
+          "contextTokens": 0,
+          "contextWindow": 32768
+        }
+      },
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        },
+        {
+          "method": "connect",
+          "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+        }
+      ]
+    },
+    {
+      "label": "native File > New Chat supersedes the observed old target and survives its late reply",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e",
+      "disabled": false,
+      "buttonLabel": "local-e2e",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        },
+        {
+          "method": "connect",
+          "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+        }
+      ]
+    },
+    {
+      "label": "deleting the observed target selects a usable fallback despite the late response",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+      "disabled": false,
+      "buttonLabel": "本地验收接口",
+      "open": "false",
+      "runtime": {
+        "status": "idle",
+        "steering": [],
+        "followUp": [],
+        "dialogs": [],
+        "notices": [],
+        "widgets": {},
+        "statuses": {},
+        "models": [
+          {
+            "id": "local-e2e",
+            "provider": "local-e2e",
+            "name": "本地验收接口",
+            "reasoning": false,
+            "contextWindow": 32768,
+            "input": [
+              "text",
+              "image"
+            ]
+          }
+        ],
+        "thinkingLevels": [
+          "off"
+        ],
+        "connected": true,
+        "diagnostic": [
+          "Warning: No project session found with id '20907dfd-34eb-4c09-be1b-9020448eed8d'; creating a new session with that id.\n"
+        ],
+        "commands": [
+          {
+            "name": "gui-pid",
+            "description": "Return the isolated test process identifier",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-select",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-confirm",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-input",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-editor",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-timeout",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "llama",
+            "description": "Manage llama.cpp router models",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:llama.cpp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          },
+          {
+            "name": "mcp",
+            "description": "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:mcp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          }
+        ],
+        "sessionId": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "cwd": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/app-data/chats/chat-20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "messagesFrom": 0,
+        "messages": [],
+        "messageCount": 0,
+        "toolsFrom": 0,
+        "tools": [],
+        "toolCount": 0,
+        "approvalGrants": [],
+        "model": {
+          "id": "local-e2e",
+          "provider": "local-e2e",
+          "name": "本地验收接口",
+          "reasoning": false,
+          "contextWindow": 32768,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        "thinking": "off",
+        "autoRetry": false,
+        "approvalMode": "auto",
+        "autoCompaction": false,
+        "steeringMode": "one-at-a-time",
+        "followUpMode": "one-at-a-time",
+        "stats": {
+          "tokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "cost": 0,
+          "contextPercent": 0,
+          "contextTokens": 0,
+          "contextWindow": 32768
+        }
+      },
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        },
+        {
+          "method": "connect",
+          "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+        }
+      ]
+    },
+    {
+      "label": "external navigation and older completion cannot release a newer unobserved request",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+      "disabled": false,
+      "buttonLabel": "本地验收接口",
+      "open": "false",
+      "runtime": {
+        "status": "idle",
+        "steering": [],
+        "followUp": [],
+        "dialogs": [],
+        "notices": [],
+        "widgets": {},
+        "statuses": {},
+        "models": [
+          {
+            "id": "local-e2e",
+            "provider": "local-e2e",
+            "name": "本地验收接口",
+            "reasoning": false,
+            "contextWindow": 32768,
+            "input": [
+              "text",
+              "image"
+            ]
+          }
+        ],
+        "thinkingLevels": [
+          "off"
+        ],
+        "connected": true,
+        "diagnostic": [
+          "Warning: No project session found with id '20907dfd-34eb-4c09-be1b-9020448eed8d'; creating a new session with that id.\n"
+        ],
+        "commands": [
+          {
+            "name": "gui-pid",
+            "description": "Return the isolated test process identifier",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-select",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-confirm",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-input",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-editor",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "gui-timeout",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/pi-agent"
+            }
+          },
+          {
+            "name": "llama",
+            "description": "Manage llama.cpp router models",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:llama.cpp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          },
+          {
+            "name": "mcp",
+            "description": "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:mcp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          }
+        ],
+        "sessionId": "20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "cwd": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-gP1H7t/app-data/chats/chat-20907dfd-34eb-4c09-be1b-9020448eed8d",
+        "messagesFrom": 0,
+        "messages": [],
+        "messageCount": 0,
+        "toolsFrom": 0,
+        "tools": [],
+        "toolCount": 0,
+        "approvalGrants": [],
+        "model": {
+          "id": "local-e2e",
+          "provider": "local-e2e",
+          "name": "本地验收接口",
+          "reasoning": false,
+          "contextWindow": 32768,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        "thinking": "off",
+        "autoRetry": false,
+        "approvalMode": "auto",
+        "autoCompaction": false,
+        "steeringMode": "one-at-a-time",
+        "followUpMode": "one-at-a-time",
+        "stats": {
+          "tokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "cost": 0,
+          "contextPercent": 0,
+          "contextTokens": 0,
+          "contextWindow": 32768
+        }
+      },
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+        },
+        {
+          "method": "connect",
+          "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+        },
+        {
+          "method": "connect",
+          "id": "7002f55e-3204-494f-bb55-16024687b294"
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "method": "saveView",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "connect",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "connect",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "saveView",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "selectSession",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "projectRules",
+      "id": "7710c430-f542-4b0b-a67b-d0d27b75454d"
+    },
+    {
+      "method": "changes",
+      "id": "7710c430-f542-4b0b-a67b-d0d27b75454d"
+    },
+    {
+      "method": "checkpoints",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "readHistory",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "selectSession",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "selectSession",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "readHistory",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "selectSession",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "projectRules",
+      "id": "7710c430-f542-4b0b-a67b-d0d27b75454d"
+    },
+    {
+      "method": "changes",
+      "id": "7710c430-f542-4b0b-a67b-d0d27b75454d"
+    },
+    {
+      "method": "checkpoints",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "readHistory",
+      "id": "08f687a6-2b5e-4292-9b8f-0704bae83679"
+    },
+    {
+      "method": "selectSession",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "selectSession",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "selectSession",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "readHistory",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "readHistory",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "saveDraft",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "saveDraft",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "selectSession",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "selectSession",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "readHistory",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "deleteSession",
+      "id": "ba926a86-1e33-47e8-ad90-46c38aaed90e"
+    },
+    {
+      "method": "respondAppDialog",
+      "id": "d60b896b-b8d3-4cbc-bdd5-db3d3df415fe"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "7002f55e-3204-494f-bb55-16024687b294"
+    },
+    {
+      "method": "saveView",
+      "id": "7002f55e-3204-494f-bb55-16024687b294"
+    },
+    {
+      "method": "connect",
+      "id": "7002f55e-3204-494f-bb55-16024687b294"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "selectSession",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "readHistory",
+      "id": "ccded6a5-acef-4316-b2ad-7f15480dd47d"
+    },
+    {
+      "method": "selectSession",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    },
+    {
+      "method": "readHistory",
+      "id": "cd33c294-d3c5-424c-af4f-0f3b33978a90"
+    },
+    {
+      "method": "readHistory",
+      "id": "20907dfd-34eb-4c09-be1b-9020448eed8d"
+    }
+  ],
+  "rendererErrors": []
+}

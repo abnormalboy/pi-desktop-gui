@@ -42,6 +42,7 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     mounted = true,
     updatesAfterUnmount = 0,
     timerId = 0;
+  let selectionObserver: ((id: string | undefined) => void) | undefined;
   const timers = new Map<number, { run: () => void; delay: number; interval: boolean }>();
   const cleared: number[] = [];
   const state: types.AppState = {
@@ -116,7 +117,12 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
   const workspace = { checkpoints: [], setTab: noOp, inspectFile: noOp, openCheckpoint: noOp };
   const dependencies: Record<string, unknown> = {
     react: hooks,
-    './useRuntime': { useRuntime: () => view },
+    './useRuntime': {
+      useRuntime(_setError: unknown, _setPrefs: unknown, observe: typeof selectionObserver) {
+        selectionObserver = observe;
+        return view;
+      },
+    },
     './useDraft': { useDraft: () => draft },
     './useWorkspace': { useWorkspace: () => workspace },
     './useShortcuts': { useShortcuts: noOp },
@@ -207,6 +213,10 @@ function harness(invoke: (method: string, id?: string) => Promise<unknown>) {
     flush,
     settle,
     select,
+    emitSelection(id: string) {
+      selectionObserver?.(id);
+      view.state = { ...view.state, selectedSessionId: id };
+    },
     timers,
     cleared,
     get current() {
@@ -718,6 +728,167 @@ test('failed new chat releases the transition without connecting or changing sel
   assert.equal(f.current.selectionChanging, false);
   assert.equal(f.current.selected?.id, 'A');
   assert.match(f.current.error, /creation cancelled/);
+  f.unmount();
+});
+
+test('a native-menu selection supersedes an in-flight renderer selection before its late success reply', async () => {
+  const selecting = deferred<types.Message[]>();
+  const calls: { method: string; id?: string }[] = [];
+  const f = harness((method, id) => {
+    calls.push({ method, id });
+    return method === 'selectSession' ? selecting.promise : Promise.resolve([]);
+  });
+  const operation = f.current.selectSession(session('B'));
+  f.select('B');
+  f.flush();
+  f.select('C'); // Native File > New Chat broadcasts a new selected ID outside this hook.
+  f.flush();
+  selecting.resolve([]);
+  await operation;
+  await f.settle();
+  assert.equal(f.current.selected?.id, 'C');
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.sessionEnabled, true);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'connect'),
+    [],
+  );
+  await f.current.connect();
+  await f.settle();
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'connect'),
+    [{ method: 'connect', id: 'C' }],
+  );
+  f.unmount();
+});
+
+test('deleting the observed selection releases its transition for the surviving fallback chat', async () => {
+  const selecting = deferred<types.Message[]>();
+  const calls: string[] = [];
+  const f = harness((method) => {
+    calls.push(method);
+    return method === 'selectSession' ? selecting.promise : Promise.resolve([]);
+  });
+  const operation = f.current.selectSession(session('B'));
+  f.select('B');
+  f.flush();
+  const oldModel = f.current.setModel;
+  f.view.state.sessions = f.view.state.sessions.filter((s) => s.id !== 'B');
+  f.select('C');
+  f.flush();
+  selecting.resolve([]);
+  await operation;
+  await f.settle();
+  assert.equal(f.current.selected?.id, 'C');
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.sessionEnabled, true);
+  await oldModel('provider::model');
+  assert.ok(!calls.includes('setSessionModel'));
+  assert.ok(!calls.includes('connect'));
+  assert.ok(!f.view.state.sessions.some((s) => s.id === 'B'));
+  f.unmount();
+});
+
+test('external selection and an old completion cannot release a newer unobserved hook target', async () => {
+  const old = deferred<types.Message[]>(),
+    latest = deferred<types.Message[]>();
+  const calls: string[] = [];
+  const f = harness((method, id) => {
+    calls.push(method);
+    return method === 'selectSession' ? (id === 'B' ? old.promise : latest.promise) : Promise.resolve([]);
+  });
+  const b = f.current.selectSession(session('B'));
+  f.select('B');
+  f.flush();
+  const c = f.current.selectSession(session('C'));
+  f.flush();
+  f.select('A');
+  f.flush();
+  assert.equal(f.current.selectionChanging, true);
+  old.resolve([]);
+  await b;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, true);
+  await f.current.connect();
+  assert.ok(!calls.includes('connect'));
+  f.select('C');
+  f.flush();
+  assert.equal(f.current.selectionChanging, true, 'the latest IPC must still complete');
+  latest.resolve([]);
+  await c;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.selected?.id, 'C');
+  f.unmount();
+});
+
+for (const kind of ['selection', 'creation', 'blank reuse'] as const) {
+  test(`authoritative ${kind} and external selection events survive a coalesced React render`, async () => {
+    const response = deferred<unknown>();
+    const calls: string[] = [];
+    const f = harness((method) => {
+      calls.push(method);
+      return ['selectSession', 'newSession'].includes(method) ? response.promise : Promise.resolve([]);
+    });
+    const target = kind === 'blank reuse' ? 'A' : 'B';
+    const operation =
+      kind === 'selection' ? f.current.selectSession(session(target)) : f.current.createSession();
+    f.flush();
+    // useRuntime sees both authoritative events before React renders just C.
+    f.emitSelection(target);
+    f.emitSelection('C');
+    f.render();
+    f.flush();
+    response.resolve(kind === 'selection' ? [] : session(target));
+    await operation;
+    await f.settle();
+    assert.equal(f.current.selected?.id, 'C');
+    assert.equal(f.current.selectionChanging, false);
+    assert.equal(f.current.sessionEnabled, true);
+    assert.ok(!calls.includes('connect'));
+    f.unmount();
+  });
+}
+
+test('an unobserved creation response target stays locked despite a different authoritative selection', async () => {
+  const response = deferred<types.Session>();
+  const calls: string[] = [];
+  const f = harness((method) => {
+    calls.push(method);
+    return method === 'newSession' ? response.promise : Promise.resolve([]);
+  });
+  const creating = f.current.createSession();
+  f.flush();
+  f.emitSelection('C');
+  f.render();
+  f.flush();
+  response.resolve(session('B'));
+  await creating;
+  await f.settle();
+  assert.equal(f.current.selected?.id, 'C');
+  assert.equal(f.current.selectionChanging, true);
+  assert.equal(f.current.sessionEnabled, false);
+  await f.current.connect();
+  assert.ok(!calls.includes('connect'));
+  f.unmount();
+});
+
+test('unchanged selected state and recovered background sessions are not external navigation', async () => {
+  const response = deferred<types.Message[]>();
+  const f = harness((method) => (method === 'selectSession' ? response.promise : Promise.resolve([])));
+  const operation = f.current.selectSession(session('B'));
+  f.select('B');
+  f.flush();
+  f.view.state.sessions = [...f.view.state.sessions, session('recovered-image')];
+  f.emitSelection('B');
+  f.render();
+  f.flush();
+  assert.equal(f.current.selected?.id, 'B');
+  assert.equal(f.current.selectionChanging, true);
+  response.resolve([]);
+  await operation;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, false);
   f.unmount();
 });
 

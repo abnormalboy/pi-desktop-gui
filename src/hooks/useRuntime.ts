@@ -16,6 +16,7 @@ const noRuntime = emptyRuntime();
 export function useRuntime(
   setError: (value: string) => void,
   setPrefs: Dispatch<SetStateAction<Settings | undefined>>,
+  observeSelection?: (id: string | undefined) => void,
 ) {
   const [state, setState] = useState<AppState>(),
     [runtimes, setRuntimes] = useState<Record<string, Runtime>>({}),
@@ -26,8 +27,11 @@ export function useRuntime(
     let alive = true;
     const unsubscribe = api.onEvent((event) => {
       if (!alive) return;
-      if (event.type === 'state') setState(event.state);
-      else if (event.type === 'storage') setStorage(event.storage);
+      if (event.type === 'state') {
+        // Keep intermediate selections even when React coalesces their renders.
+        observeSelection?.(event.state.selectedSessionId);
+        setState(event.state);
+      } else if (event.type === 'storage') setStorage(event.storage);
       else if (event.type === 'update') setUpdate(event.update);
       else if (event.type === 'runtimeRemoved') {
         setRuntimes((previous) => {
@@ -50,6 +54,7 @@ export function useRuntime(
       .invoke('bootstrap')
       .then((v) => {
         if (!alive) return;
+        observeSelection?.(v.state.selectedSessionId);
         setState(v.state);
         if (v.runtime.sessionId) {
           const id = v.runtime.sessionId;

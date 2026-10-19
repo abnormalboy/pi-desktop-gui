@@ -134,6 +134,14 @@ try {
     await expect(page.getByRole('dialog', { name: '模型与推理级别' })).toHaveCount(0);
   };
   const select = (id) => page.locator(`[data-session-id="${id}"] > button`).first().click();
+  const nativeNewChat = () =>
+    app.evaluate(({ Menu, BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      Menu.getApplicationMenu()
+        .getMenuItemById('file')
+        .submenu.items.find((item) => item.label === '新建对话')
+        .click({}, win, win.webContents);
+    });
   await expect(button).toBeDisabled();
   await expect(button).toHaveAttribute('title', '请先启用项目');
   await clickDisabled();
@@ -261,16 +269,93 @@ try {
   await select(b);
   await expect(button).toBeEnabled();
   assert.equal(await selected(), b);
+  await capture('valid newer selection recovers from a wrong response target');
+  console.log(
+    'PASS wrong-target responses cannot enable or connect, and a valid new selection recovers without implicit requests',
+  );
+
+  await gate('menu-overrides-selection', 'selectSession', 'after', a);
+  await select(a);
+  await entered('menu-overrides-selection');
+  await clickDisabled();
+  await nativeNewChat();
+  await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, a);
+  const menuTarget = await selected();
+  await expect(button).toBeEnabled();
+  await release('menu-overrides-selection');
+  await expect(button).toBeEnabled();
+  assert.equal(await selected(), menuTarget);
+  assert.equal((await connectCalls()).length, 2);
+  const input = page.getByRole('textbox', { name: '任务输入' });
+  await input.fill('An explicit task could now be sent');
+  await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
+  await input.fill('');
+  await capture('native File > New Chat supersedes the observed old target and survives its late reply');
+  await page.screenshot({ path: path.join(output, 'external-menu-ready.png') });
+  console.log('PASS native File > New Chat supersedes a held renderer selection without locking model/send');
+
+  await select(b);
+  await expect(button).toBeEnabled();
+  await gate('delete-observed-selection', 'selectSession', 'after', menuTarget);
+  await select(menuTarget);
+  await entered('delete-observed-selection');
+  const row = page.locator(`[data-session-id="${menuTarget}"]`);
+  await row.getByRole('button', { name: /会话操作$/ }).click();
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: /^删除会话/ })
+    .getByRole('button', { name: '删除', exact: true })
+    .click();
+  await page.waitForFunction(
+    (id) => !window.entryState.sessions.some((session) => session.id === id),
+    menuTarget,
+  );
+  const fallback = await selected();
+  assert.notEqual(fallback, menuTarget);
+  await expect(button).toBeEnabled();
+  await release('delete-observed-selection');
+  await expect(button).toBeEnabled();
+  assert.equal(await selected(), fallback);
+  assert.equal((await connectCalls()).length, 2);
+  await capture('deleting the observed target selects a usable fallback despite the late response');
+  console.log('PASS deleting an observed target keeps the confirmed fallback usable after its late reply');
+
+  await nativeNewChat();
+  await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, fallback);
+  const freshMenuTarget = await selected();
+  await connect(freshMenuTarget);
+  assert.deepEqual(
+    (await connectCalls()).map((call) => call.id),
+    [a, b, freshMenuTarget],
+  );
+
+  await gate('older-observed', 'selectSession', 'after', a);
+  await select(a);
+  await entered('older-observed');
+  await gate('newer-unobserved', 'selectSession', 'before', b);
+  await select(b);
+  await entered('newer-unobserved');
+  await nativeNewChat();
+  await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, a);
+  await clickDisabled();
+  await release('older-observed');
+  await clickDisabled();
+  assert.equal((await connectCalls()).length, 3);
+  await release('newer-unobserved');
+  await expect(button).toBeEnabled();
+  assert.equal(await selected(), b);
+  assert.equal((await connectCalls()).length, 3);
+  await capture('external navigation and older completion cannot release a newer unobserved request');
+  console.log(
+    'PASS external navigation does not release a newer unobserved target; its own completion restores it',
+  );
+
   assert.equal(provider.requests.length, 0, 'navigation/model discovery must not send a model prompt');
   assert.ok(!(await connectCalls()).some((call) => call.id === f.sessionId));
   assert.deepEqual(errors, []);
-  await capture('valid newer selection recovers from a wrong response target');
   await fs.writeFile(
     path.join(output, 'result.json'),
     JSON.stringify({ passed: true, evidence, calls: await calls(), rendererErrors: errors }, null, 2),
-  );
-  console.log(
-    'PASS wrong-target responses cannot enable or connect, and a valid new selection recovers without implicit requests',
   );
 } catch (error) {
   await capture('failure').catch(() => {});
