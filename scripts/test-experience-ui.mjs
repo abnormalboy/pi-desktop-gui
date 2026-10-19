@@ -162,6 +162,10 @@ try {
     .waitFor();
   console.log('PASS standalone mixed drops retain images while rejecting file references');
 
+  // The quiet-close case needs both sessions settled. Project stop must not cancel
+  // the independent connection automatically started for the standalone chat.
+  await page.evaluate((id) => window.desktop.invoke('connect', id), standalone.id);
+
   await page.evaluate((id) => window.desktop.invoke('selectSession', id), fixture.sessionId);
   await page.waitForFunction(
     () => document.querySelector('[aria-label="任务输入"]')?.value === '混合拖放的草稿',
