@@ -67,6 +67,16 @@ try {
   await page.screenshot({ path: path.join(output, 'recovered.png'), animations: 'disabled' });
   console.log('PASS retry banner persists while waiting; recovered records replace active wording');
 
+  provider.reset('success', true);
+  await send('NORMAL_AFTER_RETRY');
+  await wait(() => provider.count === 1);
+  await page.locator('.run-meta .running').waitFor();
+  await page.locator('.runtime-notices').waitFor({ state: 'detached' });
+  provider.release();
+  await page.locator('.run-meta .completed').waitFor();
+  assert.equal(await page.locator('.runtime-notices').count(), 0);
+  console.log('PASS a new normal run never relabels old retry records as current activity');
+
   provider.reset('cancel-request');
   await send('RETRY_CANCEL_REQUEST');
   await wait(() => provider.count === 2);
@@ -95,7 +105,13 @@ try {
       {
         passed: true,
         packaged: Boolean(process.env.PI_DESKTOP_EXE),
-        checks: ['requesting banner', 'recovered history', 'cancel active request', 'exhaustion'],
+        checks: [
+          'requesting banner',
+          'recovered history',
+          'new run log',
+          'cancel active request',
+          'exhaustion',
+        ],
         rendererErrors: errors,
       },
       null,

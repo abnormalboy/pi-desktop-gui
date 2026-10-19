@@ -76,6 +76,19 @@ export async function argumentHint(file: string) {
   }
 }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+// Persist activity at content/run boundaries, not for every streaming token or connection status.
+const sessionActivityEvents = new Set([
+  'agent_start',
+  'message_start',
+  'message_end',
+  'tool_execution_start',
+  'tool_execution_end',
+  'compaction_start',
+  'compaction_end',
+  'auto_retry_start',
+  'auto_retry_end',
+  'agent_settled',
+]);
 export class AgentService extends EventEmitter {
   runtime: Runtime = emptyRuntime();
   private rpc?: PiRpc;
@@ -204,11 +217,18 @@ export class AgentService extends EventEmitter {
     if (this.runtime.sessionId) {
       const s = this.store.session(this.runtime.sessionId);
       s.lastStatus = status;
-      s.updatedAt = Date.now();
-      if (!busy(status)) s.unread = this.store.state.selectedSessionId !== s.id;
+      if (!busy(status) && status !== 'idle' && !this.connecting)
+        s.unread = this.store.state.selectedSessionId !== s.id;
       this.save();
     }
     this.publish(true);
+  }
+  private activity() {
+    if (!this.runtime.sessionId) return;
+    const session = this.store.session(this.runtime.sessionId);
+    session.updatedAt = Date.now();
+    if (!busy(this.runtime.status)) session.unread = this.store.state.selectedSessionId !== session.id;
+    this.save();
   }
   private exclusive<T>(action: () => Promise<T>): Promise<T> {
     this.pendingOperations++;
@@ -468,6 +488,7 @@ export class AgentService extends EventEmitter {
         break;
       // agent_end is deliberately not a terminal state: recovery and queued work may follow.
     }
+    if (sessionActivityEvents.has(record.type)) this.activity();
     const dropped = Math.max(0, r.notices.length - 20);
     if (dropped) {
       r.notices = r.notices.slice(-20);
@@ -946,9 +967,8 @@ export class AgentService extends EventEmitter {
         throw new Error('这个会话没有等待恢复的中断，请使用正常连接或等待当前操作结束');
       if (continuePrompt !== undefined && !continuePrompt.trim())
         throw new Error('请填写继续任务的内容，或选择“重新连接”');
-      await this.ensureConnected(id);
-      if (continuePrompt !== undefined)
-        await this.sendInOperation(id, continuePrompt, [], 'steer', [], epoch);
+      if (continuePrompt === undefined) await this.ensureConnected(id);
+      else await this.sendInOperation(id, continuePrompt, [], 'steer', [], epoch);
     });
   }
   private async sendInOperation(
@@ -972,6 +992,7 @@ export class AgentService extends EventEmitter {
     if (!project && attachments.length) throw new Error('引用本地文件需要在项目会话中进行');
     if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
     const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
+    const previousRuntime = this.runtime;
     await this.ensureConnected(id);
     const shellCommand = /^!!?\S/.test(text);
     if (!this.runtime.model && !text.startsWith('/') && !shellCommand) throw new Error('请选择一个可用模型');
@@ -985,6 +1006,11 @@ export class AgentService extends EventEmitter {
       this.retryCancelled = false;
       this.setError();
       this.runtime.tools = [];
+      // A new connection already has a fresh log; preserve its startup notifications.
+      if (this.runtime === previousRuntime) {
+        this.runtime.notices = [];
+        this.retryNotice = undefined;
+      }
       this.runtime.startedAt = Date.now();
       this.status('starting');
       if (project)
@@ -1007,6 +1033,7 @@ export class AgentService extends EventEmitter {
       if (shellCommand) {
         if (images.length || attachments.length) throw new Error('终端命令不能附带附件');
         this.status('running');
+        this.activity();
         await this.store.flush();
         if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
         this.runtime.tools.push({
@@ -1058,8 +1085,7 @@ export class AgentService extends EventEmitter {
         session.title = text.trim().split('\n')[0].slice(0, 28) || images[0]?.name || '图片对话';
         void this.rpc!.request('set_session_name', { name: session.title }).catch(() => {});
       }
-      session.updatedAt = Date.now();
-      this.save();
+      this.activity();
     } catch (e) {
       this.setError(errorText(e));
       if (!isActive && !this.stopRequested) this.status(this.runtime.crash ? 'interrupted' : 'error');
@@ -1188,6 +1214,7 @@ export class AgentService extends EventEmitter {
         }));
       const result = await rpc.bridge('navigate', { entryId: entry.id, summarize: false, instructions: '' });
       if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+      this.activity();
       // Tools from the abandoned branch must not be rendered as unpersisted live work.
       this.runtime.tools = [];
       return { text, images };
@@ -1300,6 +1327,7 @@ export class AgentService extends EventEmitter {
           ? await rpc.bridge('navigate', { entryId, summarize, instructions })
           : await rpc.request(kind, kind === 'fork' ? { entryId } : {}, 600000);
       if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
+      if (kind === 'navigate') this.activity();
       if (kind !== 'navigate') {
         const state = await rpc.request('get_state');
         const next = this.store.createSession(old.projectId);

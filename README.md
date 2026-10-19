@@ -46,7 +46,7 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 - **Ecosystem control center** — Manage model providers (API key / OAuth / any OpenAI-compatible endpoint), MCP servers, Skills, extensions and prompt templates without hand-editing config files.
 - **Quick chat or full project** — Start a standalone chat without a repository, or open a project to get the file tree, Git changes and snapshots.
 - **Steer while it runs** — Add instructions mid-run (steer) or queue follow-ups, and stop everything with a double <kbd>Esc</kbd>.
-- **Clear retry progress** — See retry backoff and response wait time, cancel an active retry request, and distinguish recovered attempts from failures in the run log.
+- **Clear retry progress** — See retry backoff and response wait time, cancel an active retry request, and distinguish recovered attempts from failures in the run log. A new run clears the previous run's records; queued steering and follow-up messages keep the active run's log.
 - **Keyboard-first** — Global search across sessions, in-session find, and shortcuts for every panel.
 - **Consistent appearance** — Light, dark and system themes cover the desktop title bar and confirmations while retaining native window controls. Pi configuration stays editable during a run; saving waits until it is safe and reports separately when a saved change could not yet be applied.
 
@@ -99,6 +99,8 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 With Pi and a model provider configured, a new empty chat connects automatically and shows the actual selected model and reasoning level before you send a message. It uses your saved model preference or Pi's effective defaults, including project settings. Initialization waits while another task is running, and projects still require trust before Pi starts.
 
 New session logs use Pi's native directory (`~/.pi/agent/sessions/<encoded-cwd>/` by default), so tools such as CC Switch can discover their usage. Pi's `sessionDir` settings and environment overrides remain effective. Existing desktop session files can still be resumed from their original locations.
+
+The sidebar orders sessions by conversation activity. Opening or reconnecting to older history leaves its position unchanged; new messages, runs and branch changes update its recency.
 
 ## Usage
 

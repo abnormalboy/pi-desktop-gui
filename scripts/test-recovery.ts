@@ -9,6 +9,10 @@ import { Workspace } from '../electron/workspace';
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'recovery');
+await fs.writeFile(
+  path.join(f.agentDir, 'extensions', 'recovery-startup.js'),
+  `export default (pi) => pi.on('session_start', (_event, ctx) => ctx.ui.notify('RECOVERY_STARTUP_NOTICE'));`,
+);
 const service = new AgentService(f.store, new Workspace(f.dataDir));
 const until = async (check: () => boolean, timeout = 25000) => {
   const start = Date.now();
@@ -63,6 +67,7 @@ try {
   await service.connect(f.sessionId);
   const requests = await crash(true);
   await service.recover(f.sessionId);
+  assert.deepEqual(service.runtime.notices, ['RECOVERY_STARTUP_NOTICE']);
   assert.equal(service.runtime.crash, undefined);
   assert.equal(provider.requests.length, requests, 'reconnect alone must not send anything to the model');
   assert.match(f.store.session(f.sessionId).draft, /UNSENT_STEERING\n\nUNSENT_FOLLOWUP/);
@@ -77,6 +82,7 @@ try {
   assert.equal(service.runtime.crash!.repeated, true);
   const prompt = 'RESUME_AFTER_CRASH：先检查已经写入的文件，再继续任务。';
   await service.recover(f.sessionId, prompt);
+  assert.deepEqual(service.runtime.notices, ['RECOVERY_STARTUP_NOTICE']);
   await until(() => service.runtime.status === 'completed');
   assert.ok(
     provider.requests

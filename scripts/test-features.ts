@@ -20,12 +20,16 @@ async function until(fn: () => boolean) {
   }
 }
 try {
+  const originalSession = f.store.session(f.sessionId);
+  originalSession.updatedAt = 1;
   await s.connect(f.sessionId);
+  assert.equal(originalSession.updatedAt, 1, 'connecting is not conversation activity');
   await s.send(f.sessionId, 'IMAGE_E2E', [], 'steer', [
     { id: 'image', name: 'image.png', data: png, mimeType: 'image/png' },
   ]);
   await until(() => !busy(s.runtime.status));
   assert.equal(s.runtime.status, 'completed', s.runtime.error ?? '');
+  assert.ok(originalSession.updatedAt > 1, 'messages advance conversation activity');
   assert.ok(
     provider.requests
       .at(-1)
@@ -39,7 +43,9 @@ try {
   console.log('PASS real Pi image delivery and history');
   await s.send(f.sessionId, 'SECOND_MESSAGE', [], 'steer');
   await until(() => !busy(s.runtime.status));
+  const beforeTree = originalSession.updatedAt;
   const tree = await s.tree(f.sessionId);
+  assert.equal(originalSession.updatedAt, beforeTree, 'reading the tree preserves recency');
   const user = tree.find((e) => e.role === 'user')!;
   assert.ok(user);
   const original = f.store.session(f.sessionId).file;
@@ -47,17 +53,25 @@ try {
   const cloned = s.runtime.sessionId!;
   assert.notEqual(cloned, f.sessionId);
   assert.notEqual(f.store.session(cloned).file, original);
+  assert.ok(f.store.session(cloned).updatedAt >= beforeTree);
+  assert.equal(originalSession.updatedAt, beforeTree, 'cloning does not modify the original');
   assert.ok(s.runtime.messages.some((m) => messageText(m).includes('SECOND_MESSAGE')));
   await s.connect(f.sessionId);
+  assert.equal(originalSession.updatedAt, beforeTree, 'reopening existing history preserves recency');
+  assert.equal(originalSession.unread, false, 'reopening history does not fabricate unread content');
   await s.branch(f.sessionId, 'fork', user.id);
   const forked = s.runtime.sessionId!;
   assert.notEqual(forked, cloned);
   assert.equal(f.store.session(forked).draft, 'IMAGE_E2E');
   assert.equal(f.store.session(forked).images?.length, 1);
   assert.equal(f.store.session(f.sessionId).file, original);
+  assert.ok(f.store.session(forked).updatedAt >= beforeTree);
+  assert.equal(originalSession.updatedAt, beforeTree, 'forking does not modify the original');
   await s.connect(f.sessionId);
   const assistant = tree.find((e) => e.role === 'assistant')!;
+  originalSession.updatedAt = 1;
   await s.branch(f.sessionId, 'navigate', assistant.id);
+  assert.ok(originalSession.updatedAt > 1, 'changing the active branch is content activity');
   assert.ok(!s.runtime.messages.some((m) => messageText(m).includes('SECOND_MESSAGE')));
   await s.send(f.sessionId, 'BRANCHED_MESSAGE', [], 'steer');
   await until(() => !busy(s.runtime.status));
@@ -65,6 +79,7 @@ try {
   assert.ok(branches.some((e) => e.text.includes('SECOND_MESSAGE') && !e.active));
   assert.ok(branches.some((e) => e.text.includes('BRANCHED_MESSAGE') && e.active));
   console.log('PASS real tree navigation, fork and clone preserve original branches');
+  console.log('PASS real Pi browsing preserves recency while messages and branches advance it');
   await s.option(f.sessionId, 'autoCompaction', true);
   assert.equal(s.runtime.autoCompaction, true);
   await s.option(f.sessionId, 'autoRetry', true);

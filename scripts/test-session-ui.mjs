@@ -90,6 +90,15 @@ try {
   await page.locator('.thread').getByText('SESSION_A_ONLY', { exact: true }).waitFor();
   const diagnostic = async () => JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics')));
   const originalPid = (await diagnostic()).sessionSwitch.pid;
+  const sidebarActivity = async () => {
+    const { state } = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+    const sessions = state.sessions.filter((session) => [a.id, b.id].includes(session.id));
+    assert.equal(sessions.length, 2);
+    return sessions
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt)
+      .map(({ id, updatedAt }) => ({ id, updatedAt }));
+  };
+  const beforeSidebarActivity = await sidebarActivity();
   const durations = [],
     backendDurations = [];
   for (let i = 0; i < 12; i++) {
@@ -141,6 +150,12 @@ try {
       backendDurations.push(info.elapsedMs);
     }
   }
+  assert.deepEqual(
+    await sidebarActivity(),
+    beforeSidebarActivity,
+    'Sidebar clicks must preserve session activity times and relative ordering',
+  );
+  console.log('PASS twelve sidebar clicks preserve session activity times and ordering');
   const measurement = {
     platform: process.platform,
     ...buildInfo,

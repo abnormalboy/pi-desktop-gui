@@ -60,12 +60,24 @@ try {
   assert.ok(!service.runtime.notices.some((n) => /^(正在重试|等待重试)/.test(n)));
   console.log('PASS real Pi retries remain visible until recovery and continue the tool chain once');
 
+  provider.reset('success', true);
+  await send('NORMAL_AFTER_RETRY');
+  await until(() => provider.count === 1);
+  assert.equal(service.runtime.status, 'running');
+  assert.equal(service.runtime.notices.length, 0, 'a new run must not inherit recovered retry records');
+  provider.release();
+  await settled();
+  assert.equal(service.runtime.status, 'completed');
+  assert.equal(service.runtime.notices.length, 0);
+  console.log('PASS a later normal run has no stale retry records while running or after completion');
+
   provider.reset('exhaust');
   await send('RETRY_EXHAUST');
   await settled();
   assert.equal(service.runtime.status, 'error');
   assert.equal(provider.count, 3);
   assert.equal(service.runtime.retry, undefined);
+  assert.equal(service.runtime.notices.length, 1);
   assert.equal(service.runtime.notices.filter((n) => n.startsWith('重试失败')).length, 1);
   assert.match(service.runtime.notices.at(-1)!, /2\/2/);
   console.log('PASS exhausted retry attempts update one record and settle as an error');
