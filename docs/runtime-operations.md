@@ -28,6 +28,8 @@
 
 `setAutoRetryEnabled`、`setAutoCompactionEnabled` 更新后续步骤使用的原生设置，不取消当前步骤。配置保存采用与原生 `SettingsManager` 相同的 `proper-lockfile` 锁，在锁内做版本校验和备份，避免多个进程丢失修改。
 
+Pi RPC 启动阶段无法展示项目信任窗口。桌面已明确信任的项目通过原生 `--approve` 将信任传给本次进程，安全重载也沿用这一决定，使新保存的项目资源能够加载。未信任项目仍禁止连接，工具审批仍按会话设置处理。信任项目也允许项目扩展直接执行代码。
+
 分支使用独立 `SessionManager` 的 `createBranchedSession`，不在源进程执行会替换活动会话的 `fork`/`clone`。目录修改与进程启动的保护位于 `SessionAgents`，会话内的任务、设置、读取和安全加载由 `AgentService` 管理。
 
 ## 验证入口

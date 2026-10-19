@@ -89,6 +89,10 @@ async function until(condition: () => boolean) {
   }
 }
 try {
+  f.store.project(f.projectId).trusted = false;
+  await assert.rejects(a.connect(f.sessionId), /请先确认此项目/);
+  assert.equal(a.runtime.connected, false);
+  f.store.project(f.projectId).trusted = true;
   await Promise.all([a.connect(f.sessionId), b.connect(second.id)]);
   await Promise.all([a.setApprovalMode(f.sessionId, 'confirm'), b.setApprovalMode(second.id, 'confirm')]);
   await Promise.all([
@@ -127,6 +131,12 @@ try {
   await fs.writeFile(
     skill,
     '---\nname: deferred-skill\ndescription: Deferred loading test\n---\nReport test state.\n',
+  );
+  const projectPrompt = path.join(f.projectDir, '.pi', 'prompts', 'deferred-project.md');
+  await fs.mkdir(path.dirname(projectPrompt), { recursive: true });
+  await fs.writeFile(
+    projectPrompt,
+    '---\ndescription: Deferred project template\n---\nReport project state.\n',
   );
   const document = await config.read(f.sessionId, 'settings', false);
   const values = JSON.parse(document.text);
@@ -173,6 +183,13 @@ try {
   assert.ok(
     resources.resources.some((item: any) => item.kind === 'skills' && path.resolve(item.path) === skill),
   );
+  assert.ok(
+    resources.resources.some(
+      (item: any) => item.kind === 'prompts' && path.resolve(item.path) === projectPrompt,
+    ),
+    'safe reload retains desktop project trust and loads newly saved project resources',
+  );
+  assert.ok(a.runtime.commands.some((command) => command.name === 'deferred-project'));
   await b.respond(b.runtime.dialogs[0].id, { value: APPROVAL_ALLOW });
   await until(() => !agents.active(second.id));
   assert.equal(await exists('APPROVAL_B-1.txt'), true);

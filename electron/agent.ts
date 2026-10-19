@@ -814,7 +814,8 @@ export class AgentService extends EventEmitter {
       const bridge = path.join(this.store.dir, `desktop-bridge-${sessionId}.mjs`);
       await fs.copyFile(this.bridgeSource, bridge);
       args.push('--extension', bridge);
-      // Project trust is answered in Pi's own dialog; no implicit --approve flag.
+      // RPC startup cannot prompt for project trust. Reuse the explicit desktop decision.
+      if (project?.trusted) args.push('--approve');
       const shellEnv: NodeJS.ProcessEnv = {
         PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
         PI_TELEMETRY: '0',
