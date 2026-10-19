@@ -84,6 +84,56 @@ f.store.selectSession(f.sessionId);
 await f.store.save();
 let app, page;
 const errors = [];
+const observeModelSwitchState = () =>
+  page.evaluate(async () => {
+    window.modelSwitchRuntimes = new Map();
+    window.desktop.onEvent((event) => {
+      if (event.type === 'state') window.modelSwitchState = event.state;
+      // Runtime patches carry all scalar fields used by readiness checks.
+      if (event.type === 'runtime' && event.runtime.sessionId)
+        window.modelSwitchRuntimes.set(event.runtime.sessionId, event.runtime);
+      if (event.type === 'runtimePatch' && event.patch.sessionId)
+        window.modelSwitchRuntimes.set(event.patch.sessionId, event.patch);
+      if (event.type === 'runtimeRemoved') window.modelSwitchRuntimes.delete(event.sessionId);
+    });
+    // Subscribe before one bootstrap; readiness polling must not repeatedly resync Pi.
+    const { state, runtime } = await window.desktop.invoke('bootstrap');
+    window.modelSwitchState = state;
+    if (runtime.sessionId) window.modelSwitchRuntimes.set(runtime.sessionId, runtime);
+  });
+// Playwright 1.64 checks predicate truthiness before awaiting it: return a boolean,
+// never a Promise, and verify the intended session rather than whichever is current.
+function modelSwitchReady({
+  id,
+  title,
+  status,
+  modelId,
+  nextModelId,
+  connected,
+  readyToType,
+  draft,
+  canSend,
+}) {
+  const runtime = window.modelSwitchRuntimes.get(id);
+  const input = document.querySelector('textarea[aria-label="任务输入"]');
+  const send = document.querySelector('.send-button');
+  return Boolean(
+    window.modelSwitchState?.selectedSessionId === id &&
+    runtime?.sessionId === id &&
+    (status === undefined || runtime.status === status) &&
+    (modelId === undefined || runtime.model?.id === modelId) &&
+    (nextModelId === undefined || runtime.nextTask?.model?.id === nextModelId) &&
+    (connected === undefined || runtime.connected === connected) &&
+    (title === undefined ||
+      (document.querySelector('.workspace-title h1')?.textContent === title &&
+        document
+          .querySelector(`.session-row[data-session-id="${id}"] > button`)
+          ?.getAttribute('aria-current') === 'page')) &&
+    (!readyToType || (input && !input.disabled && send && !send.querySelector('.spin'))) &&
+    (draft === undefined || input?.value === draft) &&
+    (!canSend || (send && !send.disabled)),
+  );
+}
 try {
   app = await electron.launch({
     executablePath: process.env.PI_DESKTOP_EXE,
@@ -95,6 +145,7 @@ try {
   page.setDefaultTimeout(30000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await observeModelSwitchState();
   await page.evaluate((id) => window.desktop.invoke('setSessionThinking', id, 'low'), f.sessionId);
   await page.evaluate(
     (id) => window.desktop.invoke('send', id, 'MODEL_SWITCH_DURING_RESPONSE', [], 'steer'),
@@ -106,13 +157,11 @@ try {
   assert.equal(await nextModel.isEnabled(), true);
   assert.equal(await page.getByRole('radio', { name: 'high', exact: true }).isEnabled(), true);
   await nextModel.click();
-  await page.waitForFunction(async () => {
-    const { runtime } = await window.desktop.invoke('bootstrap');
-    return (
-      runtime.model?.id === 'local-e2e' &&
-      runtime.nextTask?.model.id === 'local-next' &&
-      runtime.status === 'running'
-    );
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    modelId: 'local-e2e',
+    nextModelId: 'local-next',
+    status: 'running',
   });
   await page.evaluate((id) => window.desktop.invoke('setSessionThinking', id, 'high'), f.sessionId);
   await page.evaluate(
@@ -148,51 +197,36 @@ try {
   await page.locator('footer').getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: other.title, exact: true }).click();
-  await page.waitForFunction(async () => {
-    const { runtime } = await window.desktop.invoke('bootstrap');
-    return runtime.connected && runtime.status === 'idle';
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    title: other.title,
+    connected: true,
+    status: 'idle',
+    readyToType: true,
   });
   await page.locator('.run-meta .idle').waitFor();
   await page.locator('.workspace-title h1').filter({ hasText: other.title }).waitFor();
   await page.getByRole('textbox', { name: '任务输入' }).fill('CONCURRENT_B');
-  await page
-    .waitForFunction(() => !document.querySelector('.send-button')?.disabled)
-    .catch(async (error) => {
-      console.log(
-        await page.evaluate(async () => {
-          const { state, runtime, environment, storage } = await window.desktop.invoke('bootstrap');
-          return {
-            selected: state.selectedSessionId,
-            session: state.sessions.find((item) => item.id === state.selectedSessionId),
-            runtime: {
-              sessionId: runtime.sessionId,
-              status: runtime.status,
-              connected: runtime.connected,
-              crash: runtime.crash,
-            },
-            supported: environment.supported,
-            storage,
-            input: document.querySelector('textarea')?.value,
-            button: document.querySelector('.send-button')?.outerHTML,
-            errors: [...document.querySelectorAll('[role="alert"]')].map((item) => item.textContent),
-          };
-        }),
-      );
-      console.log('Renderer errors:', errors);
-      throw error;
-    });
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    title: other.title,
+    draft: 'CONCURRENT_B',
+    canSend: true,
+  });
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isEnabled(), true);
   await page.getByRole('textbox', { name: '任务输入' }).press('Enter');
   await page.getByText('CONCURRENT_RESPONSE_B', { exact: true }).waitFor();
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   assert.equal(await page.getByRole('option', { name: /本地验收接口/ }).isEnabled(), true);
   await page.getByRole('option', { name: /本地验收接口/ }).click();
-  await page.waitForFunction(async () => {
-    const { runtime } = await window.desktop.invoke('bootstrap');
-    return runtime.nextTask?.model.id === 'local-e2e' && runtime.status === 'running';
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    nextModelId: 'local-e2e',
+    status: 'running',
   });
   // Recreate the renderer while both processes are quiet but still running.
   await page.reload();
+  await observeModelSwitchState();
   await page.getByText('CONCURRENT_RESPONSE_B', { exact: true }).waitFor();
   await page.getByRole('button', { name: '停止任务', exact: true }).click();
   await page.locator('.run-meta .stopped').waitFor();
@@ -228,18 +262,30 @@ try {
     ['local-e2e', 'local-e2e'],
   );
   await page.evaluate((id) => window.desktop.invoke('send', id, 'A_NEW_TASK', [], 'steer'), f.sessionId);
-  await page.waitForFunction(
-    async () => (await window.desktop.invoke('bootstrap')).runtime.status === 'completed',
-  );
+  await page.waitForFunction(modelSwitchReady, {
+    id: f.sessionId,
+    modelId: 'local-next',
+    status: 'completed',
+  });
   assert.equal(requests.at(-1).model, 'local-next');
   assert.equal(requests.at(-1).reasoning_effort, 'high');
   await page.getByRole('button', { name: other.title, exact: true }).click();
-  await page.getByRole('textbox', { name: '任务输入' }).fill('B_AFTER_STOP');
-  await page.getByRole('button', { name: '发送任务', exact: true }).click();
-  await page.waitForFunction(async () => {
-    const { runtime } = await window.desktop.invoke('bootstrap');
-    return runtime.status === 'completed';
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    title: other.title,
+    connected: true,
+    status: 'stopped',
+    readyToType: true,
   });
+  await page.getByRole('textbox', { name: '任务输入' }).fill('B_AFTER_STOP');
+  await page.waitForFunction(modelSwitchReady, {
+    id: other.id,
+    title: other.title,
+    draft: 'B_AFTER_STOP',
+    canSend: true,
+  });
+  await page.getByRole('button', { name: '发送任务', exact: true }).click();
+  await page.waitForFunction(modelSwitchReady, { id: other.id, status: 'completed' });
   assert.equal((await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime.model.id, 'local-e2e');
   assert.equal(requests.at(-1).model, 'local-e2e');
   assert.equal(
@@ -248,10 +294,11 @@ try {
     'changing B model must not restart its in-flight request',
   );
   const standalone = await page.evaluate(() => window.desktop.invoke('newSession'));
-  await page.waitForFunction(async (id) => {
-    const { runtime } = await window.desktop.invoke('bootstrap');
-    return runtime.sessionId === id && runtime.connected && runtime.status === 'idle';
-  }, standalone.id);
+  await page.waitForFunction(modelSwitchReady, {
+    id: standalone.id,
+    connected: true,
+    status: 'idle',
+  });
   await page.locator('.workspace-title h1').filter({ hasText: standalone.title }).waitFor();
   await page.locator('.run-meta .idle').waitFor();
   await page.waitForFunction(
@@ -289,6 +336,43 @@ try {
   console.log(
     'PASS idle controls hide without an operation; standalone chats retain output and hide project-only controls',
   );
+} catch (error) {
+  // Capture before cleanup stops sessions and changes the failure's runtime state.
+  const output = path.resolve('output/playwright', `model-switch-ui-${process.platform}`);
+  try {
+    await fs.mkdir(output, { recursive: true });
+    if (page && !page.isClosed()) {
+      const snapshot = await page.evaluate(() => ({
+        selectedSessionId: window.modelSwitchState?.selectedSessionId,
+        sessions: window.modelSwitchState?.sessions.map(({ id, title, draft }) => ({ id, title, draft })),
+        runtimes: [...(window.modelSwitchRuntimes?.values() ?? [])].map(
+          ({ sessionId, status, connected, crash, model, nextTask }) => ({
+            sessionId,
+            status,
+            connected,
+            crash,
+            model,
+            nextTask,
+          }),
+        ),
+        title: document.querySelector('.workspace-title h1')?.textContent,
+        input: document.querySelector('textarea[aria-label="任务输入"]')?.value,
+        button: document.querySelector('.send-button')?.outerHTML,
+        disabled: document.querySelector('.send-button')?.disabled,
+        pending: Boolean(document.querySelector('.send-button .spin')),
+        alerts: [...document.querySelectorAll('[role="alert"]')].map((item) => item.textContent),
+      }));
+      console.error('Model-switch failure snapshot:', JSON.stringify(snapshot));
+      await fs.writeFile(
+        path.join(output, 'failure.json'),
+        JSON.stringify({ error: String(error), rendererErrors: errors, ...snapshot }, null, 2),
+      );
+      await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true });
+    }
+  } catch (diagnosticError) {
+    console.error('Could not capture model-switch failure:', diagnosticError);
+  }
+  throw error;
 } finally {
   releaseResponse();
   releaseOther();

@@ -12,7 +12,7 @@
     "build": "tsc --noEmit && vite build && node scripts/build-main.mjs",
     "start": "electron .",
     "icons": "electron scripts/render-icon.cjs",
-    "test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
+    "test": "node --import tsx --test --test-timeout=120000 tests/*.test.ts tests/*.test.mjs",
     "test:integration": "node --import tsx scripts/integration.ts",
     "test:ui": "node --import tsx scripts/test-ui.mjs && node --import tsx scripts/test-experience-ui.mjs && node --import tsx scripts/test-image-input-ui.mjs && node --import tsx scripts/test-transcript-ui.mjs && node --import tsx scripts/test-scroll-ui.mjs",
     "test:chat-ui": "node --import tsx scripts/test-chat-ui.mjs",

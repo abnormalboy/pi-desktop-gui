@@ -35,6 +35,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+        timeout-minutes: 3
       - run: npm run test:integration
       - run: npm run test:features
       - name: Test concurrent sessions and settings with real Pi

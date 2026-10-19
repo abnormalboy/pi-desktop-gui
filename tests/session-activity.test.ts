@@ -42,6 +42,23 @@ async function settled(service: AgentService) {
   }
 }
 
+async function waitForGate(entered: Promise<void>, completion: Promise<unknown>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      entered,
+      completion.then(() => {
+        throw new Error('Fixture operation finished before reaching its gate');
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Fixture did not reach its gate within 5 seconds')), 5000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 test('cold connect, reused switching and history reads preserve recency, older grouping and unread', async (t) => {
   const f = await fixture(t);
   const before = f.recency();
@@ -171,38 +188,50 @@ for (const status of ['completed', 'stopped', 'error'] as const)
 test('SessionAgents browsing stays separate from a real background completion', async (t) => {
   const f = await fixture(t);
   const agents = new SessionAgents(f.store, new Workspace(f.dir));
-  t.after(() => agents.dispose());
-  const background = agents.get(f.older.id);
-  const foreground = agents.get(f.newer.id);
-  await background.send(f.older.id, 'extension confirm', [], 'steer');
-  const deadline = Date.now() + 5000;
-  while (!background.runtime.dialogs.length) {
-    assert.ok(Date.now() < deadline);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  let primaryError: unknown;
+  try {
+    const background = agents.get(f.older.id);
+    const foreground = agents.get(f.newer.id);
+    await background.send(f.older.id, 'extension confirm', [], 'steer');
+    const deadline = Date.now() + 5000;
+    while (!background.runtime.dialogs.length) {
+      assert.ok(Date.now() < deadline);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    f.older.updatedAt = 1;
+    f.newer.updatedAt = 2;
+    f.older.unread = f.newer.unread = false;
+    const before = f.recency();
+    await foreground.connect(f.newer.id);
+    await foreground.history(f.newer.id);
+    assert.deepEqual(f.recency(), before, 'opening another process must not move either session');
+    assert.equal(agents.runtime, foreground.runtime);
+    await background.respond(background.runtime.dialogs[0].id, { confirmed: true });
+    await settled(background);
+    assert.equal(background.runtime.status, 'completed');
+    assert.ok(f.older.updatedAt > f.newer.updatedAt);
+    assert.equal(f.older.unread, true);
+    assert.equal(f.newer.updatedAt, 2);
+    assert.equal(f.newer.unread, false);
+    const completed = f.recency();
+    await foreground.history(f.newer.id);
+    await foreground.tree(f.newer.id);
+    assert.deepEqual(f.recency(), completed);
+    assert.deepEqual(
+      [...f.store.state.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.id),
+      [f.older.id, f.newer.id],
+    );
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    // These processes share the fixture directory, so close them before its after-hook removes it.
+    await agents.dispose().catch((cleanupError) => {
+      if (primaryError)
+        throw new AggregateError([primaryError, cleanupError], 'Test and process cleanup failed');
+      throw cleanupError;
+    });
   }
-  f.older.updatedAt = 1;
-  f.newer.updatedAt = 2;
-  f.older.unread = f.newer.unread = false;
-  const before = f.recency();
-  await foreground.connect(f.newer.id);
-  await foreground.history(f.newer.id);
-  assert.deepEqual(f.recency(), before, 'opening another process must not move either session');
-  assert.equal(agents.runtime, foreground.runtime);
-  await background.respond(background.runtime.dialogs[0].id, { confirmed: true });
-  await settled(background);
-  assert.equal(background.runtime.status, 'completed');
-  assert.ok(f.older.updatedAt > f.newer.updatedAt);
-  assert.equal(f.older.unread, true);
-  assert.equal(f.newer.updatedAt, 2);
-  assert.equal(f.newer.unread, false);
-  const completed = f.recency();
-  await foreground.history(f.newer.id);
-  await foreground.tree(f.newer.id);
-  assert.deepEqual(f.recency(), completed);
-  assert.deepEqual(
-    [...f.store.state.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => s.id),
-    [f.older.id, f.newer.id],
-  );
 });
 
 for (const operation of ['navigate', 'edit'] as const)
@@ -225,7 +254,6 @@ for (const operation of ['navigate', 'edit'] as const)
         entered();
         await held;
       };
-      t.after(release);
       rpc.bridge = async (method, ...args) => {
         if (method === 'navigate') {
           if (phase === 'navigation') await block();
@@ -257,20 +285,26 @@ for (const operation of ['navigate', 'edit'] as const)
           : f.service.messageAction(f.older.id, 'edit', 'user', 1);
       const completion =
         phase === 'refresh-failure' ? assert.rejects(work, /refresh failed after navigation/) : work;
-      await waiting;
-      f.store.selectSession(f.newer.id);
-      release();
-      await completion;
-      assert.equal(f.service.runtime.status, 'idle');
-      assert.ok(f.older.updatedAt > f.newer.updatedAt);
-      assert.equal(f.older.unread, true);
-      assert.equal(f.newer.updatedAt, 2);
-      assert.equal(f.newer.unread, false);
-      if (operation === 'edit' && phase !== 'refresh-failure') assert.equal(f.older.draft, 'edited task');
-      await f.store.flush();
-      const saved = new Store(f.dir);
-      await saved.load();
-      assert.equal(saved.session(f.older.id).unread, true);
+      try {
+        await waitForGate(waiting, completion);
+        f.store.selectSession(f.newer.id);
+        release();
+        await completion;
+        assert.equal(f.service.runtime.status, 'idle');
+        assert.ok(f.older.updatedAt > f.newer.updatedAt);
+        assert.equal(f.older.unread, true);
+        assert.equal(f.newer.updatedAt, 2);
+        assert.equal(f.newer.unread, false);
+        if (operation === 'edit' && phase !== 'refresh-failure') assert.equal(f.older.draft, 'edited task');
+        await f.store.flush();
+        const saved = new Store(f.dir);
+        await saved.load();
+        assert.equal(saved.session(f.older.id).unread, true);
+      } finally {
+        // Release before the fixture's after-hook waits for the operation in dispose().
+        release();
+        await completion.catch(() => {});
+      }
     });
 
 for (const operation of ['navigate', 'edit', 'reload'] as const)
@@ -290,7 +324,6 @@ for (const operation of ['navigate', 'edit', 'reload'] as const)
       const waiting = new Promise<void>((resolve) => {
         entered = resolve;
       });
-      t.after(release);
       rpc.bridge = async (method, ...args) => {
         if (method === (operation === 'reload' ? 'reload' : 'navigate')) {
           entered();
@@ -321,10 +354,15 @@ for (const operation of ['navigate', 'edit', 'reload'] as const)
             ? f.service.messageAction(f.older.id, 'edit', 'user', 1)
             : f.service.admin(f.older.id, 'reload');
       const result = outcome === 'success' ? work : assert.rejects(work, /取消了这次操作|navigation failed/);
-      await waiting;
-      f.store.selectSession(f.newer.id);
-      release();
-      await result;
-      assert.deepEqual(f.recency(), before);
-      assert.equal(f.older.draft, '');
+      try {
+        await waitForGate(waiting, result);
+        f.store.selectSession(f.newer.id);
+        release();
+        await result;
+        assert.deepEqual(f.recency(), before);
+        assert.equal(f.older.draft, '');
+      } finally {
+        release();
+        await result.catch(() => {});
+      }
     });
