@@ -1443,11 +1443,11 @@ async function createWindow() {
           }
         }
         quitting = true;
-        await configurationWrites;
         workspaceWatcher?.dispose();
         clearTimeout(windowTimer);
         windowTimer = undefined;
         await writeWindowState();
+        await configurationWrites;
         await service.dispose();
         updates.prepareForQuit(!sessionEnding && (store.storage.writable || !!store.storage.newerFormat));
         updates.dispose();
