@@ -73,7 +73,9 @@ try {
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.project-row').count(), 0);
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 1);
-  assert.equal(await page.locator('.trust-banner, .workspace-toggle').count(), 0);
+  assert.equal(await page.locator('.trust-banner').count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看工作区变更', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看会话输出', exact: true }).count(), 1);
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).isEnabled(), true);
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: path.join(output, 'standalone-empty.png'), animations: 'disabled' });
@@ -229,7 +231,9 @@ try {
   assert.equal(untrusted.runtime.connected, false, 'an untrusted project must not start Pi automatically');
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
-  assert.equal(await page.locator('.trust-banner, .workspace-toggle').count(), 0);
+  assert.equal(await page.locator('.trust-banner').count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看工作区变更', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看会话输出', exact: true }).count(), 1);
   await expectSelectedModel(baseModel);
   assert.equal(await page.locator('.readiness').count(), 0);
   await page.getByRole('textbox', { name: '任务输入' }).fill('从项目中直接新建独立对话');
@@ -289,25 +293,29 @@ try {
   const requestsDuringReply = provider.requests.length;
   await page.getByRole('button', { name: /^新建对话/ }).click();
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
+  await expectSelectedModel(baseModel);
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
-  assert.equal(await page.getByRole('option').first().isDisabled(), true);
+  assert.equal(await page.getByRole('option').first().isEnabled(), true);
   await page.keyboard.press('Escape');
   const duringReply = (await page.evaluate(() => window.desktop.invoke('bootstrap'))).runtime;
-  assert.equal(duringReply.sessionId, active.sessionId);
-  assert.equal(duringReply.status, 'running', 'creating a chat must not interrupt the current response');
+  assert.notEqual(duringReply.sessionId, active.sessionId);
+  assert.equal(duringReply.status, 'idle');
+  const background = JSON.parse(
+    await page.evaluate(() => window.desktop.invoke('diagnostics')),
+  ).sessions.find((session) => session.sessionId === active.sessionId);
+  assert.equal(background.status, 'running', 'creating a chat must not interrupt the background response');
   assert.equal(await page.locator('.error-banner').count(), 0);
-  await page.evaluate(async () => {
-    const { state } = await window.desktop.invoke('bootstrap');
-    await window.desktop.invoke('stop', state.selectedSessionId);
-  });
+  await page.evaluate((id) => window.desktop.invoke('stop', id), active.sessionId);
   await expectSelectedModel(baseModel);
   assert.equal(await page.locator('.error-banner').count(), 0);
   assert.equal(
     provider.requests.length,
     requestsDuringReply,
-    'deferred initialization must not send a prompt',
+    'independent initialization must not send a prompt',
   );
-  console.log('PASS new chat waits for the running response before initializing its model');
+  console.log(
+    'PASS new chat initializes independently while the original response continues in the background',
+  );
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'chat-ui-result.json'),
@@ -327,7 +335,7 @@ try {
           'new chat automatically selects the actual Pi default before the first prompt',
           'cold new chat model initialization and checked picker item',
           'model initialization sends no provider request and respects project trust',
-          'model initialization waits for the running response',
+          'model initialization is independent of the background response',
           'independent histories',
           'draft/history restart',
           'search',
@@ -344,10 +352,31 @@ try {
     ),
   );
 } catch (error) {
+  console.error(error);
   if (page && !page.isClosed()) await page.screenshot({ path: path.join(output, 'chat-ui-failure.png') });
   console.error('Renderer errors:', errors);
   throw error;
 } finally {
-  if (app) await app.close();
+  if (app) {
+    await app
+      .evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(
+          `void window.desktop.onEvent(event => {
+            if (event.type === 'appDialog') void window.desktop.invoke('respondAppDialog', event.dialog.id,
+              event.dialog.message === 'Pi 仍在执行任务' ? 1 : event.dialog.cancelId);
+          })`,
+        ),
+      )
+      .catch(() => {});
+    if (page && !page.isClosed()) {
+      const pendingExit = page.getByRole('dialog').filter({ hasText: 'Pi 仍在执行任务' });
+      if (await pendingExit.isVisible())
+        await pendingExit
+          .getByRole('button', { name: '停止并退出', exact: true })
+          .click()
+          .catch(() => {});
+    }
+    await app.close();
+  }
   await provider.close();
 }

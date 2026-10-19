@@ -2,6 +2,7 @@ import { _electron as electron } from 'playwright';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { messageText } from '../shared/types.ts';
 import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider.ts';
 const provider = await createLocalProvider();
 const fixture = await prepareRealPiFixture(provider.baseUrl, 'features-ui');
@@ -171,12 +172,22 @@ try {
   await modal.getByRole('button', { name: '关闭', exact: true }).last().click();
   await input.fill('/clone');
   await input.press('Enter');
-  await waitForState(
-    (b) =>
-      b.state.sessions.length === 2 &&
-      b.runtime.sessionId === b.state.selectedSessionId &&
-      b.runtime.status === 'idle',
+  const cloned = await waitForState(
+    (b) => b.state.sessions.length === 2 && b.state.selectedSessionId !== fixture.sessionId,
   );
+  assert.notEqual(
+    cloned.state.sessions.find((session) => session.id === cloned.state.selectedSessionId).file,
+    cloned.state.sessions.find((session) => session.id === fixture.sessionId).file,
+  );
+  const history = await page.evaluate(
+    (id) => window.desktop.invoke('readHistory', id),
+    cloned.state.selectedSessionId,
+  );
+  assert.ok(history.some((message) => messageText(message).includes('UI_IMAGE_TEST')));
+  const source = JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics'))).sessions.find(
+    (session) => session.sessionId === fixture.sessionId,
+  );
+  assert.equal(source.connected, true, 'cloning must keep the source connection');
   await input.fill('!!printf UI_SHELL_COMMAND');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.bash-message').filter({ hasText: 'UI_SHELL_COMMAND' }).waitFor({ timeout: 30000 });

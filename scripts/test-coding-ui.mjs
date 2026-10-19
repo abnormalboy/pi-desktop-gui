@@ -55,7 +55,13 @@ try {
     await window.desktop.invoke('connect', id);
     await window.desktop.invoke('setSessionThinking', id, 'low');
   }, fixture.sessionId);
-  assert.equal(JSON.parse(await fs.readFile(settingsFile, 'utf8')).defaultThinkingLevel, 'low');
+  assert.equal(JSON.parse(await fs.readFile(settingsFile, 'utf8')).defaultThinkingLevel, 'medium');
+  const selectedThinking = await page.evaluate(() => window.desktop.invoke('bootstrap'));
+  assert.equal(selectedThinking.runtime.thinking, 'low');
+  assert.equal(
+    selectedThinking.state.sessions.find((session) => session.id === fixture.sessionId).thinking,
+    'low',
+  );
 
   for (const key of ['Tab', 'Enter']) {
     await input.fill('//cop');
