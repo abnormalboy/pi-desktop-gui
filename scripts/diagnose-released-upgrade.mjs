@@ -147,6 +147,32 @@ function parseRange(value, size) {
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) return null;
   return { start, end };
 }
+function selectAutomaticMainProcess(processes, { oldPid, executable, restartAt, expectedPid }) {
+  return processes.find(
+    (item) =>
+      Number.isInteger(item.pid) &&
+      item.pid > 0 &&
+      item.pid !== oldPid &&
+      (expectedPid === undefined || item.pid === expectedPid) &&
+      item.path?.toLowerCase() === executable.toLowerCase() &&
+      typeof item.commandLine === 'string' &&
+      /(?:^|\s)"?--updated"?(?=\s|$)/i.test(item.commandLine) &&
+      !/(?:^|\s)"?--type(?:=|\s|$)/i.test(item.commandLine) &&
+      Number.isInteger(item.windowHandle) &&
+      item.windowHandle !== 0 &&
+      item.windowVisible === true &&
+      Date.parse(item.created) >= restartAt - 1000 &&
+      processes.some(
+        (child) =>
+          child.pid !== item.pid &&
+          child.parentPid === item.pid &&
+          child.path?.toLowerCase() === executable.toLowerCase() &&
+          typeof child.commandLine === 'string' &&
+          /(?:^|\s)"?--type=renderer"?(?=\s|$)/i.test(child.commandLine) &&
+          Date.parse(child.created) >= Date.parse(item.created),
+      ),
+  );
+}
 async function makeServer(files, log, notes) {
   const release = JSON.stringify({
     tag_name: `v${nextVersion}`,
@@ -236,6 +262,69 @@ async function verifyAsset(asset, file) {
 }
 
 async function selfTest() {
+  const selectorOptions = {
+    oldPid: 100,
+    executable: 'C:\\Pi\\Pi Desktop.exe',
+    restartAt: Date.parse('2026-10-19T10:00:00Z'),
+  };
+  const visibleMain = {
+    pid: 200,
+    path: selectorOptions.executable,
+    commandLine: '"C:\\Pi\\Pi Desktop.exe" --updated',
+    created: '2026-10-19T10:00:02Z',
+    windowHandle: 786818,
+    windowVisible: true,
+    windowTitle: '',
+  };
+  const renderer = {
+    pid: 201,
+    parentPid: visibleMain.pid,
+    path: selectorOptions.executable,
+    commandLine: '"C:\\Pi\\Pi Desktop.exe" --type=renderer',
+    created: '2026-10-19T10:00:02.100Z',
+  };
+  assert.equal(
+    selectAutomaticMainProcess([visibleMain, renderer], selectorOptions),
+    visibleMain,
+    'A visible custom-titlebar main window may have an empty native title',
+  );
+  for (const patch of [
+    { windowVisible: false },
+    { windowVisible: undefined },
+    { windowHandle: 0 },
+    { commandLine: visibleMain.commandLine + ' --type=renderer' },
+    { commandLine: visibleMain.commandLine + ' --type=gpu-process' },
+    { commandLine: visibleMain.commandLine + ' "--type=utility"' },
+    { commandLine: undefined },
+    { commandLine: '"C:\\Pi\\Pi Desktop.exe"' },
+    { commandLine: '"C:\\Pi\\Pi Desktop.exe" --updated-fake' },
+    { pid: selectorOptions.oldPid },
+    { path: 'C:\\Other\\Pi Desktop.exe' },
+    { created: '2026-10-19T09:59:58Z' },
+  ])
+    assert.equal(
+      selectAutomaticMainProcess([{ ...visibleMain, ...patch }, renderer], selectorOptions),
+      undefined,
+    );
+  assert.equal(
+    selectAutomaticMainProcess([visibleMain, renderer], { ...selectorOptions, expectedPid: 201 }),
+    undefined,
+  );
+  assert.equal(
+    selectAutomaticMainProcess([visibleMain], selectorOptions),
+    undefined,
+    'A native error box without a renderer cannot count as normal app startup',
+  );
+  for (const patch of [
+    { parentPid: 999 },
+    { path: 'C:\\Other\\Pi Desktop.exe' },
+    { commandLine: '"C:\\Pi\\Pi Desktop.exe" --type=gpu-process' },
+    { created: '2026-10-19T10:00:01Z' },
+  ])
+    assert.equal(
+      selectAutomaticMainProcess([visibleMain, { ...renderer, ...patch }], selectorOptions),
+      undefined,
+    );
   const { UUID } = await import('builder-util-runtime');
   assert.equal(
     UUID.v5(appId, UUID.parse(nsisUuidNamespace)),
@@ -294,7 +383,7 @@ async function selfTest() {
     assert.equal(metadata.tag_name, 'v0.14.19');
     assert.match(await (await fetch(base + releasePath + '.atom')).text(), /releases\/tag\/v0\.14\.19/);
     console.log(
-      'PASS diagnostic NSIS identity, bounded uninstall names, hash guard, URL allowlist, fixed metadata, full/range/error transport self-tests',
+      'PASS diagnostic visible-main selection, NSIS identity, bounded uninstall names, hash guard, URL allowlist, fixed metadata, full/range/error transport self-tests',
     );
   } finally {
     server?.closeAllConnections();
@@ -344,6 +433,7 @@ async function diagnose() {
   const files = new Map();
   let server, app, page, observer;
   let installedByDiagnostic = false;
+  let syntheticStoreSeeded = false;
   let clickAt;
   const result = {
     baseline: 'not-run',
@@ -356,13 +446,14 @@ async function diagnose() {
     limits: [
       'Loopback transport selects historical v0.14.19 instead of today’s latest release; app, updater, installers, install identity and shortcuts are unchanged.',
       'Success establishes one clean hosted-runner baseline; it does not identify the cause of issue #18 or exclude device-specific failures.',
-      'Restart evidence requires a new automatic main process/window at the original path, installed ASAR version and executable product version; the new app is never launched by this harness. This is not a functional renderer acceptance test.',
+      'Restart evidence requires a new automatic --updated main process with a visible native window and its exact-path renderer child, installed ASAR version and executable product version; the new app is never launched by this harness. This is not a functional renderer acceptance test.',
       'No mutex/path-conflict scenario is included; this baseline must be evaluated before adding controlled failure cases.',
       'Only the old application’s update transport is pinned to historical bytes. The unmodified new process may perform its normal live GitHub check after ten seconds; it is force-stopped during cleanup without an on-quit install.',
     ],
   };
   const snapshot = async (label) => {
     const data = await psJSON(`
+      Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PiWindowVisibility { [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool IsWindowVisible(IntPtr window); }';
       $install=${quotePS(installDir)};
       $entries=@(); foreach($base in @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')) {
         if(Test-Path $base) { $entries+=@(Get-ChildItem $base | Get-ItemProperty | Where-Object { $_.PSChildName -eq ${quotePS(guid)} -or $_.DisplayName -match ${quotePS(uninstallDisplayNamePattern)} } | Select-Object PSChildName,DisplayName,DisplayVersion,InstallLocation,UninstallString,QuietUninstallString) }
@@ -378,12 +469,40 @@ async function diagnose() {
       }
       $processes=@(Get-CimInstance Win32_Process -Filter "Name='Pi Desktop.exe'" | ForEach-Object {
         $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue;
-        @{ pid=$_.ProcessId; parentPid=$_.ParentProcessId; path=$_.ExecutablePath; commandLine=$_.CommandLine; created=$_.CreationDate.ToUniversalTime().ToString('o'); windowHandle=if($p){$p.MainWindowHandle.ToInt64()}else{0}; windowTitle=if($p){$p.MainWindowTitle}else{''} }
+        $handle=if($p){$p.MainWindowHandle.ToInt64()}else{0};
+        $visible=($handle -ne 0) -and [PiWindowVisibility]::IsWindowVisible([IntPtr]$handle);
+        @{ pid=$_.ProcessId; parentPid=$_.ParentProcessId; path=$_.ExecutablePath; commandLine=$_.CommandLine; created=$_.CreationDate.ToUniversalTime().ToString('o'); windowHandle=$handle; windowVisible=$visible; windowTitle=if($p){$p.MainWindowTitle}else{''} }
       });
       @{ uninstallEntries=$entries; identityKeys=$keys; shortcuts=$shortcuts; processes=$processes; installed=(Test-Path ${quotePS(executable)}); userDataExists=(Test-Path ${quotePS(userData)}); cacheExists=(Test-Path ${quotePS(updaterCache)}) } | ConvertTo-Json -Depth 8 -Compress
     `);
     await writeJSON(`${label}-system.json`, data);
     return data;
+  };
+  const captureStoreSummary = async (label) => {
+    if (!syntheticStoreSeeded) {
+      await writeJSON(`${label}-store-summary.json`, {
+        captured: false,
+        reason: 'The diagnostic has not seeded its synthetic store.',
+      });
+      return;
+    }
+    const state = JSON.parse(await fs.readFile(path.join(userData, 'state.json'), 'utf8'));
+    const synthetic = state.sessions?.find((item) => item.id === 'released-upgrade-baseline');
+    const summary = {
+      schemaVersion: state.version,
+      appVersion: state.appVersion,
+      session: synthetic
+        ? {
+            id: synthetic.id,
+            title: synthetic.title,
+            draft: synthetic.draft,
+            approvalMode: synthetic.approvalMode,
+          }
+        : undefined,
+      theme: state.settings?.theme,
+    };
+    await writeJSON(`${label}-store-summary.json`, summary);
+    return summary;
   };
   const payload = async (label) => {
     const asar = path.join(installDir, 'resources/app.asar');
@@ -565,6 +684,7 @@ async function diagnose() {
         settings: { onboardingDone: true, autoDownloadUpdates: true, theme: 'dark' },
       }),
     );
+    syntheticStoreSeeded = true;
     const env = { ...process.env };
     for (const key of Object.keys(env))
       if (/^(PI_|ELECTRON_|PORTABLE_|APPIMAGE|NODE_OPTIONS|GH_TOKEN|GITHUB_TOKEN)/.test(key)) delete env[key];
@@ -710,14 +830,7 @@ async function diagnose() {
       'automatic released v0.14.19 restart with a visible main window',
       async () => {
         const state = await snapshot('04-latest-observation');
-        const next = state.processes.find(
-          (item) =>
-            item.pid !== oldPid &&
-            item.path?.toLowerCase() === executable.toLowerCase() &&
-            item.windowHandle !== 0 &&
-            item.windowTitle.includes('Pi Desktop') &&
-            Date.parse(item.created) >= clickAt - 1000,
-        );
+        const next = selectAutomaticMainProcess(state.processes, { oldPid, executable, restartAt: clickAt });
         if (!next) return false;
         const nextPayload = await payload('04-observed-new');
         const bootState = JSON.parse(await fs.readFile(path.join(userData, 'state.json'), 'utf8'));
@@ -752,7 +865,12 @@ async function diagnose() {
       visibleWindowStableForAtLeastMilliseconds: 2000,
     };
     assert.ok(
-      stable.processes.some((item) => item.pid === observed.process.pid && item.windowHandle !== 0),
+      selectAutomaticMainProcess(stable.processes, {
+        oldPid,
+        executable,
+        restartAt: clickAt,
+        expectedPid: observed.process.pid,
+      }),
       'Automatically restarted target stays open',
     );
     assert.ok(!stable.processes.some((item) => item.pid === oldPid), 'Old main process exited');
@@ -829,6 +947,9 @@ async function diagnose() {
     );
     await payload('failure-installed').catch((payloadError) =>
       record('failure-payload-error', { error: String(payloadError) }),
+    );
+    await captureStoreSummary('failure').catch((storeError) =>
+      record('failure-store-summary-error', { error: String(storeError) }),
     );
     throw error;
   } finally {
