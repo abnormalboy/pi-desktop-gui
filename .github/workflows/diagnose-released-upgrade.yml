@@ -1,0 +1,40 @@
+name: Diagnose released Windows upgrade
+on:
+  push:
+    branches:
+      - diagnose/released-upgrade-18-19
+    paths:
+      - .github/workflows/diagnose-released-upgrade.yml
+      - scripts/diagnose-released-upgrade.mjs
+permissions:
+  contents: read
+concurrency:
+  group: diagnose-released-upgrade-18-19
+  cancel-in-progress: false
+jobs:
+  released-windows-baseline:
+    if: github.repository == 'yeyuProject/pi-desktop-gui' && github.ref == 'refs/heads/diagnose/released-upgrade-18-19'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - name: Install diagnostic libraries without rebuilding the application
+        run: npm ci --ignore-scripts
+      - name: Check diagnostic transport and pin guards
+        run: node scripts/diagnose-released-upgrade.mjs --self-test
+      - name: Run untouched released Windows NSIS baseline
+        run: node scripts/diagnose-released-upgrade.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: released-windows-upgrade-18-19-${{ github.run_id }}
+          path: test-results/released-upgrade-18-19/
+          if-no-files-found: warn
+          retention-days: 14
