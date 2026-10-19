@@ -7,7 +7,7 @@ import { RichText, MessageImages, UserMessage } from './Markdown';
 import { ToolCard } from './ToolCard';
 import { ReplyMeta } from './Usage';
 import type { SessionMatch } from '../../lib/session-search';
-import { SearchHighlight } from './SearchHighlight';
+import { ThinkingBlock } from './ThinkingBlock';
 import { AnsiOutput } from '../AnsiOutput';
 
 export interface MessageContext {
@@ -144,22 +144,12 @@ export const ChatMessage = memo(
             m.content
               .filter((b) => b.type === 'thinking' && b.thinking)
               .map((b, index) => (
-                <details
-                  className="thinking"
+                <ThinkingBlock
                   key={index}
-                  open={match?.section === 'thinking' && match.blockIndex === index ? true : undefined}
-                >
-                  <summary>思考过程</summary>
-                  <pre>
-                    <SearchHighlight
-                      text={b.thinking!}
-                      activeStart={match?.start}
-                      query={
-                        match?.section === 'thinking' && match.blockIndex === index ? match.query : undefined
-                      }
-                    />
-                  </pre>
-                </details>
+                  text={b.thinking!}
+                  streaming={ctx.running && last}
+                  match={match?.section === 'thinking' && match.blockIndex === index ? match : undefined}
+                />
               ))}
           {content ? (
             m.role === 'user' ? (

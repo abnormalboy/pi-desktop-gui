@@ -95,6 +95,7 @@ export function Conversation(
   const [activeTurn, setActiveTurn] = useState(1),
     [jumpIndex, setJumpIndex] = useState<number | null>(null);
   const findInput = useRef<HTMLInputElement>(null);
+  const threadContent = useRef<HTMLDivElement>(null);
   const tools = ownRuntime ? runtime.tools : [];
   const modelState = sessionModelState(runtime, selected, state.settings);
   const matches = useMemo(
@@ -135,6 +136,20 @@ export function Conversation(
     setQuery('');
     setMatchIndex(0);
     setJumpIndex(null);
+  }, [selected?.id]);
+  useEffect(() => {
+    const container = thread.current,
+      content = threadContent.current;
+    if (!container || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (autoScroll.current) {
+        container.scrollTop = container.scrollHeight;
+        setNewContent(false);
+      }
+    });
+    observer.observe(container);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, [selected?.id]);
   useEffect(() => {
     if (!activeMatch) return;
@@ -300,8 +315,8 @@ export function Conversation(
         onScroll={() => {
           const el = thread.current;
           if (!el) return;
-          autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70;
-          if (autoScroll.current) setNewContent(false);
+          autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          setNewContent(!autoScroll.current);
           const top = el.getBoundingClientRect().top;
           const visible = [...el.querySelectorAll<HTMLElement>('[data-turn]')].findLast(
             (node) => node.getBoundingClientRect().top <= top + 100,
@@ -373,70 +388,75 @@ export function Conversation(
             )}
           </div>
         )}
-        {messages.length > messageLimit && (
-          <button className="load-history" onClick={() => setMessageLimit((v) => v + 80)}>
-            加载更早的 {Math.min(80, messages.length - messageLimit)} 条消息
-          </button>
-        )}
-        {items.map((item) =>
-          item.kind === 'message'
-            ? item.index >= startIndex && renderMessage(item.index)
-            : item.indices.at(-1)! >= startIndex && (
-                <ToolGroupCard
-                  key={item.id}
-                  tools={item.indices.map((index) => messageContext.toolFor(messages[index]))}
-                  expanded={
-                    expanded.includes(item.id) || item.indices.includes(activeMatch?.messageIndex ?? -1)
-                  }
-                  onToggle={(open) => {
-                    if (
-                      !item.indices.includes(activeMatch?.messageIndex ?? -1) &&
-                      open !== expanded.includes(item.id)
-                    )
-                      toggleTool(item.id, open);
-                  }}
-                >
-                  {item.indices.map(renderMessage)}
-                </ToolGroupCard>
-              ),
-        )}
-        {ownRuntime &&
-          runtime.tools
-            .filter((t) => !messages.some((m) => m.role === 'toolResult' && m.toolCallId === t.id))
-            .map((tool) => (
-              <div key={tool.id} className={activeMatch?.toolId === tool.id ? 'search-active' : undefined}>
-                <ToolCard
-                  tool={tool}
-                  expanded={expanded.includes(tool.id)}
-                  onToggle={(v) => toggleTool(tool.id, v)}
-                  openFile={(p) => void inspectFile(p, 'files')}
-                  match={activeMatch?.toolId === tool.id ? activeMatch : undefined}
-                  askHunk={messageContext.askHunk}
-                  rerun={messageContext.rerun}
-                  canRerun={messageContext.canRerun}
-                />
-              </div>
+        <div ref={threadContent}>
+          {messages.length > messageLimit && (
+            <button className="load-history" onClick={() => setMessageLimit((v) => v + 80)}>
+              加载更早的 {Math.min(80, messages.length - messageLimit)} 条消息
+            </button>
+          )}
+          {items.map((item) =>
+            item.kind === 'message'
+              ? item.index >= startIndex && renderMessage(item.index)
+              : item.indices.at(-1)! >= startIndex && (
+                  <ToolGroupCard
+                    key={item.id}
+                    tools={item.indices.map((index) => messageContext.toolFor(messages[index]))}
+                    expanded={
+                      expanded.includes(item.id) || item.indices.includes(activeMatch?.messageIndex ?? -1)
+                    }
+                    onToggle={(open) => {
+                      if (
+                        !item.indices.includes(activeMatch?.messageIndex ?? -1) &&
+                        open !== expanded.includes(item.id)
+                      )
+                        toggleTool(item.id, open);
+                    }}
+                  >
+                    {item.indices.map(renderMessage)}
+                  </ToolGroupCard>
+                ),
+          )}
+          {ownRuntime &&
+            runtime.tools
+              .filter((t) => !messages.some((m) => m.role === 'toolResult' && m.toolCallId === t.id))
+              .map((tool) => (
+                <div key={tool.id} className={activeMatch?.toolId === tool.id ? 'search-active' : undefined}>
+                  <ToolCard
+                    tool={tool}
+                    expanded={expanded.includes(tool.id)}
+                    onToggle={(v) => toggleTool(tool.id, v)}
+                    openFile={(p) => void inspectFile(p, 'files')}
+                    match={activeMatch?.toolId === tool.id ? activeMatch : undefined}
+                    askHunk={messageContext.askHunk}
+                    rerun={messageContext.rerun}
+                    canRerun={messageContext.canRerun}
+                  />
+                </div>
+              ))}
+          {ownRuntime &&
+            approvals.map((d, i) => (
+              <ApprovalCard
+                key={d.id}
+                dialog={d}
+                first={i === 0}
+                respond={(value) => void attempt(() => api.invoke('respond', d.id, { value }))}
+              />
             ))}
-        {ownRuntime &&
-          approvals.map((d, i) => (
-            <ApprovalCard
-              key={d.id}
-              dialog={d}
-              first={i === 0}
-              respond={(value) => void attempt(() => api.invoke('respond', d.id, { value }))}
-            />
-          ))}
-        {props.recovery}
-        {ownRuntime && runtime.notices.length > 0 && (
-          <details className="runtime-notices" key={`${runtime.sessionId}:${running ? 'active' : 'settled'}`}>
-            <summary>
-              {running ? '运行记录' : '历史运行记录'} · {runtime.notices.length}
-            </summary>
-            {runtime.notices.map((n, i) => (
-              <p key={i}>{n}</p>
-            ))}
-          </details>
-        )}
+          {props.recovery}
+          {ownRuntime && runtime.notices.length > 0 && (
+            <details
+              className="runtime-notices"
+              key={`${runtime.sessionId}:${running ? 'active' : 'settled'}`}
+            >
+              <summary>
+                {running ? '运行记录' : '历史运行记录'} · {runtime.notices.length}
+              </summary>
+              {runtime.notices.map((n, i) => (
+                <p key={i}>{n}</p>
+              ))}
+            </details>
+          )}
+        </div>
       </div>
       {turns.length >= 3 && (
         <nav className="turn-outline" aria-label="对话轮次">
@@ -468,6 +488,7 @@ export function Conversation(
       {newContent && (
         <button
           className="new-content"
+          title="滚到底部并继续跟随输出"
           onClick={() => {
             autoScroll.current = true;
             thread.current?.scrollTo({ top: thread.current.scrollHeight });
@@ -475,7 +496,7 @@ export function Conversation(
           }}
         >
           <ArrowDown size={14} />
-          新内容
+          回到最新
         </button>
       )}
       {props.children}

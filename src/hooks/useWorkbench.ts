@@ -2,7 +2,7 @@ import { useRuntime } from './useRuntime';
 import { useDraft } from './useDraft';
 import { useShortcuts } from './useShortcuts';
 import { useWorkspace } from './useWorkspace';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { builtinCommands } from '../lib/commands';
 import {
   busy,
@@ -245,7 +245,7 @@ export function useWorkbench() {
     ownRuntime,
     runtime.connected,
   ]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!thread.current) return;
     if (autoScroll.current) {
       thread.current.scrollTop = thread.current.scrollHeight;

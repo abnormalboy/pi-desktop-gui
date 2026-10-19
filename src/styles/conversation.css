@@ -247,6 +247,7 @@
   color: var(--ink);
 }
 .thinking {
+  position: relative;
   font-size: calc(12px * var(--font-scale));
   color: var(--muted);
   margin-bottom: 12px;
@@ -262,6 +263,16 @@
   font-size: calc(11px * var(--font-scale));
   max-height: 280px;
   overflow: auto;
+}
+.thinking-latest {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: calc(11px * var(--font-scale));
 }
 .stream-cursor {
   display: inline-block;
