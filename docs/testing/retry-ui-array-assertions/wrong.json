@@ -1,0 +1,108 @@
+{
+  "mode": "wrong",
+  "before": [
+    "Newest failure.",
+    "New turn failure."
+  ],
+  "atAssertion": [
+    "Wrong failure."
+  ],
+  "elapsedMs": 1241,
+  "afterRelease": [
+    "Wrong failure."
+  ],
+  "trace": [
+    {
+      "kind": "queued",
+      "at": 1792407136092,
+      "status": "stopped"
+    },
+    {
+      "kind": "delivered",
+      "at": 1792407136303,
+      "status": "stopped"
+    }
+  ],
+  "received": [
+    {
+      "at": 1792407135201,
+      "status": "retrying",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error.",
+        "Request aborted",
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407135484,
+      "status": "error",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407135559,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407136066,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure."
+      ],
+      "dom": [
+        "Latest failure."
+      ]
+    },
+    {
+      "at": 1792407136084,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure.",
+        "New turn failure."
+      ],
+      "dom": [
+        "Newest failure."
+      ]
+    },
+    {
+      "at": 1792407136303,
+      "status": "stopped",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Wrong failure."
+      ],
+      "dom": [
+        "Newest failure.",
+        "New turn failure."
+      ]
+    }
+  ],
+  "error": "expect(locator).toHaveText(expected) failed\n\nLocator: locator('.message.assistant .inline-error')\nTimeout: 1000ms\n- Expected  - 1\n+ Received  + 1\n\n  Array [\n-   \"Newest failure.\",\n+   \"Wrong failure.\",\n  ]\n\nCall log:\n  - Expect \"toHaveText\" locator('.message.assistant .inline-error') with timeout 1000ms\n  - waiting for locator('.message.assistant .inline-error')\n    4 × locator resolved to 2 elements\n    5 × locator resolved to 1 element\n"
+}

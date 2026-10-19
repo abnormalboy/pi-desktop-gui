@@ -186,7 +186,7 @@ try {
   ];
   await show(mixed);
   await expect(history.locator('summary')).toHaveText('请求失败记录 · 3 次 · 前 2 条');
-  await expect(inlineErrors).toHaveText('Latest failure.');
+  await expect(inlineErrors).toHaveText(['Latest failure.']);
   await page.evaluate(() => window.dispatchEvent(new Event('pi:find')));
   await page.getByRole('textbox', { name: '查找当前会话' }).fill('Request timed out.');
   await expect(page.locator('.search-active .inline-error')).toHaveText('Request timed out.');
@@ -211,19 +211,19 @@ try {
   }
   const appended = [...mixed, failure('Newest failure.', 13)];
   await show(appended);
-  await expect(inlineErrors).toHaveText('Newest failure.');
+  await expect(inlineErrors).toHaveText(['Newest failure.']);
   await expect(history.locator('summary')).toContainText('4 次');
 
   await show([...appended, user('New turn'), failure('New turn failure.', 14)]);
   await expect(inlineErrors).toHaveText(['Newest failure.', 'New turn failure.']);
   await show([...appended, { role: 'assistant', content: [], stopReason: 'aborted' }], { status: 'stopped' });
-  await expect(inlineErrors).toHaveText('Newest failure.');
+  await expect(inlineErrors).toHaveText(['Newest failure.']);
   await show([...appended, { role: 'assistant', content: 'Recovered reply', stopReason: 'stop' }], {
     status: 'completed',
   });
   await expect(history).toHaveCount(0);
   await expect(inlineErrors).toHaveCount(0);
-  await expect(assistant).toHaveText(/Recovered reply/);
+  await expect(assistant).toHaveText([/Recovered reply/]);
 
   // Search and paging retain original message indices even when a group straddles the page boundary.
   const many = [

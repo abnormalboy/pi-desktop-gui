@@ -1,0 +1,65 @@
+PASS recovered errors leave the conversation and recovery toasts automatically disappear
+PASS cancel button stops an in-flight retry and closes the silent HTTP request
+PASS a normal run after cancellation has no stale retry history
+PASS a normal run after failure has no stale retry history
+ARRAY_PROOF {"mode":"wrong","before":["Newest failure.","New turn failure."],"atAssertion":["Wrong failure."],"elapsedMs":1241,"afterRelease":["Wrong failure."],"trace":[{"kind":"queued","at":1792407136092,"status":"stopped"},{"kind":"delivered","at":1792407136303,"status":"stopped"}],"received":[{"at":1792407136084,"status":"error","errors":["Request timed out.","Connection error.","Latest failure.","Newest failure.","New turn failure."],"dom":["Newest failure."]},{"at":1792407136303,"status":"stopped","errors":["Request timed out.","Connection error.","Latest failure.","Wrong failure."],"dom":["Newest failure.","New turn failure."]}],"error":"expect(locator).toHaveText(expected) failed\n\nLocator: locator('.message.assistant .inline-error')\nTimeout: 1000ms\n- Expected  - 1\n+ Received  + 1\n\n  Array [\n-   \"Newest failure.\",\n+   \"Wrong failure.\",\n  ]\n\nCall log:\n  - Expect \"toHaveText\" locator('.message.assistant .inline-error') with timeout 1000ms\n  - waiting for locator('.message.assistant .inline-error')\n    4 × locator resolved to 2 elements\n    5 × locator resolved to 1 element\n"}
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+ExpectError: expect(locator).toHaveText(expected) failed
+
+Locator: locator('.message.assistant .inline-error')
+Timeout: 1000ms
+- Expected  - 1
++ Received  + 1
+
+  Array [
+-   "Newest failure.",
++   "Wrong failure.",
+  ]
+
+Call log:
+  - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 1000ms
+  - waiting for locator('.message.assistant .inline-error')
+    4 × locator resolved to 2 elements
+    5 × locator resolved to 1 element
+
+    at captureRawStack (/workspace/pi-desktop-gui/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    at callMatcherAsStep (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    at Object.toHaveText (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    at /workspace/pi-desktop-gui/scripts/.retry-array-proof.tmp.mjs:260:34 {
+  matcherResult: {
+    actual: [ 'Wrong failure.' ],
+    expected: [ 'Newest failure.' ],
+    message: 'expect(locator).toHaveText(expected) failed\n' +
+      '\n' +
+      "Locator: locator('.message.assistant .inline-error')\n" +
+      'Timeout: 1000ms\n' +
+      '- Expected  - 1\n' +
+      '+ Received  + 1\n' +
+      '\n' +
+      '  Array [\n' +
+      '-   "Newest failure.",\n' +
+      '+   "Wrong failure.",\n' +
+      '  ]\n' +
+      '\n' +
+      'Call log:\n' +
+      `  - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 1000ms\n` +
+      "  - waiting for locator('.message.assistant .inline-error')\n" +
+      '    4 × locator resolved to 2 elements\n' +
+      '    5 × locator resolved to 1 element\n',
+    name: 'toHaveText',
+    pass: false,
+    log: [
+      `  - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 1000ms`,
+      "  - waiting for locator('.message.assistant .inline-error')",
+      '    4 × locator resolved to 2 elements',
+      '    5 × locator resolved to 1 element'
+    ],
+    timeout: 1000,
+    ariaSnapshot: undefined
+  }
+}
+
+Node.js v24.19.0

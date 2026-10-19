@@ -1,0 +1,7 @@
+PASS recovered errors leave the conversation and recovery toasts automatically disappear
+PASS cancel button stops an in-flight retry and closes the silent HTTP request
+PASS a normal run after cancellation has no stale retry history
+PASS a normal run after failure has no stale retry history
+ARRAY_PROOF {"mode":"array","before":["Newest failure.","New turn failure."],"atAssertion":["Newest failure."],"elapsedMs":354,"afterRelease":["Newest failure."],"trace":[{"kind":"queued","at":1792407132032,"status":"stopped"},{"kind":"delivered","at":1792407132249,"status":"stopped"}],"received":[{"at":1792407132009,"status":"error","errors":["Request timed out.","Connection error.","Latest failure.","Newest failure.","New turn failure."],"dom":["Newest failure."]},{"at":1792407132250,"status":"stopped","errors":["Request timed out.","Connection error.","Latest failure.","Newest failure."],"dom":["Newest failure.","New turn failure."]}]}
+PASS grouped errors preserve terminal actions, repeated expansion, search indices, paging, turn boundaries, cancellation and recovery
+PASS retry exhaustion displays its final outcome with no busy retry banner

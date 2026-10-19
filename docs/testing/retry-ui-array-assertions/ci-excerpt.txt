@@ -1,0 +1,48 @@
+PASS a normal run after failure has no stale retry history
+2026-10-19T10:40:59.3692389Z node:internal/modules/run_main:123
+2026-10-19T10:40:59.3693522Z     triggerUncaughtException(
+2026-10-19T10:40:59.3694268Z     ^
+2026-10-19T10:40:59.3694495Z 
+2026-10-19T10:40:59.3694988Z ExpectError: expect(locator).toHaveText(expected) failed
+2026-10-19T10:40:59.3695543Z 
+2026-10-19T10:40:59.3695949Z Locator: locator('.message.assistant .inline-error')
+2026-10-19T10:40:59.3696609Z Expected: "Newest failure."
+2026-10-19T10:40:59.3697968Z Error: strict mode violation: locator('.message.assistant .inline-error') resolved to 2 elements:
+2026-10-19T10:40:59.3699288Z     1) <p class="inline-error">Newest failure.</p> aka getByText('Newest failure.')
+2026-10-19T10:40:59.3700469Z     2) <p class="inline-error">New turn failure.</p> aka getByText('New turn failure.')
+2026-10-19T10:40:59.3701125Z 
+2026-10-19T10:40:59.3701278Z Call log:
+2026-10-19T10:40:59.3702097Z   - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 5000ms
+2026-10-19T10:40:59.3703161Z   - waiting for locator('.message.assistant .inline-error')
+2026-10-19T10:40:59.3703576Z 
+2026-10-19T10:40:59.3704431Z     at captureRawStack (/home/runner/work/pi-desktop-gui/pi-desktop-gui/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+2026-10-19T10:40:59.3706090Z     at callMatcherAsStep (/home/runner/work/pi-desktop-gui/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13316:57)
+2026-10-19T10:40:59.3708555Z     at Object.toHaveText (/home/runner/work/pi-desktop-gui/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13308:23)
+2026-10-19T10:40:59.3710394Z     at /home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-retry-ui.mjs:220:30 {
+2026-10-19T10:40:59.3711472Z   matcherResult: {
+2026-10-19T10:40:59.3711851Z     name: 'toHaveText',
+2026-10-19T10:40:59.3712301Z     expected: 'Newest failure.',
+2026-10-19T10:40:59.3712924Z     message: 'expect(locator).toHaveText(expected) failed\n' +
+2026-10-19T10:40:59.3713420Z       '\n' +
+2026-10-19T10:40:59.3713891Z       "Locator: locator('.message.assistant .inline-error')\n" +
+2026-10-19T10:40:59.3714562Z       'Expected: "Newest failure."\n' +
+2026-10-19T10:40:59.3715607Z       "Error: strict mode violation: locator('.message.assistant .inline-error') resolved to 2 elements:\n" +
+2026-10-19T10:40:59.3716995Z       `    1) <p class="inline-error">Newest failure.</p> aka getByText('Newest failure.')\n` +
+2026-10-19T10:40:59.3718514Z       `    2) <p class="inline-error">New turn failure.</p> aka getByText('New turn failure.')\n` +
+2026-10-19T10:40:59.3719360Z       '\n' +
+2026-10-19T10:40:59.3719756Z       'Call log:\n' +
+2026-10-19T10:40:59.3720801Z       `  - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 5000ms\n` +
+2026-10-19T10:40:59.3722042Z       "  - waiting for locator('.message.assistant .inline-error')\n",
+2026-10-19T10:40:59.3722695Z     pass: false,
+2026-10-19T10:40:59.3723044Z     actual: undefined,
+2026-10-19T10:40:59.3723841Z     log: [
+2026-10-19T10:40:59.3724677Z       `  - Expect "toHaveText" locator('.message.assistant .inline-error') with timeout 5000ms`,
+2026-10-19T10:40:59.3725727Z       "  - waiting for locator('.message.assistant .inline-error')"
+2026-10-19T10:40:59.3726347Z     ],
+2026-10-19T10:40:59.3726643Z     timeout: undefined,
+2026-10-19T10:40:59.3727648Z     ariaSnapshot: undefined
+2026-10-19T10:40:59.3728152Z   }
+2026-10-19T10:40:59.3728472Z }
+2026-10-19T10:40:59.3728759Z 
+2026-10-19T10:40:59.3728960Z Node.js v22.22.0
+2026-10-19T10:40:59.4032076Z 

@@ -1,0 +1,91 @@
+{
+  "mode": "drop",
+  "before": [
+    "Newest failure.",
+    "New turn failure."
+  ],
+  "atAssertion": [
+    "Newest failure.",
+    "New turn failure."
+  ],
+  "elapsedMs": 1012,
+  "afterRelease": [
+    "Newest failure.",
+    "New turn failure."
+  ],
+  "trace": [
+    {
+      "kind": "queued",
+      "at": 1792407135168,
+      "status": "stopped"
+    }
+  ],
+  "received": [
+    {
+      "at": 1792407133384,
+      "status": "retrying",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error.",
+        "Request aborted",
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407133899,
+      "status": "error",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407134030,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407135107,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure."
+      ],
+      "dom": [
+        "Latest failure."
+      ]
+    },
+    {
+      "at": 1792407135136,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure.",
+        "New turn failure."
+      ],
+      "dom": [
+        "Newest failure."
+      ]
+    }
+  ],
+  "error": "expect(locator).toHaveText(expected) failed\n\nLocator: locator('.message.assistant .inline-error')\nTimeout: 1000ms\n- Expected  - 0\n+ Received  + 1\n\n  Array [\n    \"Newest failure.\",\n+   \"New turn failure.\",\n  ]\n\nCall log:\n  - Expect \"toHaveText\" locator('.message.assistant .inline-error') with timeout 1000ms\n  - waiting for locator('.message.assistant .inline-error')\n    11 × locator resolved to 2 elements\n"
+}

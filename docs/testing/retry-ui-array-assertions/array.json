@@ -1,0 +1,107 @@
+{
+  "mode": "array",
+  "before": [
+    "Newest failure.",
+    "New turn failure."
+  ],
+  "atAssertion": [
+    "Newest failure."
+  ],
+  "elapsedMs": 354,
+  "afterRelease": [
+    "Newest failure."
+  ],
+  "trace": [
+    {
+      "kind": "queued",
+      "at": 1792407132032,
+      "status": "stopped"
+    },
+    {
+      "kind": "delivered",
+      "at": 1792407132249,
+      "status": "stopped"
+    }
+  ],
+  "received": [
+    {
+      "at": 1792407130630,
+      "status": "retrying",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error.",
+        "Request aborted",
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407131002,
+      "status": "error",
+      "errors": [
+        "Connection error.",
+        "Connection error.",
+        "Connection error."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407131098,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure."
+      ],
+      "dom": [
+        "Connection error."
+      ]
+    },
+    {
+      "at": 1792407131989,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure."
+      ],
+      "dom": [
+        "Latest failure."
+      ]
+    },
+    {
+      "at": 1792407132009,
+      "status": "error",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure.",
+        "New turn failure."
+      ],
+      "dom": [
+        "Newest failure."
+      ]
+    },
+    {
+      "at": 1792407132250,
+      "status": "stopped",
+      "errors": [
+        "Request timed out.",
+        "Connection error.",
+        "Latest failure.",
+        "Newest failure."
+      ],
+      "dom": [
+        "Newest failure.",
+        "New turn failure."
+      ]
+    }
+  ]
+}

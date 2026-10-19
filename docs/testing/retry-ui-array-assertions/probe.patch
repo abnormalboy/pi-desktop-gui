@@ -1,0 +1,77 @@
+--- a/scripts/test-retry-ui.mjs
++++ b/scripts/test-retry-ui.mjs
+@@ -150,6 +150,38 @@
+     failure('Connection error.', 2),
+     failure('Connection error.', 3),
+   ];
++  await app.evaluate(() => {
++    const fixture = globalThis.retryDisplayFixture;
++    const publish = fixture.publish.bind(fixture);
++    globalThis.retryArrayTrace = [];
++    fixture.publish = (runtime) => {
++      if (runtime.status === 'stopped' && runtime.messages.some(m => m.errorMessage === 'Newest failure.')) {
++        fixture.runtime = runtime;
++        globalThis.retryArrayTrace.push({ kind: 'queued', at: Date.now(), status: runtime.status });
++        globalThis.retryArrayRelease = () => {
++          if (process.env.RETRY_ARRAY_PROBE === 'drop') return;
++          let next = structuredClone(runtime);
++          if (process.env.RETRY_ARRAY_PROBE === 'extra') next.messages.push(
++            { role: 'user', content: 'Extra negative turn' },
++            { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Extra failure.', timestamp: 999 });
++          if (process.env.RETRY_ARRAY_PROBE === 'wrong') next.messages = next.messages.map(m =>
++            m.errorMessage === 'Newest failure.' ? { ...m, errorMessage: 'Wrong failure.' } : m);
++          publish(next);
++          globalThis.retryArrayTrace.push({ kind: 'delivered', at: Date.now(), status: next.status });
++        };
++        return;
++      }
++      publish(runtime);
++    };
++  });
++  await page.evaluate(() => {
++    window.retryArrayReceived = [];
++    window.desktop.onEvent(event => {
++      if (event.type === 'runtime') window.retryArrayReceived.push({ at: Date.now(), status: event.runtime.status,
++        errors: event.runtime.messages.filter(m => m.errorMessage).map(m => m.errorMessage),
++        dom: [...document.querySelectorAll('.message.assistant .inline-error')].map(e => e.textContent) });
++    });
++  });
+   const history = page.locator('.retry-error-history');
+   const assistant = page.locator('.message.assistant');
+   const inlineErrors = page.locator('.message.assistant .inline-error');
+@@ -217,7 +249,34 @@
+   await show([...appended, user('New turn'), failure('New turn failure.', 14)]);
+   await expect(inlineErrors).toHaveText(['Newest failure.', 'New turn failure.']);
+   await show([...appended, { role: 'assistant', content: [], stopReason: 'aborted' }], { status: 'stopped' });
+-  await expect(inlineErrors).toHaveText(['Newest failure.']);
++  const before = await inlineErrors.allTextContents();
++  assert.deepEqual(before, ['Newest failure.', 'New turn failure.']);
++  let releaseTimer;
++  const started = Date.now();
++  let targetError;
++  try {
++    if (process.env.RETRY_ARRAY_PROBE !== 'red') {
++      releaseTimer = setTimeout(() => { app.evaluate(() => globalThis.retryArrayRelease()).catch(() => {}); }, 200);
++      await expect(inlineErrors).toHaveText(['Newest failure.'], { timeout: ['drop', 'extra', 'wrong'].includes(process.env.RETRY_ARRAY_PROBE) ? 1000 : 5000 });
++    } else {
++      await expect(inlineErrors).toHaveText('Newest failure.');
++    }
++  } catch (error) { targetError = error; }
++  clearTimeout(releaseTimer);
++  const atAssertion = await inlineErrors.allTextContents();
++  if (process.env.RETRY_ARRAY_PROBE === 'red') {
++    await app.evaluate(() => globalThis.retryArrayRelease());
++    await expect(inlineErrors).toHaveText(['Newest failure.']);
++  }
++  const proof = { mode: process.env.RETRY_ARRAY_PROBE, before, atAssertion,
++    elapsedMs: Date.now() - started, afterRelease: await inlineErrors.allTextContents(),
++    trace: await app.evaluate(() => globalThis.retryArrayTrace),
++    received: await page.evaluate(() => window.retryArrayReceived),
++    error: targetError?.message };
++  await fs.writeFile(path.join('/tmp/pi-retry-array-proof', process.env.RETRY_ARRAY_PROBE + '.json'), JSON.stringify(proof, null, 2));
++  await page.screenshot({ path: path.join('/tmp/pi-retry-array-proof', process.env.RETRY_ARRAY_PROBE + '.png') });
++  console.log('ARRAY_PROOF', JSON.stringify({ ...proof, received: proof.received.slice(-2) }));
++  if (targetError) throw targetError;
+   await show([...appended, { role: 'assistant', content: 'Recovered reply', stopReason: 'stop' }], {
+     status: 'completed',
+   });
