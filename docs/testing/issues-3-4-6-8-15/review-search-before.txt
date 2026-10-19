@@ -1,0 +1,21 @@
+PASS confirmed cleanup rechecks an arriving draft and preserves every protected record
+PASS concurrent requests reuse one placeholder per scope and preserve autosaves and all protected metadata
+PASS real IPC reuses untouched placeholder, protects draft, and keeps Pi disconnected
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+false !== true
+
+    at file:///workspace/pi-desktop-gui/scripts/test-polish-ui.mjs:209:10 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.19.0

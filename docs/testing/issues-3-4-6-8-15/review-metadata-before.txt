@@ -1,0 +1,75 @@
+✖ stop: grouped thinking retains terminal reply metadata and regenerate action (8.922936ms)
+✖ aborted: grouped thinking retains terminal reply metadata and regenerate action (0.544757ms)
+✖ length: grouped thinking retains terminal reply metadata and regenerate action (0.483977ms)
+✔ tool-continuation thinking stays compact when displayed in the group (0.628862ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 1
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1756.256011
+
+✖ failing tests:
+
+test at tests/thinking-message.test.ts:1:1437
+✖ stop: grouped thinking retains terminal reply metadata and regenerate action (8.922936ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /class="message assistant"/. Input:
+  
+  ''
+  
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/thinking-message.test.ts:60:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.start (node:internal/test_runner/test:1242:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: /class="message assistant"/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/thinking-message.test.ts:1:1437
+✖ aborted: grouped thinking retains terminal reply metadata and regenerate action (0.544757ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /class="message assistant"/. Input:
+  
+  ''
+  
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/thinking-message.test.ts:60:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: /class="message assistant"/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/thinking-message.test.ts:1:1437
+✖ length: grouped thinking retains terminal reply metadata and regenerate action (0.483977ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /class="message assistant"/. Input:
+  
+  ''
+  
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/thinking-message.test.ts:60:12)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '',
+    expected: /class="message assistant"/,
+    operator: 'match',
+    diff: 'simple'
+  }

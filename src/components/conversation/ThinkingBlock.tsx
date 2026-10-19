@@ -15,6 +15,9 @@ export function ThinkingBlock({
   collapseKey?: number;
 }) {
   const details = useRef<HTMLDetailsElement>(null);
+  useLayoutEffect(() => {
+    if (match && details.current) details.current.open = true;
+  }, [match?.query, match?.start]);
   useEffect(() => {
     if (details.current && !streaming && !match) details.current.open = false;
   }, [streaming, match]);

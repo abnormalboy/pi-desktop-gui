@@ -1,0 +1,13 @@
+PASS both width separators drag, keyboard, reload persistence, double-click reset and panel shortcuts
+Search/highlight UI performance {
+  medianMs: 4.199999999953434,
+  p95Ms: 7.699999999953434,
+  unrelatedMutations: 0
+}
+PASS search across 500 messages, thinking, attachments and grouped tools
+PASS tool groups, turn navigation and both explicit command reruns
+PASS code header, syntax, wrapping, copy feedback and clean ANSI output
+PASS @ keyboard choice/ranges and long paste persistence, ordering and expansion
+PASS capacity warning, largest attachment and 1 MiB send limit
+PASS template parameters, labeled context/cache usage, popover dismissal and compact action
+PASS image lightbox zoom, navigation, clipboard IPC and Escape

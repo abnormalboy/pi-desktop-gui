@@ -1,0 +1,8 @@
+PASS confirmed cleanup rechecks an arriving draft and preserves every protected record
+PASS concurrent requests reuse one placeholder per scope and preserve autosaves and all protected metadata
+PASS real IPC reuses untouched placeholder, protects draft, and keeps Pi disconnected
+PASS the next assistant thinking search match reopens a manually collapsed turn
+PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search
+PASS streaming append retains one region, completion collapses it, and pagination retains complete thinking
+PASS clipboard feedback, readable fonts, project entry and alignment; light/dark screenshots
+PASS thinking-only completion, cancellation, history metadata and regenerate IPC retain one copy of content and actions

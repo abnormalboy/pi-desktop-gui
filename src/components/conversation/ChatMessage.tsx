@@ -89,7 +89,9 @@ export const ChatMessage = memo(
       typeof m.content !== 'string' &&
       !m.content.some(
         (b) =>
-          (!hideThinking && b.type === 'thinking' && b.thinking) ||
+          ((!hideThinking || (m.stopReason && m.stopReason !== 'toolUse')) &&
+            b.type === 'thinking' &&
+            b.thinking) ||
           (ctx.running && typeof b.partialJson === 'string'),
       )
     )

@@ -125,7 +125,7 @@ try {
       {
         role: 'assistant',
         content: [
-          { type: 'thinking', thinking: 'FIRST 中文思考' },
+          { type: 'thinking', thinking: 'SHARED_NEEDLE FIRST 中文思考' },
           { type: 'text', text: '中间说明' },
         ],
       },
@@ -133,7 +133,7 @@ try {
       {
         role: 'assistant',
         content: [
-          { type: 'thinking', thinking: 'SECOND_NEEDLE 完整保留' },
+          { type: 'thinking', thinking: 'SHARED_NEEDLE SECOND_NEEDLE 完整保留' },
           { type: 'text', text: '最终结论' },
         ],
       },
@@ -160,9 +160,14 @@ try {
   await app.evaluate(({ ipcMain }, runtime) => {
     const handler = ipcMain._invokeHandlers.get('desktop:invoke');
     globalThis.polishRuntime = runtime;
+    globalThis.polishActions = [];
     ipcMain.removeHandler('desktop:invoke');
     ipcMain.handle('desktop:invoke', async (event, method, args) => {
       if (method === 'readHistory') return globalThis.polishRuntime.messages;
+      if (['messageAction', 'stop'].includes(method) && args[0] === globalThis.polishRuntime.sessionId) {
+        globalThis.polishActions.push({ method, args });
+        return;
+      }
       if (method === 'copy' && globalThis.polishFailCopy) throw new Error('Fixture clipboard unavailable');
       const value = await handler(event, method, args);
       return method === 'bootstrap' ? { ...value, runtime: globalThis.polishRuntime } : value;
@@ -175,7 +180,7 @@ try {
   await page.locator('.thinking summary').first().click();
   assert.equal(
     await page.locator('.thinking pre').first().textContent(),
-    'FIRST 中文思考\n\nSECOND_NEEDLE 完整保留',
+    'SHARED_NEEDLE FIRST 中文思考\n\nSHARED_NEEDLE SECOND_NEEDLE 完整保留',
   );
   assert.ok(await page.getByText('最终结论', { exact: true }).isVisible());
   await page.getByRole('button', { name: '收起所有思考过程', exact: true }).click();
@@ -185,6 +190,31 @@ try {
   await page.locator('.thinking .search-current').waitFor();
   assert.equal(await page.locator('.thinking .search-current').textContent(), 'SECOND_NEEDLE');
   assert.equal(await page.locator('.thinking[open]').count(), 1);
+  await page.getByRole('textbox', { name: '查找当前会话' }).fill('SHARED_NEEDLE');
+  await page.waitForFunction(() =>
+    document.querySelector('.thinking pre')?.firstElementChild?.classList.contains('search-current'),
+  );
+  await page.locator('.thinking summary').first().click();
+  assert.equal(
+    await page
+      .locator('.thinking')
+      .first()
+      .evaluate((el) => el.open),
+    false,
+  );
+  await page.getByRole('button', { name: '下一个匹配', exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector('.thinking pre')?.lastElementChild?.classList.contains('search-current'),
+  );
+  assert.equal(
+    await page
+      .locator('.thinking')
+      .first()
+      .evaluate((el) => el.open),
+    true,
+  );
+  assert.ok(await page.locator('.thinking .search-current').isVisible());
+  console.log('PASS the next assistant thinking search match reopens a manually collapsed turn');
   await page.getByRole('button', { name: '关闭会话查找' }).click();
   console.log(
     'PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search',
@@ -284,6 +314,71 @@ try {
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
   await page.screenshot({ path: path.join(output, 'dark.png') });
   console.log('PASS clipboard feedback, readable fonts, project entry and alignment; light/dark screenshots');
+
+  const thinkingOnly = (stopReason, timestamp, marker) => ({
+    role: 'assistant',
+    timestamp,
+    stopReason,
+    content: [{ type: 'thinking', thinking: marker }],
+    model: 'thinking-model',
+    provider: 'local-test',
+    usage: { totalTokens: 130, input: 100, output: 30, cost: { total: 0.05 } },
+  });
+  const completed = thinkingOnly('stop', 3100, 'ONLY_THINKING_COMPLETED');
+  const user = { role: 'user', content: '只有思考的回复', timestamp: 3000 };
+  const assertTerminal = async (marker) => {
+    await page.waitForFunction(() => document.querySelectorAll('.reply-meta').length === 1);
+    assert.equal(await page.locator('.message.assistant').count(), 1);
+    const meta = page.locator('.reply-meta');
+    assert.match(await meta.textContent(), /thinking-model.*130 tokens.*\$0\.05/);
+    assert.equal(await page.getByRole('button', { name: '重新生成这条回复', exact: true }).count(), 1);
+    assert.ok(await page.getByRole('button', { name: '重新生成这条回复', exact: true }).isEnabled());
+    assert.equal(await page.locator('.thinking').count(), 1);
+    await page.locator('.thinking summary').click();
+    assert.equal(await page.locator('.thinking pre').textContent(), marker);
+    assert.ok(!(await page.locator('.message.assistant').textContent()).includes(marker));
+  };
+  await publish({ status: 'completed', tools: [], messages: [user, completed] });
+  await assertTerminal('ONLY_THINKING_COMPLETED');
+  await page.getByRole('button', { name: '重新生成这条回复', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="重新生成这条回复"]')?.disabled);
+  assert.deepEqual(await app.evaluate(() => globalThis.polishActions), [
+    { method: 'messageAction', args: [result.third.id, 'regenerate', 'assistant', 3100] },
+  ]);
+  const streaming = thinkingOnly(undefined, 3101, 'ONLY_THINKING_CANCELLED');
+  await publish({ status: 'running', messages: [user, streaming] });
+  await page.getByRole('button', { name: '停止任务', exact: true }).click();
+  assert.deepEqual(await app.evaluate(() => globalThis.polishActions.at(-1)), {
+    method: 'stop',
+    args: [result.third.id],
+  });
+  const cancelled = { ...streaming, stopReason: 'aborted' };
+  await publish({ status: 'stopped', messages: [user, cancelled] });
+  await page.waitForFunction(() => document.querySelectorAll('.thinking[open]').length === 0);
+  await assertTerminal('ONLY_THINKING_CANCELLED');
+  await page.getByRole('button', { name: '重新生成这条回复', exact: true }).click();
+  assert.deepEqual(await app.evaluate(() => globalThis.polishActions.at(-1)), {
+    method: 'messageAction',
+    args: [result.third.id, 'regenerate', 'assistant', 3101],
+  });
+  await publish({
+    status: 'completed',
+    messages: [user, thinkingOnly('stop', 3102, 'ONLY_THINKING_REGENERATED')],
+  });
+  await page.waitForFunction(
+    () => document.querySelector('.thinking pre')?.textContent === 'ONLY_THINKING_REGENERATED',
+  );
+  assert.equal(await page.locator('.reply-meta').count(), 1);
+  assert.equal(await page.locator('.message.assistant').count(), 1);
+  assert.equal(await page.getByRole('button', { name: '重新生成这条回复', exact: true }).count(), 1);
+  await page.screenshot({ path: path.join(output, 'thinking-terminal.png') });
+  await publish({ messages: [user, completed, { ...user, timestamp: 4000 }, cancelled] });
+  await page.waitForFunction(() => document.querySelectorAll('.reply-meta').length === 2);
+  assert.equal(await page.locator('.thinking').count(), 2);
+  assert.equal(await page.getByRole('button', { name: '重新生成这条回复', exact: true }).count(), 1);
+  console.log(
+    'PASS thinking-only completion, cancellation, history metadata and regenerate IPC retain one copy of content and actions',
+  );
 } catch (error) {
   await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
   throw error;
