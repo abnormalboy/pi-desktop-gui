@@ -38,6 +38,7 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 
 ## Features
 
+- **Compact conversation history** — Thinking from one user turn shares a single collapsible section. Completed turns start collapsed; search reveals the original text, and you can collapse all thinking at once.
 - **Visible agent workflow** — Streamed thinking, tool calls with arguments and exit status, inline diffs for every edit, plus estimated current context/window capacity, clearly labeled cumulative session tokens, cache breakdown and estimated cost.
 - **Image attachments** — Paste or drop images even when the system omits their file type; selecting a project image through `@` also attaches the image. Supports PNG, JPEG, WebP and GIF, up to 8 images, 8 MiB each and 16 MiB combined.
 - **Per-turn undo** — In Git projects, a snapshot is taken before each run (stored outside your repo's `.git`). Undo a whole turn or roll back individual files. Side effects of shell commands are not covered.
@@ -96,6 +97,8 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 1. Launch Pi Desktop. It finds `pi` on your `PATH` and in common `nvm` / Homebrew locations.
 2. Open **Pi features → Providers & login** to set up a model provider. If you already configured Pi in the terminal (`~/.pi`), it is picked up automatically.
 3. Pick a model and reasoning level in the composer, then start a chat or open a project folder.
+
+Repeated new-chat requests reuse an untouched blank chat in the same project or standalone scope. Drafts, attachments, custom names, and session model or approval choices are preserved; existing empty entries are only cleaned up after confirmation.
 
 Opening or switching chats restores saved history and drafts without starting Pi. Pi connects when you send a task, open the model picker, or explicitly connect; existing connections and background tasks stay with their own chat. The model picker reads Pi's actual models and reasoning levels. Sending uses your saved model preference or Pi's effective defaults, including project settings. Projects still require trust before Pi starts.
 

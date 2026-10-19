@@ -1,4 +1,5 @@
 import { LoaderCircle, ArrowDown, ArrowUp, CircleHelp, Search, X } from 'lucide-react';
+import { ThinkingBlock } from './conversation/ThinkingBlock';
 import { ToolCard } from './conversation/ToolCard';
 import { ApprovalCard } from './Approval';
 import { ChatMessage } from './conversation/ChatMessage';
@@ -9,7 +10,7 @@ import type { AppState } from '../../shared/types';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { limitForMessage, searchSession } from '../lib/session-search';
-import { conversationTurns, groupConversation } from '../lib/conversation-layout';
+import { conversationTurns, groupConversation, turnThinking } from '../lib/conversation-layout';
 import { ToolGroupCard } from './conversation/ToolGroupCard';
 import { RetryErrorGroup } from './conversation/RetryErrorGroup';
 import { SearchHighlight } from './conversation/SearchHighlight';
@@ -105,7 +106,9 @@ export function Conversation(
     [messages, runtime.tools, ownRuntime, findOpen, query],
   );
   const activeMatch = matches.length ? matches[matchIndex % matches.length] : undefined;
+  const [collapseThinking, setCollapseThinking] = useState(0);
   const startIndex = messages.length - visibleMessages.length;
+  const thinkingGroups = useMemo(() => turnThinking(messages, startIndex), [messages, startIndex]);
   const items = useMemo(
     () => groupConversation(messages, messageContext.toolFor, expanded),
     [messages, messageContext.toolFor, expanded],
@@ -156,8 +159,13 @@ export function Conversation(
   }, [selected?.id]);
   useEffect(() => {
     if (!activeMatch) return;
-    if (activeMatch.messageIndex !== undefined) jump(activeMatch.messageIndex);
-    else autoScroll.current = false;
+    if (activeMatch.messageIndex !== undefined) {
+      const group =
+        activeMatch.section === 'thinking'
+          ? thinkingGroups.find((g) => g.parts.some((p) => p.index === activeMatch.messageIndex))
+          : undefined;
+      jump(group?.owner ?? activeMatch.messageIndex);
+    } else autoScroll.current = false;
     const timer = requestAnimationFrame(() =>
       thread.current?.querySelector('.search-active')?.scrollIntoView({ block: 'center' }),
     );
@@ -224,6 +232,25 @@ export function Conversation(
       CSS.highlights.delete('session-find');
     };
   }, [activeMatch, messageLimit]);
+  const renderThinking = (group: ReturnType<typeof turnThinking>[number]) => {
+    const part =
+      activeMatch?.section === 'thinking'
+        ? group.parts.find((p) => p.index === activeMatch.messageIndex && p.block === activeMatch.blockIndex)
+        : undefined;
+    return (
+      <div
+        key={`${selected?.id}:thinking:${group.parts[0].index}`}
+        className={part ? 'search-active' : undefined}
+      >
+        <ThinkingBlock
+          text={group.text}
+          streaming={running && group.end === messages.length - 1}
+          collapseKey={collapseThinking}
+          match={part && activeMatch ? { ...activeMatch, start: part.offset + activeMatch.start } : undefined}
+        />
+      </div>
+    );
+  };
   const renderMessage = (index: number) => (
     <div
       key={`${selected?.id}-${index}`}
@@ -231,14 +258,20 @@ export function Conversation(
       data-turn={
         messages[index].role === 'user' ? turns.find((turn) => turn.index === index)?.turn : undefined
       }
-      className={activeMatch?.messageIndex === index ? 'search-active' : undefined}
+      className={
+        activeMatch?.messageIndex === index && activeMatch.section !== 'thinking'
+          ? 'search-active'
+          : undefined
+      }
     >
-      {activeMatch?.messageIndex === index && (
+      {activeMatch?.messageIndex === index && activeMatch.section !== 'thinking' && (
         <div className="search-snippet">
           <SearchHighlight text={activeMatch.snippet} query={activeMatch.query} />
         </div>
       )}
+      {thinkingGroups.filter((group) => group.owner === index).map(renderThinking)}
       <ChatMessage
+        hideThinking
         m={messages[index]}
         last={messages[index] === lastAssistant}
         ctx={messageContext}
@@ -383,11 +416,23 @@ export function Conversation(
           </div>
         )}
         <div ref={threadContent}>
+          {thinkingGroups.length > 0 && (
+            <button
+              className="collapse-thinking"
+              onClick={() => {
+                setFindOpen(false);
+                setCollapseThinking((v) => v + 1);
+              }}
+            >
+              收起所有思考过程
+            </button>
+          )}
           {messages.length > messageLimit && (
             <button className="load-history" onClick={() => setMessageLimit((v) => v + 80)}>
               加载更早的 {Math.min(80, messages.length - messageLimit)} 条消息
             </button>
           )}
+          {thinkingGroups.filter((group) => group.owner < startIndex).map(renderThinking)}
           {items.map((item) =>
             item.kind === 'message'
               ? item.index >= startIndex && renderMessage(item.index)

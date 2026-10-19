@@ -12,7 +12,7 @@
   --font-display:
     'Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   --font-math: 'Cambria Math', Cambria, 'STIX Two Math', Georgia, serif;
-  --font-mono: 'Cascadia Code', 'Cascadia Mono', Consolas, 'Microsoft YaHei', monospace;
+  --font-mono: 'Cascadia Mono', 'SFMono-Regular', 'JetBrains Mono', Consolas, 'Microsoft YaHei', monospace;
   --font-scale: 1;
   --sidebar-width: 240px;
   --inspector-width: 380px;
@@ -348,7 +348,6 @@ body {
   color: var(--ink);
   background: var(--bg);
   line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
 }
 button,
 input,
@@ -434,12 +433,12 @@ small {
 }
 pre,
 code {
-  font-family: 'Cascadia Code', Consolas, 'Microsoft YaHei', monospace;
+  font-family: var(--font-mono);
 }
 pre {
   tab-size: 2;
   line-height: 1.65;
-  font-size: calc(12px * var(--font-scale));
+  font-size: calc(13px * var(--font-scale));
 }
 pre {
   margin: 0;

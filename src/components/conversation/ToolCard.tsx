@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+import { IconButton } from '../IconButton';
 import { ChevronDown, FileText, Check, AlertCircle, LoaderCircle, Copy, Terminal } from 'lucide-react';
 import { type ToolActivity } from '../../../shared/types';
 import { DiffView } from '../DiffView';
@@ -31,6 +33,19 @@ export function ToolCard({
   rerun?: (command: string, includeContext: boolean) => void;
   canRerun?: boolean;
 }) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+  const copyOutput = async () => {
+    clearTimeout(copyTimer.current);
+    try {
+      await api.invoke('copy', stripAnsi(tool.output));
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    copyTimer.current = setTimeout(() => setCopyState('idle'), 1600);
+  };
   const target = String(tool.args.path ?? tool.args.file_path ?? tool.args.command ?? '');
   const shell = tool.name === 'bash' || tool.name === 'powershell';
   const exitCode = shell
@@ -154,15 +169,16 @@ export function ToolCard({
         )}
         <div className="tool-actions">
           {Boolean(tool.args.path) && (
-            <button onClick={() => openFile(String(tool.args.path))}>
+            <IconButton title="查看文件" onClick={() => openFile(String(tool.args.path))}>
               <FileText size={13} />
-              查看文件
-            </button>
+            </IconButton>
           )}
-          <button onClick={() => void api.invoke('copy', stripAnsi(tool.output))}>
-            <Copy size={13} />
-            复制输出
-          </button>
+          <span role="status" className="tool-copy-status">
+            {copyState === 'error' ? '复制失败，请重试' : copyState === 'copied' ? '已复制' : ''}
+          </span>
+          <IconButton title="复制输出" onClick={() => void copyOutput()}>
+            {copyState === 'copied' ? <Check size={13} /> : <Copy size={13} />}
+          </IconButton>
         </div>
       </div>
     </details>

@@ -72,7 +72,7 @@ select:hover:not(:disabled) {
 .section-heading {
   font-weight: 600;
   color: var(--muted);
-  margin: 22px 8px 4px;
+  margin: 22px 2px 4px 8px;
 }
 .session-row {
   margin: 1px 0;

@@ -7,15 +7,30 @@ export function ThinkingBlock({
   text,
   streaming,
   match,
+  collapseKey,
 }: {
   text: string;
   streaming: boolean;
   match?: SessionMatch;
+  collapseKey?: number;
 }) {
+  const details = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (details.current && !streaming && !match) details.current.open = false;
+  }, [streaming, match]);
+  useEffect(() => {
+    if (details.current && !match) details.current.open = false;
+  }, [collapseKey]);
   const output = useRef<HTMLPreElement>(null);
   const following = useRef(streaming && !match);
   const viewport = useRef({ width: 0, height: 0 });
   const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (streaming && !match) {
+      following.current = true;
+      setPaused(false);
+    }
+  }, [streaming]);
 
   useLayoutEffect(() => {
     if (match) {
@@ -38,7 +53,7 @@ export function ThinkingBlock({
   }, []);
 
   return (
-    <details className="thinking" open={match ? true : undefined}>
+    <details ref={details} className="thinking" open={match ? true : undefined}>
       <summary>思考过程</summary>
       <pre
         ref={output}

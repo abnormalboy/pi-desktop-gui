@@ -90,3 +90,35 @@ test('native template argument hints decode YAML quoting and ignore malformed fr
   await fs.writeFile(file, '---\nargument-hint: [invalid\n---\n$1');
   assert.equal(await argumentHint(file), undefined);
 });
+
+test('placeholder reuse rejects every durable user choice and any history reference', async () => {
+  const { isReusableSession } = await import('../electron/session-maintenance');
+  const store = new Store(await sandbox());
+  await store.load();
+  const session = store.createSession();
+  assert.equal(isReusableSession(session), true);
+  for (const fields of [
+    { title: '我的计划' },
+    { file: '/missing/history.jsonl' },
+    { cwd: '/project' },
+    { draft: ' ' },
+    { attachments: ['a'] },
+    { pinned: true },
+    { unread: true },
+    { model: { provider: 'test', id: 'model' } },
+    { thinking: 'off' },
+    { approvalMode: 'auto' as const },
+    { images: [{ id: 'i', name: 'i', data: 'AA==', mimeType: 'image/png' as const }] },
+    { draftSnippets: [{ id: 's', offset: 0, text: 'draft' }] },
+    { lastStatus: 'running' as const },
+    { stats: { tokens: 1, cost: 0 } },
+  ])
+    assert.equal(isReusableSession({ ...session, ...fields }), false, JSON.stringify(fields));
+  for (const fields of [
+    { title: '我的计划' },
+    { model: { provider: 'p', id: 'm' } },
+    { thinking: 'off' },
+    { approvalMode: 'auto' as const },
+  ])
+    assert.equal(await isEmptySession({ ...session, ...fields }), false);
+});

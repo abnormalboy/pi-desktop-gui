@@ -134,3 +134,31 @@ export function conversationTurns(
   }
   return turns;
 }
+
+/** Presentation only: preserve source messages and search coordinates. */
+export function turnThinking(messages: Message[], startIndex = 0) {
+  const groups: {
+    owner: number;
+    end: number;
+    text: string;
+    parts: { index: number; block: number; offset: number }[];
+  }[] = [];
+  let current: (typeof groups)[number] | undefined;
+  messages.forEach((message, index) => {
+    if (message.role === 'user') current = undefined;
+    if (current) current.end = index;
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) return;
+    const blocks = message.content.filter((b) => b.type === 'thinking' && b.thinking);
+    if (!blocks.length) return;
+    if (!current) {
+      current = { owner: index, end: index, text: '', parts: [] };
+      groups.push(current);
+    }
+    blocks.forEach((block, blockIndex) => {
+      if (current!.text) current!.text += '\n\n';
+      current!.parts.push({ index, block: blockIndex, offset: current!.text.length });
+      current!.text += block.thinking;
+    });
+  });
+  return groups.filter((g) => g.end >= startIndex);
+}

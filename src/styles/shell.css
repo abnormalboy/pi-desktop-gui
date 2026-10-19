@@ -60,7 +60,7 @@
   color: var(--muted);
   font-size: calc(11px * var(--font-scale));
   font-weight: 500;
-  margin: 24px 8px 6px;
+  margin: 24px 2px 6px 8px;
 }
 .project-list {
   flex: 1;
@@ -146,7 +146,8 @@
 .session-row > .icon-button {
   align-self: center;
   opacity: 0;
-  width: 23px;
+  width: 32px;
+  margin-right: 2px;
 }
 .session-row:hover > .icon-button,
 .session-row:focus-within > .icon-button {

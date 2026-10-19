@@ -33,11 +33,13 @@ export const ChatMessage = memo(
     last,
     ctx,
     match,
+    hideThinking = false,
   }: {
     m: Message;
     last: boolean;
     ctx: MessageContext;
     match?: SessionMatch;
+    hideThinking?: boolean;
   }) {
     if (m.role === 'toolResult') {
       const observed = ctx.toolFor(m);
@@ -86,7 +88,9 @@ export const ChatMessage = memo(
       !m.errorMessage &&
       typeof m.content !== 'string' &&
       !m.content.some(
-        (b) => (b.type === 'thinking' && b.thinking) || (ctx.running && typeof b.partialJson === 'string'),
+        (b) =>
+          (!hideThinking && b.type === 'thinking' && b.thinking) ||
+          (ctx.running && typeof b.partialJson === 'string'),
       )
     )
       return null;
@@ -140,7 +144,8 @@ export const ChatMessage = memo(
           </span>
         </div>
         <div className="message-content">
-          {typeof m.content !== 'string' &&
+          {!hideThinking &&
+            typeof m.content !== 'string' &&
             m.content
               .filter((b) => b.type === 'thinking' && b.thinking)
               .map((b, index) => (
@@ -184,6 +189,7 @@ export const ChatMessage = memo(
   },
   (a, b) =>
     a.m === b.m &&
+    a.hideThinking === b.hideThinking &&
     a.last === b.last &&
     a.match === b.match &&
     a.ctx.running === b.ctx.running &&

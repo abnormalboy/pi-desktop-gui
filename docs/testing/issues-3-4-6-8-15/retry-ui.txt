@@ -1,0 +1,6 @@
+PASS recovered errors leave the conversation and recovery toasts automatically disappear
+PASS cancel button stops an in-flight retry and closes the silent HTTP request
+PASS a normal run after cancellation has no stale retry history
+PASS a normal run after failure has no stale retry history
+PASS grouped errors preserve terminal actions, repeated expansion, search indices, paging, turn boundaries, cancellation and recovery
+PASS retry exhaustion displays its final outcome with no busy retry banner

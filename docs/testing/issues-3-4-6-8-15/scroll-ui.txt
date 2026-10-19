@@ -1,0 +1,5 @@
+PASS thinking follows successive updates and large streaming deltas
+PASS reading earlier thinking pauses following; reaching the bottom or clicking resumes it
+PASS the message list preserves reading position and resumes following by either route
+PASS expanded content and window resizing keep the latest output in view
+PASS search keeps its match visible and saved thinking opens at the beginning

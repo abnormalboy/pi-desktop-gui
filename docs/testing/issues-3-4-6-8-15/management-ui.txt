@@ -1,0 +1,5 @@
+PASS multiple projects expand independently, persist and show collapsed unread status; older sessions fold
+PASS actual Pi command prefix grants, compound-command confirmation and individual revoke
+PASS project write grant, sensitive target still prompts, collapsed waiting badge and clear all
+PASS native project template create/edit/delete refreshes commands and usage shows its accounting basis
+PASS empty-session cleanup preserves drafts, attachments and sessions with messages

@@ -36,7 +36,7 @@ import {
 } from './workspace';
 import { WorkspaceWatcher } from './workspace-watch';
 import { projectRules, createAgentRules } from './project-rules';
-import { isEmptySession, fillSessionUsage } from './session-maintenance';
+import { isEmptySession, isReusableSession, hasSessionData, fillSessionUsage } from './session-maintenance';
 import { aggregateUsage } from '../shared/usage';
 import { composeDraftText } from '../shared/draft';
 import { validatePromptTemplate } from '../shared/prompts';
@@ -231,7 +231,12 @@ function strings(value: unknown): asserts value is string[] {
     throw new Error('列表格式无效');
 }
 async function newSession(projectId?: string) {
-  const s = store.createSession(projectId);
+  const reusable = store.state.sessions.find(
+    (session) =>
+      session.projectId === projectId && isReusableSession(session) && !service.connected(session.id),
+  );
+  const s = reusable ?? store.createSession(projectId);
+  if (reusable) store.selectSession(reusable.id);
   await save();
   return s;
 }
@@ -595,7 +600,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       type: 'question',
       message: `清理 ${candidates.length} 个空会话？`,
       detail:
-        '只移除未置顶、没有消息或未发送内容的会话入口。草稿、附件、图片和已连接会话会保留；磁盘文件不会删除。',
+        '只移除未置顶、没有消息或未发送内容的会话入口。草稿、附件、图片、自定义名称、模型与审批设置和已连接会话会保留；磁盘文件不会删除。',
       buttons: ['取消', '清理空会话'],
       defaultId: 0,
       cancelId: 0,
@@ -617,14 +622,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     // Draft saves can arrive while the file checks above await I/O; inspect current fields once more.
     const before = store.state.sessions.length;
     store.state.sessions = store.state.sessions.filter(
-      (session) =>
-        !removable.has(session.id) ||
-        service.connected(session.id) ||
-        session.pinned ||
-        session.draft ||
-        session.attachments.length ||
-        session.images?.length ||
-        session.draftSnippets?.length,
+      (session) => !removable.has(session.id) || service.connected(session.id) || hasSessionData(session),
     );
     const removed = before - store.state.sessions.length;
     if (!store.state.sessions.some((session) => session.id === store.state.selectedSessionId)) {

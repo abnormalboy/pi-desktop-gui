@@ -333,7 +333,7 @@ try {
   await app.evaluate(({ dialog }, folder) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, fixture.projectDir);
-  await page.getByRole('button', { name: '打开项目', exact: true }).click();
+  await page.getByRole('button', { name: '添加项目', exact: true }).click();
   await page.locator('.trust-banner').waitFor();
   await page.getByRole('textbox', { name: '任务输入' }).fill('项目仍然需要启用');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);

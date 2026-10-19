@@ -55,7 +55,8 @@ await fs.mkdir(extraDir);
 const extraProjectId = randomUUID(),
   standaloneId = randomUUID(),
   oldId = randomUUID(),
-  draftId = randomUUID();
+  draftId = randomUUID(),
+  cleanupId = randomUUID();
 fixture.store.state.projects.push({
   id: extraProjectId,
   name: '第二个项目',
@@ -86,7 +87,8 @@ fixture.store.state.sessions.push(
     stats: { tokens: 200, cost: 2 },
   }),
   session(draftId, fixture.projectId, '有附件的空会话', { attachments: ['输入 文件.txt'] }),
-  session(randomUUID(), fixture.projectId, '可清理空会话'),
+  session(cleanupId, fixture.projectId, '新会话'),
+  session(randomUUID(), fixture.projectId, '自定义空会话'),
 );
 fixture.store.state.selectedProjectId = undefined;
 fixture.store.state.selectedSessionId = standaloneId;
@@ -150,7 +152,10 @@ try {
     'PASS multiple projects expand independently, persist and show collapsed unread status; older sessions fold',
   );
 
-  await page.getByRole('button', { name: '新会话', exact: true }).click();
+  await page
+    .locator(`[data-session-id="${fixture.sessionId}"]`)
+    .getByRole('button', { name: '新会话', exact: true })
+    .click();
   await page.evaluate((id) => window.desktop.invoke('connect', id), fixture.sessionId);
   const mode = page.getByRole('button', { name: '审批模式' });
   await mode.click();
@@ -271,7 +276,8 @@ try {
     .getByRole('dialog', { name: /清理 .* 个空会话/ })
     .getByRole('button', { name: '清理空会话', exact: true })
     .click();
-  await until((value) => !value.state.sessions.some((session) => session.title === '可清理空会话'));
+  await until((value) => !value.state.sessions.some((session) => session.id === cleanupId));
+  assert.ok((await snapshot()).state.sessions.some((session) => session.title === '自定义空会话'));
   const after = await snapshot();
   assert.ok(after.state.sessions.some((session) => session.id === draftId));
   assert.ok(after.state.sessions.some((session) => session.id === oldId));

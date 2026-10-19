@@ -240,7 +240,7 @@
 }
 .message-attachment pre {
   white-space: pre-wrap;
-  font-size: calc(11px * var(--font-scale));
+  font-size: calc(13px * var(--font-scale));
   max-height: 200px;
   overflow: auto;
   padding-top: 10px;
@@ -260,9 +260,11 @@
 .thinking pre {
   white-space: pre-wrap;
   margin-top: 8px;
-  font-size: calc(11px * var(--font-scale));
+  font-size: calc(13px * var(--font-scale));
   max-height: 280px;
   overflow: auto;
+  line-height: 1.65;
+  font-family: inherit;
 }
 .thinking-latest {
   position: absolute;
@@ -364,25 +366,31 @@
   border-top: 1px solid var(--line);
 }
 .tool-body pre {
-  font-size: calc(11px * var(--font-scale));
+  font-size: calc(13px * var(--font-scale));
   max-height: 260px;
   overflow: auto;
   padding: 12px 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  line-height: 1.65;
 }
 .tool-body pre.arguments {
-  font-size: calc(11px * var(--font-scale));
+  font-size: calc(13px * var(--font-scale));
   color: var(--muted);
   border-bottom: 1px solid var(--line);
   max-height: 130px;
+  line-height: 1.65;
 }
 .tool-actions {
   display: flex;
   gap: 7px;
   justify-content: flex-end;
 }
-.tool-actions button {
+.tool-actions .icon-button {
+  background: transparent;
+  min-height: 26px;
+  width: 26px;
+  height: 26px;
   border: 0;
   font-size: calc(11px * var(--font-scale));
   padding: 4px 6px;
@@ -603,4 +611,20 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.tool-actions .icon-button:hover {
+  background: var(--hover);
+}
+.tool-copy-status {
+  align-self: center;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--muted);
+}
+.collapse-thinking {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  margin-bottom: 8px;
 }

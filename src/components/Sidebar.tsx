@@ -358,10 +358,6 @@ export function Sidebar(
           <Trash2 size={16} />
           清理空会话
         </button>
-        <button onClick={addProject}>
-          <FolderOpen size={16} />
-          打开项目
-        </button>
         <button onClick={() => openSettings()}>
           <Settings2 size={16} />
           设置
