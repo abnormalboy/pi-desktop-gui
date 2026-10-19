@@ -81,7 +81,11 @@ try {
   await page.screenshot({ path: path.join(output, 'recovery-crash.png') });
   console.log('PASS unconfirmed tool cleanup blocks recovery and undo, including after a window reload');
   // The fixture explicitly ended the complete tree above, so a fresh application is now safe.
-  await app.close();
+  // Normal exit must keep refusing an unconfirmed tool tree. End only this isolated
+  // test application's process tree to exercise startup after that protected state.
+  const fixtureExited = app.waitForEvent('close');
+  await terminateProcessTree(app.process().pid);
+  await fixtureExited;
   app = undefined;
   await launch(fixture.dataDir);
   await page.evaluate((id) => window.desktop.invoke('send', id, '/gui-pid', [], 'steer'), fixture.sessionId);

@@ -51,6 +51,7 @@ try {
         /未检测到可识别的 Pi 版本/,
       );
       await notice.getByRole('button', { name: '复制代码' }).click();
+      await notice.getByRole('button', { name: '复制代码' }).getByText('已复制', { exact: true }).waitFor();
       assert.equal(await app.evaluate(({ clipboard }) => clipboard.readText()), PI_INSTALL_COMMAND);
     }
     await page.getByRole('button', { name: '设置', exact: true }).click();
