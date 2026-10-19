@@ -4,7 +4,7 @@ import { CodeBlock } from './conversation/Markdown';
 
 export function PiCompatibilityNotice({ environment }: { environment: Environment }) {
   const { version, compatibility, supported } = environment;
-  if (compatibility === 'verified') return null;
+  if (compatibility !== 'unknown') return null;
   return (
     <div className={supported ? 'environment-note' : 'compatibility-warning'} aria-label="Pi 版本兼容性">
       <p>

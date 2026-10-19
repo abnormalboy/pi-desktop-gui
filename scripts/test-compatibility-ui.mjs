@@ -58,6 +58,10 @@ try {
     const status = await page.locator('.environment-status').innerText();
     if (recognized) assert.ok(status.includes(`${version} · 未验证`));
     else assert.match(status, /未知/);
+    assert.equal(
+      await page.locator('.settings-content').getByLabel('Pi 版本兼容性').count(),
+      recognized ? 0 : 1,
+    );
     const diagnostic = await page.evaluate(() => window.desktop.invoke('diagnostics'));
     assert.match(diagnostic, recognized ? /"piCompatibility": "unverified"/ : /"piCompatibility": "unknown"/);
     console.log(`PASS ${version} welcome/settings, sending policy and diagnostic compatibility`);
