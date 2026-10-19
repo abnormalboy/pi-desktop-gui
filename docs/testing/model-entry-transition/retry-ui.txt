@@ -1,0 +1,15 @@
+
+> pi-desktop-gui@0.14.21 test:retry-ui
+> node --import tsx scripts/test-retry-ui.mjs
+
+PASS recovered errors leave the conversation and recovery toasts automatically disappear
+PASS cancel button stops an in-flight retry and closes the silent HTTP request
+PASS a normal run after cancellation has no stale retry history
+PASS a normal run after failure has no stale retry history
+PASS grouped errors preserve terminal actions, repeated expansion, search indices, paging, turn boundaries, cancellation and recovery
+PASS retry exhaustion displays its final outcome with no busy retry banner
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

@@ -1,5 +1,7 @@
 # Chat UI: model clicks across selection boundaries
 
+The test-only findings below describe commit `fb921ce`. The subsequent product fix on this same branch is documented in [model entry transition validation](model-entry-transition.md). It resolves the early-click interaction gap by disabling the entry until navigation completes and binding every picker to its original session and navigation request. No connection intent is queued or forwarded.
+
 ## Candidate and failure evidence
 
 Branch `fix/chat-ui-model-readiness` starts at `013966f8b7e290bdd8c5d31dd0c3c01e6332fba3` (main ancestor `6cc2186a16e708f58a9fe9c07bc175d9884e724e`, unpublished v0.14.21 candidate). The four retry collection-assertion changes remain byte-for-byte intact and the complete retry UI script is executed again. Product code and versions are unchanged.

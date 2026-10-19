@@ -1,0 +1,357 @@
+{
+  "passed": true,
+  "evidence": [
+    {
+      "label": "old untrusted target: early mouse click is disabled",
+      "id": "42314103-1514-44fc-9935-cae57f7da215",
+      "projectId": "7dfe929f-6af1-4d66-95ae-44d60205796a",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": []
+    },
+    {
+      "label": "new target selected but reply held: entry remains disabled",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+        }
+      ]
+    },
+    {
+      "label": "stale A click after B settles cannot open or connect in the new context",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e",
+      "disabled": false,
+      "buttonLabel": "local-e2e",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+        }
+      ]
+    },
+    {
+      "label": "wrong response target remains locked",
+      "id": "d62afdf9-f8cb-49f4-8117-6148c2560ee3",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+        },
+        {
+          "method": "connect",
+          "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+        }
+      ]
+    },
+    {
+      "label": "valid newer selection recovers from a wrong response target",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e",
+      "disabled": false,
+      "buttonLabel": "本地验收接口",
+      "open": "false",
+      "runtime": {
+        "status": "idle",
+        "steering": [],
+        "followUp": [],
+        "dialogs": [],
+        "notices": [],
+        "widgets": {},
+        "statuses": {},
+        "models": [
+          {
+            "id": "local-e2e",
+            "provider": "local-e2e",
+            "name": "本地验收接口",
+            "reasoning": false,
+            "contextWindow": 32768,
+            "input": [
+              "text",
+              "image"
+            ]
+          }
+        ],
+        "thinkingLevels": [
+          "off"
+        ],
+        "connected": true,
+        "diagnostic": [
+          "Warning: No project session found with id '5d931be6-98cd-4efe-8b5e-17656d207e3e'; creating a new session with that id.\n"
+        ],
+        "commands": [
+          {
+            "name": "gui-pid",
+            "description": "Return the isolated test process identifier",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "gui-select",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "gui-confirm",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "gui-input",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "gui-editor",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "gui-timeout",
+            "description": "Desktop integration test",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent/extensions/gui-e2e.js",
+              "source": "auto",
+              "scope": "user",
+              "origin": "top-level",
+              "baseDir": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/pi-agent"
+            }
+          },
+          {
+            "name": "llama",
+            "description": "Manage llama.cpp router models",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:llama.cpp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          },
+          {
+            "name": "mcp",
+            "description": "Manage MCP servers: sign in, reconnect, enable or disable, and change exposure",
+            "source": "extension",
+            "sourceInfo": {
+              "path": "builtin:mcp",
+              "source": "builtin",
+              "scope": "temporary",
+              "origin": "top-level"
+            }
+          }
+        ],
+        "sessionId": "5d931be6-98cd-4efe-8b5e-17656d207e3e",
+        "cwd": "/workspace/pi-desktop-gui/work/model-entry-transition-ui/中文项目 space-Dcd30R/app-data/chats/chat-5d931be6-98cd-4efe-8b5e-17656d207e3e",
+        "messagesFrom": 0,
+        "messages": [],
+        "messageCount": 0,
+        "toolsFrom": 0,
+        "tools": [],
+        "toolCount": 0,
+        "approvalGrants": [],
+        "model": {
+          "id": "local-e2e",
+          "provider": "local-e2e",
+          "name": "本地验收接口",
+          "reasoning": false,
+          "contextWindow": 32768,
+          "input": [
+            "text",
+            "image"
+          ]
+        },
+        "thinking": "off",
+        "autoRetry": false,
+        "approvalMode": "auto",
+        "autoCompaction": false,
+        "steeringMode": "one-at-a-time",
+        "followUpMode": "one-at-a-time",
+        "stats": {
+          "tokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "cost": 0,
+          "contextPercent": 0,
+          "contextTokens": 0,
+          "contextWindow": 32768
+        }
+      },
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+        },
+        {
+          "method": "connect",
+          "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "method": "saveView",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+    },
+    {
+      "method": "connect",
+      "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "connect",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "saveView",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "selectSession",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "projectRules",
+      "id": "7dfe929f-6af1-4d66-95ae-44d60205796a"
+    },
+    {
+      "method": "changes",
+      "id": "7dfe929f-6af1-4d66-95ae-44d60205796a"
+    },
+    {
+      "method": "checkpoints",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "readHistory",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "selectSession",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "readHistory",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "selectSession",
+      "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+    },
+    {
+      "method": "readHistory",
+      "id": "4fabf0bc-346b-46b2-9c2e-dc02c33840cc"
+    },
+    {
+      "method": "selectSession",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "projectRules",
+      "id": "7dfe929f-6af1-4d66-95ae-44d60205796a"
+    },
+    {
+      "method": "changes",
+      "id": "7dfe929f-6af1-4d66-95ae-44d60205796a"
+    },
+    {
+      "method": "checkpoints",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "readHistory",
+      "id": "42314103-1514-44fc-9935-cae57f7da215"
+    },
+    {
+      "method": "selectSession",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "readHistory",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "d62afdf9-f8cb-49f4-8117-6148c2560ee3"
+    },
+    {
+      "method": "selectSession",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    },
+    {
+      "method": "readHistory",
+      "id": "5d931be6-98cd-4efe-8b5e-17656d207e3e"
+    }
+  ],
+  "rendererErrors": []
+}

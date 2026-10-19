@@ -634,3 +634,179 @@ test('the first prompt is sent to the selected cold chat without a separate eage
   assert.equal(f.current.pending, false);
   f.unmount();
 });
+
+test('selection transition protects the old view and waits for both IPC and target selection', async () => {
+  const selecting = deferred<types.Message[]>();
+  const calls: string[] = [];
+  const f = harness((method) => {
+    calls.push(method);
+    return method === 'selectSession' ? selecting.promise : Promise.resolve([]);
+  });
+  const operation = f.current.selectSession(session('B'));
+  f.flush();
+  assert.equal(f.current.selectionChanging, true);
+  assert.equal(f.current.selected?.id, 'A');
+  selecting.resolve([]);
+  await operation;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, true, 'an IPC result alone is not a committed target view');
+  f.select('B');
+  f.flush();
+  assert.equal(f.current.selectionChanging, false);
+  assert.ok(!calls.includes('connect'));
+  f.unmount();
+});
+
+test('obsolete creation completion cannot unlock a newer transition or restore an old target', async () => {
+  const first = deferred<types.Session>(),
+    second = deferred<types.Session>();
+  let count = 0;
+  const f = harness((method) =>
+    method === 'newSession' ? (++count === 1 ? first.promise : second.promise) : Promise.resolve([]),
+  );
+  const a = f.current.createSession();
+  f.flush();
+  const b = f.current.createSession();
+  f.flush();
+  first.resolve(session('B'));
+  await a;
+  await f.settle();
+  f.select('B');
+  f.flush();
+  assert.equal(f.current.selectionChanging, true);
+  second.resolve(session('C'));
+  await b;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, true);
+  f.select('C');
+  f.flush();
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.selected?.id, 'C');
+  f.unmount();
+});
+
+test('a new selection cancels the old transition owner and failures release the model entry', async () => {
+  const old = deferred<types.Message[]>(),
+    latest = deferred<types.Message[]>();
+  const f = harness((method, id) =>
+    method === 'selectSession' ? (id === 'B' ? old.promise : latest.promise) : Promise.resolve([]),
+  );
+  const b = f.current.selectSession(session('B'));
+  f.select('B');
+  f.flush();
+  const c = f.current.selectSession(session('C'));
+  f.select('C');
+  f.flush();
+  old.resolve([]);
+  await b;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, true);
+  latest.reject(new Error('selection rejected'));
+  await c;
+  await f.settle();
+  assert.equal(f.current.selectionChanging, false);
+  assert.match(f.current.error, /selection rejected/);
+  f.unmount();
+});
+
+test('failed new chat releases the transition without connecting or changing selection', async () => {
+  const f = harness((method) =>
+    method === 'newSession' ? Promise.reject(new Error('creation cancelled')) : Promise.resolve([]),
+  );
+  await f.current.createSession();
+  await f.settle();
+  assert.equal(f.current.selectionChanging, false);
+  assert.equal(f.current.selected?.id, 'A');
+  assert.match(f.current.error, /creation cancelled/);
+  f.unmount();
+});
+
+test('an old connect callback cannot connect after navigation starts, even before the next render', async () => {
+  const next = deferred<types.Session>();
+  const calls: string[] = [];
+  const f = harness((method) => {
+    calls.push(method);
+    return method === 'newSession' ? next.promise : Promise.resolve([]);
+  });
+  const oldConnect = f.current.connect;
+  const changing = f.current.createSession();
+  await oldConnect();
+  assert.ok(!calls.includes('connect'));
+  f.flush();
+  await f.current.connect();
+  assert.ok(!calls.includes('connect'));
+  next.resolve(session('B'));
+  await changing;
+  f.select('B');
+  f.flush();
+  await f.current.connect();
+  await f.settle();
+  assert.equal(calls.filter((call) => call === 'connect').length, 1);
+  f.unmount();
+});
+
+test('model and thinking callbacks belong to their original session and navigation request', async () => {
+  const next = deferred<types.Session>();
+  const calls: { method: string; id?: string }[] = [];
+  const f = harness((method, id) => {
+    calls.push({ method, id });
+    return method === 'newSession' ? next.promise : Promise.resolve([]);
+  });
+  const oldModel = f.current.setModel,
+    oldThinking = f.current.setThinking;
+  const changing = f.current.createSession();
+  await oldModel('provider::model');
+  await oldThinking('high');
+  f.flush();
+  next.resolve(session('B'));
+  await changing;
+  f.select('B');
+  f.flush();
+  await oldModel('provider::model');
+  await oldThinking('high');
+  assert.deepEqual(
+    calls.filter((call) => call.method.startsWith('setSession')),
+    [],
+  );
+  await f.current.setModel('provider::model');
+  await f.settle();
+  await f.current.setThinking('high');
+  await f.settle();
+  assert.deepEqual(
+    calls.filter((call) => call.method.startsWith('setSession')),
+    [
+      { method: 'setSessionModel', id: 'B' },
+      { method: 'setSessionThinking', id: 'B' },
+    ],
+  );
+  f.unmount();
+});
+
+test('an external selection change invalidates every old model action without relying on popup cleanup', async () => {
+  const calls: { method: string; id?: string }[] = [];
+  const f = harness((method, id) => {
+    calls.push({ method, id });
+    return Promise.resolve([]);
+  });
+  const previous = f.current;
+  f.select('B');
+  // Deliberately do not flush effects, including any selection cleanup.
+  await previous.connect();
+  await previous.setModel('provider::model');
+  await previous.setThinking('high');
+  assert.deepEqual(
+    calls.filter((call) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(call.method)),
+    [],
+  );
+  f.view.storage.writable = false;
+  f.select('B');
+  await f.current.connect();
+  await f.current.setModel('provider::model');
+  await f.current.setThinking('high');
+  assert.deepEqual(
+    calls.filter((call) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(call.method)),
+    [],
+    'a disabled target must reject model actions as well as connections',
+  );
+  f.unmount();
+});

@@ -1,0 +1,4 @@
+PASS approval preserves typing focus; Escape closes its menu without arming stop
+PASS refresh resyncs history and the pending approval; denial reaches the tool result
+PASS read-only mode also blocks manual commands in the UI
+Approval UI PASS /workspace/pi-desktop-gui/work/approval-ui/中文项目 space-IoQy1k

@@ -1,0 +1,51 @@
+PASS quick new from an untrusted project disables the old entry and requires a fresh explicit click
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+ExpectError: expect(locator).toHaveCount(expected) failed
+
+Locator:  getByRole('dialog', { name: '模型与推理级别' })
+Expected: 0
+Received: 1
+Timeout:  5000ms
+
+Call log:
+  - Expect "toHaveCount" getByRole('dialog', { name: '模型与推理级别' }) with timeout 5000ms
+  - waiting for getByRole('dialog', { name: '模型与推理级别' })
+    14 × locator resolved to 1 element
+       - unexpected value "1"
+
+    at captureRawStack (/workspace/pi-desktop-gui/node_modules/playwright-core/lib/coreBundle.js:9282:17)
+    at callMatcherAsStep (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13316:57)
+    at Object.toHaveCount (/workspace/pi-desktop-gui/node_modules/playwright/lib/matchers/expect.js:13308:23)
+    at /workspace/pi-desktop-gui/scripts/test-model-entry-transition-ui.mjs:195:63 {
+  matcherResult: {
+    actual: 1,
+    expected: 0,
+    message: 'expect(locator).toHaveCount(expected) failed\n' +
+      '\n' +
+      "Locator:  getByRole('dialog', { name: '模型与推理级别' })\n" +
+      'Expected: 0\n' +
+      'Received: 1\n' +
+      'Timeout:  5000ms\n' +
+      '\n' +
+      'Call log:\n' +
+      `  - Expect "toHaveCount" getByRole('dialog', { name: '模型与推理级别' }) with timeout 5000ms\n` +
+      "  - waiting for getByRole('dialog', { name: '模型与推理级别' })\n" +
+      '    14 × locator resolved to 1 element\n' +
+      '       - unexpected value "1"\n',
+    name: 'toHaveCount',
+    pass: false,
+    log: [
+      `  - Expect "toHaveCount" getByRole('dialog', { name: '模型与推理级别' }) with timeout 5000ms`,
+      "  - waiting for getByRole('dialog', { name: '模型与推理级别' })",
+      '    14 × locator resolved to 1 element',
+      '       - unexpected value "1"'
+    ],
+    timeout: 5000,
+    ariaSnapshot: undefined
+  }
+}
+
+Node.js v24.19.0

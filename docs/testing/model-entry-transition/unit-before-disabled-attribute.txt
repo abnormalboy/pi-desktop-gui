@@ -1,0 +1,65 @@
+✔ a new chat with available Pi models has no first-run setup and displays Pi defaults, not another session (20.211961ms)
+✔ the selected session model wins over desktop defaults and the cached model from another provider (2.892554ms)
+✔ a saved desktop choice is shown before connection even when its metadata has not been loaded (1.691455ms)
+✔ the current live model and thinking take precedence over saved preferences (3.433065ms)
+✔ actual missing models after connection still require selection despite cached choices (5.558087ms)
+✔ fresh installation and missing Pi retain actionable setup instructions (8.740496ms)
+✔ connection progress is shown without a task timer; real task startup retains its timer (4.423717ms)
+✔ composer exposes zero and partial stats, while keeping absent or another session stats hidden (27.697007ms)
+✖ a disabled model entry gives its reason and cannot expose a stale open picker (6.661521ms)
+✔ the first selected-ID render never displays the previous session history (14.380964ms)
+✔ starting, extension setup and failed cold runtimes retain history; live and connected-empty are authoritative (4.837134ms)
+✔ a history read resolving after connection cannot repopulate an empty live transcript (0.856929ms)
+✔ B to C to B discards obsolete history success and scroll timers (1.626629ms)
+✔ B to C to B discards obsolete history failure and scroll timers (1.723063ms)
+✔ only the current session restores its saved scroll position (1.191374ms)
+✔ unmount cancels history success and the 80ms scroll restoration (1.283196ms)
+✔ unmount cancels history failure and the 80ms scroll restoration (0.837911ms)
+✔ selectSession completion never writes history or closes a newer search (1.770352ms)
+✔ reopening search during the current selection survives its eventual completion (2.605359ms)
+✔ B selection is pending on B, while A and C remain independently usable (2.724741ms)
+✔ overlapping selections of the same ID retain pending until both settle (1.439342ms)
+✔ current B selection failure belongs to B, never the click-time A closure (1.598968ms)
+✔ an obsolete B failure cannot overwrite the newer C failure or leak into A (1.281157ms)
+✔ B to C to B ignores an old failure after newer success and clears the previous retry error (2.367596ms)
+✔ same-ID callers still expose the latest selection failure (1.455846ms)
+✔ new-session intent invalidates an old selection failure without unlocking a separate action (1.413433ms)
+✔ opening and revisiting a saved chat never automatically connects (3.704607ms)
+✔ opening and revisiting a new empty chat never automatically connects (4.10506ms)
+✔ an explicit connection still reads Pi models without sending a task (8.974392ms)
+✔ the first prompt is sent to the selected cold chat without a separate eager connection (1.665838ms)
+✔ selection transition protects the old view and waits for both IPC and target selection (0.741598ms)
+✔ obsolete creation completion cannot unlock a newer transition or restore an old target (1.034352ms)
+✔ a new selection cancels the old transition owner and failures release the model entry (1.014332ms)
+✔ failed new chat releases the transition without connecting or changing selection (0.610995ms)
+ℹ tests 34
+ℹ suites 0
+ℹ pass 33
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1245.042871
+
+✖ failing tests:
+
+test at tests/session-model-ui.test.ts:1:6301
+✖ a disabled model entry gives its reason and cannot expose a stale open picker (6.661521ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /disabled=""/. Input:
+
+  '<div class="model-picker-anchor"><button class="model-pill open" title="会话切换中…" aria-label="选择模型" aria-haspopup="dialog" aria-expanded="false"><span>会话切换中…</span><em>high</em><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button></div>'
+
+      at TestContext.<anonymous> (/workspace/pi-desktop-gui/tests/session-model-ui.test.ts:213:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<div class="model-picker-anchor"><button class="model-pill open" title="会话切换中…" aria-label="选择模型" aria-haspopup="dialog" aria-expanded="false"><span>会话切换中…</span><em>high</em><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></button></div>',
+    expected: /disabled=""/,
+    operator: 'match',
+    diff: 'simple'
+  }

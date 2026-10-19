@@ -192,3 +192,26 @@ test('composer exposes zero and partial stats, while keeping absent or another s
     assert.match(markup, /shortcut-link/);
   }
 });
+
+test('a disabled model entry gives its reason and cannot expose a stale open picker', () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ModelPicker, {
+      runtime,
+      fallback: 'old model',
+      locked: false,
+      thinkingLocked: false,
+      canConnect: false,
+      connect() {},
+      pick() {},
+      setThinking() {},
+      manage() {},
+      open: true,
+      setOpen() {},
+      disabledReason: '会话切换中…',
+    }),
+  );
+  assert.match(html, /disabled=""/);
+  assert.match(html, /title="会话切换中…"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /role="dialog"|role="option"/);
+});

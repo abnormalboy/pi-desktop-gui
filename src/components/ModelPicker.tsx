@@ -16,6 +16,7 @@ export function ModelPicker({
   manage,
   open,
   setOpen,
+  disabledReason,
 }: {
   runtime: Runtime;
   fallback: string;
@@ -28,15 +29,17 @@ export function ModelPicker({
   manage: (target: 'providers' | 'settings') => void;
   open: boolean;
   setOpen: (open: boolean) => void;
+  disabledReason?: string;
 }) {
   const [query, setQuery] = useState(''),
     [index, setIndex] = useState(0);
   const panel = useRef<HTMLDivElement>(null),
     list = useRef<HTMLDivElement>(null);
   const close = () => setOpen(false);
-  useFocusScope(panel, open, close);
+  const visible = open && !disabledReason;
+  useFocusScope(panel, visible, close);
   useEffect(() => {
-    if (open) {
+    if (visible) {
       setQuery('');
       setIndex(
         Math.max(
@@ -47,19 +50,19 @@ export function ModelPicker({
         ),
       );
     }
-  }, [open]);
+  }, [visible]);
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
     const outside = (e: MouseEvent) => {
       if (!panel.current?.parentElement?.contains(e.target as Node)) close();
     };
     document.addEventListener('mousedown', outside);
     return () => document.removeEventListener('mousedown', outside);
-  }, [open]);
+  }, [visible]);
   useEffect(() => {
-    if (!open) return;
+    if (!visible) return;
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [open, index]);
+  }, [visible, index]);
   const selection = runtime.nextTask ?? {
     model: runtime.model,
     thinking: runtime.thinking,
@@ -76,8 +79,10 @@ export function ModelPicker({
   return (
     <div className="model-picker-anchor">
       <button
-        className={'model-pill' + (open ? ' open' : '')}
+        className={'model-pill' + (visible ? ' open' : '')}
+        disabled={Boolean(disabledReason)}
         onClick={() => {
+          if (disabledReason) return;
           setQuery('');
           setIndex(
             Math.max(
@@ -88,16 +93,16 @@ export function ModelPicker({
           setOpen(!open);
           if (!open && canConnect && !runtime.connected) connect();
         }}
-        title="选择模型"
+        title={disabledReason || '选择模型'}
         aria-label="选择模型"
         aria-haspopup="dialog"
-        aria-expanded={open}
+        aria-expanded={visible}
       >
-        <span>{selection.model?.name || fallback || '选择模型'}</span>
+        <span>{disabledReason || selection.model?.name || fallback || '选择模型'}</span>
         {selection.thinking && selection.thinking !== 'off' && <em>{selection.thinking}</em>}
         <ChevronDown size={12} />
       </button>
-      {open && (
+      {visible && (
         <div ref={panel} className="model-picker" role="dialog" aria-label="模型与推理级别">
           <div className="model-search">
             <Search size={14} />

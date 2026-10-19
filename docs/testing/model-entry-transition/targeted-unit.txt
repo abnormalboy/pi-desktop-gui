@@ -1,0 +1,45 @@
+✔ a new chat with available Pi models has no first-run setup and displays Pi defaults, not another session (17.086865ms)
+✔ the selected session model wins over desktop defaults and the cached model from another provider (4.526458ms)
+✔ a saved desktop choice is shown before connection even when its metadata has not been loaded (2.169401ms)
+✔ the current live model and thinking take precedence over saved preferences (4.188352ms)
+✔ actual missing models after connection still require selection despite cached choices (111.140469ms)
+✔ fresh installation and missing Pi retain actionable setup instructions (22.382337ms)
+✔ connection progress is shown without a task timer; real task startup retains its timer (5.777544ms)
+✔ composer exposes zero and partial stats, while keeping absent or another session stats hidden (41.273122ms)
+✔ a disabled model entry gives its reason and cannot expose a stale open picker (1.813297ms)
+✔ the first selected-ID render never displays the previous session history (8.223038ms)
+✔ starting, extension setup and failed cold runtimes retain history; live and connected-empty are authoritative (4.820585ms)
+✔ a history read resolving after connection cannot repopulate an empty live transcript (0.73549ms)
+✔ B to C to B discards obsolete history success and scroll timers (1.685699ms)
+✔ B to C to B discards obsolete history failure and scroll timers (1.044929ms)
+✔ only the current session restores its saved scroll position (2.789124ms)
+✔ unmount cancels history success and the 80ms scroll restoration (1.295961ms)
+✔ unmount cancels history failure and the 80ms scroll restoration (0.415506ms)
+✔ selectSession completion never writes history or closes a newer search (1.753459ms)
+✔ reopening search during the current selection survives its eventual completion (1.029616ms)
+✔ B selection is pending on B, while A and C remain independently usable (5.207984ms)
+✔ overlapping selections of the same ID retain pending until both settle (1.094327ms)
+✔ current B selection failure belongs to B, never the click-time A closure (1.116735ms)
+✔ an obsolete B failure cannot overwrite the newer C failure or leak into A (1.53196ms)
+✔ B to C to B ignores an old failure after newer success and clears the previous retry error (1.314478ms)
+✔ same-ID callers still expose the latest selection failure (0.937339ms)
+✔ new-session intent invalidates an old selection failure without unlocking a separate action (1.357942ms)
+✔ opening and revisiting a saved chat never automatically connects (1.070807ms)
+✔ opening and revisiting a new empty chat never automatically connects (2.549268ms)
+✔ an explicit connection still reads Pi models without sending a task (0.749681ms)
+✔ the first prompt is sent to the selected cold chat without a separate eager connection (1.150906ms)
+✔ selection transition protects the old view and waits for both IPC and target selection (0.598387ms)
+✔ obsolete creation completion cannot unlock a newer transition or restore an old target (0.858342ms)
+✔ a new selection cancels the old transition owner and failures release the model entry (1.257714ms)
+✔ failed new chat releases the transition without connecting or changing selection (0.489505ms)
+✔ an old connect callback cannot connect after navigation starts, even before the next render (0.663524ms)
+✔ model and thinking callbacks belong to their original session and navigation request (1.131808ms)
+✔ an external selection change invalidates every old model action without relying on popup cleanup (0.533381ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1248.888633

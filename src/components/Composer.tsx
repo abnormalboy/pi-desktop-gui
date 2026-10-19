@@ -6,7 +6,7 @@ import { ComposerFeedback, ComposerFooter } from './conversation/ComposerStatus'
 import { ComposerResize } from './conversation/ComposerResize';
 import { ModelPicker } from './ModelPicker';
 import { ApprovalSwitch } from './Approval';
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Lightbox } from './Lightbox';
 import { Modal } from './Modal';
 import { SearchHighlight } from './conversation/SearchHighlight';
@@ -29,6 +29,8 @@ export type ComposerProps = Pick<
   | 'setError'
   | 'setNotice'
   | 'pending'
+  | 'selectionChanging'
+  | 'selectionRevision'
   | 'draft'
   | 'attachments'
   | 'sendMode'
@@ -94,6 +96,8 @@ export function Composer(props: ComposerProps) {
     setError,
     setNotice,
     pending,
+    selectionChanging,
+    selectionRevision,
     draft,
     attachments,
     sendMode,
@@ -151,7 +155,31 @@ export function Composer(props: ComposerProps) {
   } = props;
   const modelState = sessionModelState(runtime, selected, state.settings);
   const connecting = ownRunning && !runtime.connected;
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelPickerOwner, setModelPickerOwner] = useState<{ sessionId: string; revision: number }>();
+  // Ownership hides a stale picker during render; the effect only discards its state.
+  const modelPickerOpen = Boolean(
+    selected &&
+    modelPickerOwner?.sessionId === selected.id &&
+    modelPickerOwner.revision === selectionRevision &&
+    !selectionChanging,
+  );
+  const setModelPickerOpen = (open: boolean) =>
+    setModelPickerOwner(
+      open && selected ? { sessionId: selected.id, revision: selectionRevision } : undefined,
+    );
+  const modelPickerDisabledReason = selectionChanging
+    ? '会话切换中…'
+    : !sessionEnabled
+      ? project && !project.trusted
+        ? '请先启用项目'
+        : '当前会话暂不可用'
+      : pending && !ownRunning && !modelPickerOpen
+        ? '正在处理操作…'
+        : '';
+  useLayoutEffect(
+    () => setModelPickerOpen(false),
+    [selected?.id, selectionChanging, modelPickerDisabledReason],
+  );
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null),
     [snippetId, setSnippetId] = useState('');
   const [parameterError, setParameterError] = useState('');
@@ -540,6 +568,7 @@ export function Composer(props: ComposerProps) {
             />
             <ModelPicker
               open={modelPickerOpen}
+              disabledReason={modelPickerDisabledReason}
               setOpen={setModelPickerOpen}
               runtime={modelState.runtime}
               fallback={modelState.label}

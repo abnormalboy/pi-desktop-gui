@@ -1,0 +1,87 @@
+
+> pi-desktop-gui@0.14.21 test:integration
+> node --import tsx scripts/integration.ts
+
+starting 0 messages
+idle 0 messages
+PASS actual Pi model probe
+starting 0 messages
+running 0 messages
+running 2 messages
+completed 3 messages
+starting 3 messages
+running 3 messages
+completed 5 messages
+PASS actual Pi cumulative input/output/cache usage stays separate from current context
+idle 0 messages
+starting 0 messages
+running 0 messages
+running 5 messages read:done,write:running
+running 7 messages read:done,write:done,bash:running
+running 9 messages read:done,write:done,bash:done
+completed 9 messages read:done,write:done,bash:done
+PASS actual Pi read, write and shell tools
+starting 0 messages
+idle 9 messages read:done,write:done,bash:done
+PASS persisted Pi JSONL and resumed history
+starting 9 messages
+waiting 9 messages
+running 9 messages
+idle 9 messages
+starting 9 messages
+waiting 9 messages
+running 9 messages
+idle 9 messages
+starting 9 messages
+waiting 9 messages
+running 9 messages
+idle 9 messages
+starting 9 messages
+waiting 9 messages
+running 9 messages
+idle 9 messages
+starting 9 messages
+waiting 9 messages
+running 9 messages
+idle 9 messages
+PASS actual Pi extension dialogs, timeout, handled commands and cancelled switch
+starting 9 messages
+running 9 messages
+running 10 messages
+stopping 11 messages bash:running
+stopping 13 messages bash:error
+stopped 13 messages bash:error
+PASS actual Pi stop clears queues and interrupts shell
+starting 13 messages
+running 13 messages
+error 15 messages
+PASS provider failure reaches visible error state
+starting 0 messages
+idle 0 messages
+starting 0 messages
+running 0 messages
+running 2 messages
+completed 3 messages
+starting 0 messages
+idle 15 messages read:done,write:done,bash:done,bash:error
+starting 0 messages
+idle 3 messages
+PASS standalone chat, model probe, tools/extensions and project/chat history switching
+starting 0 messages
+idle 15 messages read:done,write:done,bash:done,bash:error
+starting 0 messages
+idle 0 messages
+starting 0 messages
+running 0 messages
+running 2 messages
+completed 3 messages
+PASS new project/chat histories use Pi native directories after resuming legacy files
+starting 0 messages
+idle 0 messages
+PASS Pi sessionDir configuration remains effective
+Integration PASS: /workspace/pi-desktop-gui/work/integration/中文项目 space-KCrtvy
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

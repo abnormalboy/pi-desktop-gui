@@ -102,6 +102,8 @@ Repeated new-chat requests reuse an untouched blank chat in the same project or 
 
 Opening or switching chats restores saved history and drafts without starting Pi. Pi connects when you send a task, open the model picker, or explicitly connect; existing connections and background tasks stay with their own chat. The model picker reads Pi's actual models and reasoning levels. Sending uses your saved model preference or Pi's effective defaults, including project settings. Projects still require trust before Pi starts.
 
+While a new chat or session switch is completing, the model entry shows “会话切换中…” (switching chat), stays disabled, and closes the previous picker. Click again once the target chat is ready; earlier clicks are never forwarded to another chat or used to connect automatically. An untrusted project shows “请先启用项目” (enable the project first).
+
 New session logs use Pi's native directory (`~/.pi/agent/sessions/<encoded-cwd>/` by default), so tools such as CC Switch can discover their usage. Pi's `sessionDir` settings and environment overrides remain effective. Existing desktop session files can still be resumed from their original locations.
 
 ## Usage

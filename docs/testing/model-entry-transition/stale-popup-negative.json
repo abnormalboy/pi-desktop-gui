@@ -1,0 +1,67 @@
+{
+  "evidence": [
+    {
+      "label": "old untrusted target: early mouse click is disabled",
+      "id": "3eab4270-5a78-4bf2-af29-61eea033e21c",
+      "projectId": "0e505fe8-f77e-438b-9597-b8dbab192502",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": []
+    },
+    {
+      "label": "new target selected but reply held: entry remains disabled",
+      "id": "23b99ef2-15a5-4431-ba1e-8a019d2d31ee",
+      "disabled": true,
+      "buttonLabel": "会话切换中…",
+      "open": "false",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "c3bd364f-a9d3-44c7-9037-acbf0369330e"
+        }
+      ]
+    },
+    {
+      "label": "failure",
+      "id": "23b99ef2-15a5-4431-ba1e-8a019d2d31ee",
+      "disabled": false,
+      "buttonLabel": "local-e2e",
+      "open": "true",
+      "connectCalls": [
+        {
+          "method": "connect",
+          "id": "c3bd364f-a9d3-44c7-9037-acbf0369330e"
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "method": "saveView",
+      "id": "3eab4270-5a78-4bf2-af29-61eea033e21c"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "c3bd364f-a9d3-44c7-9037-acbf0369330e"
+    },
+    {
+      "method": "connect",
+      "id": "c3bd364f-a9d3-44c7-9037-acbf0369330e"
+    },
+    {
+      "method": "detect"
+    },
+    {
+      "method": "newSession"
+    },
+    {
+      "method": "readHistory",
+      "id": "23b99ef2-15a5-4431-ba1e-8a019d2d31ee"
+    }
+  ],
+  "rendererErrors": []
+}

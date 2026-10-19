@@ -119,7 +119,8 @@ function chatViewReady({ id, differentFrom, scope, projectId, draft, connectable
     !send.querySelector('.spin') &&
     (draft === undefined || document.querySelector('textarea[aria-label="任务输入"]')?.value === draft) &&
     (!connectable ||
-      (window.chatUiStorage?.writable &&
+      (!document.querySelector('button[aria-label="选择模型"]')?.disabled &&
+        window.chatUiStorage?.writable &&
         (!selected.projectId || project?.trusted) &&
         (!runtime?.crash || runtime.crash.cleanup === 'confirmed') &&
         !runtime?.configurationPending &&
@@ -391,18 +392,12 @@ try {
     () => window.chatUiRuntimes.get(window.chatUiState.selectedSessionId)?.connected ?? false,
   );
   assert.equal(untrustedConnected, false, 'an untrusted project must not start Pi automatically');
-  // Browsing a locked picker must not turn an untrusted project into a connection.
-  await page.getByRole('button', { name: '选择模型', exact: true }).click();
-  const untrustedPicker = page.getByRole('dialog', { name: '模型与推理级别' });
-  await untrustedPicker.getByText('尚未连接 Pi，连接后可读取模型。', { exact: true }).waitFor();
-  assert.equal(
-    await untrustedPicker.getByRole('button', { name: '重新连接 Pi', exact: true }).isDisabled(),
-    true,
-  );
+  const untrustedModel = page.getByRole('button', { name: '选择模型', exact: true });
+  assert.equal(await untrustedModel.isDisabled(), true);
+  assert.equal(await untrustedModel.getAttribute('title'), '请先启用项目');
+  assert.equal(await page.getByRole('dialog', { name: '模型与推理级别' }).count(), 0);
   assert.equal(await page.locator('.error-banner').count(), 0);
   assert.equal(await page.locator('.trust-banner').count(), 1);
-  await page.keyboard.press('Escape');
-  await untrustedPicker.waitFor({ state: 'detached' });
 
   const standaloneFromProjectId = await newStandalone(() =>
     page.getByRole('button', { name: /^新建对话/ }).click(),

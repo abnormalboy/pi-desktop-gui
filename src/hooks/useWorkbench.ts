@@ -36,6 +36,11 @@ export function useWorkbench() {
     setPrefs,
   );
   const [pendingSessions, setPendingSessions] = useState<Record<string, number>>({});
+  const [selectionTransition, setSelectionTransition] = useState<{
+    request: number;
+    targetId?: string;
+    settled?: boolean;
+  }>();
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
     [compact, setCompact] = useState(false),
@@ -63,11 +68,25 @@ export function useWorkbench() {
     stateRef = useRef(state),
     runtimeRef = useRef(runtime);
   const selectionRequest = useRef(0);
+  const renderedSelectionRequest = selectionRequest.current;
   stateRef.current = state;
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
   const pending = Boolean(pendingSessions[selected?.id ?? '']);
+  const selectionChanging = Boolean(
+    selectionTransition && (!selectionTransition.settled || selected?.id !== selectionTransition.targetId),
+  );
+  useEffect(() => {
+    if (selectionTransition?.settled && selected?.id === selectionTransition.targetId)
+      setSelectionTransition((current) =>
+        current?.request === selectionTransition.request ? undefined : current,
+      );
+  }, [selectionTransition, selected?.id]);
+  function settleSelection(request: number, targetId?: string) {
+    if (request === selectionRequest.current)
+      setSelectionTransition(targetId ? { request, targetId, settled: true } : undefined);
+  }
   const error = errors[selected?.id ?? ''] ?? errors[''] ?? '';
   function setError(value: string, id = selected?.id ?? '') {
     setErrors((previous) => ({ ...previous, '': '', [id]: value }));
@@ -79,6 +98,7 @@ export function useWorkbench() {
     }));
   }
   const sessionEnabled =
+    !selectionChanging &&
     storage.writable &&
     (!runtime.crash || runtime.crash.cleanup === 'confirmed') &&
     Boolean(selected && (!selected.projectId || project?.trusted));
@@ -384,22 +404,29 @@ export function useWorkbench() {
   }
   async function selectSession(s: Session) {
     const request = ++selectionRequest.current;
+    setSelectionTransition({ request, targetId: s.id });
     setSearchOpen(false);
     setError('', s.id);
     setPending(true, s.id);
     try {
       // The selected-ID effect owns history; late IPC replies cannot replace it.
       await api.invoke('selectSession', s.id);
+      settleSelection(request, s.id);
     } catch (error) {
-      if (request === selectionRequest.current) setError(readableError(error), s.id);
+      if (request === selectionRequest.current) {
+        setError(readableError(error), s.id);
+        settleSelection(request);
+      }
     } finally {
       setPending(false, s.id);
     }
   }
   async function createSession(projectId?: string) {
-    selectionRequest.current++;
+    const request = ++selectionRequest.current;
+    setSelectionTransition({ request });
     const session = await attempt(() => api.invoke('newSession', projectId));
-    if (session) focusComposer();
+    settleSelection(request, session?.id);
+    if (session && request === selectionRequest.current) focusComposer();
   }
   function openSettings(tabName = 'environment') {
     setPrefs(stateRef.current?.settings);
@@ -418,8 +445,19 @@ export function useWorkbench() {
       setNotice('设置已保存');
     });
   }
+  function currentModelTarget() {
+    // The ref also rejects a captured click before navigation's next React render.
+    return Boolean(
+      selected &&
+      selected.id === stateRef.current?.selectedSessionId &&
+      renderedSelectionRequest === selectionRequest.current &&
+      !selectionChanging &&
+      sessionEnabled &&
+      !(pending && !ownRunning),
+    );
+  }
   async function connect() {
-    if (!selected) return;
+    if (!selected || !currentModelTarget() || pending || ownRunning) return;
     setError('');
     await action(() => api.invoke('connect', selected.id));
     void detect();
@@ -438,7 +476,7 @@ export function useWorkbench() {
       );
   }
   async function setModel(key: string) {
-    if (!selected) return;
+    if (!selected || !currentModelTarget()) return;
     const [provider, modelId] = key.split('::');
     await action(async () => {
       await api.invoke('setSessionModel', selected.id, provider, modelId);
@@ -446,7 +484,7 @@ export function useWorkbench() {
     });
   }
   async function setThinking(thinking: string) {
-    if (!selected) return;
+    if (!selected || !currentModelTarget()) return;
     setPrefs((prev) => (prev ? { ...prev, thinking } : prev));
     await action(() => api.invoke('setSessionThinking', selected.id, thinking));
   }
@@ -623,6 +661,8 @@ export function useWorkbench() {
     environment,
     history,
     pending,
+    selectionChanging,
+    selectionRevision: renderedSelectionRequest,
     setFeatureTab,
     compact,
     inspector,
