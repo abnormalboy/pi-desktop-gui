@@ -173,12 +173,13 @@ try {
   const find = page.getByRole('textbox', { name: '查找当前会话' });
   await find.fill('THINK_NEEDLE');
   await page.locator('.thinking .search-current').waitFor();
-  const matchVisible = await page.locator('.thinking .search-current').evaluate((element) => {
+  await page.waitForFunction(() => {
+    const element = document.querySelector('.thinking .search-current');
+    if (!element) return false;
     const bounds = element.getBoundingClientRect(),
       container = element.closest('pre').getBoundingClientRect();
     return bounds.bottom > container.top && bounds.top < container.bottom;
   });
-  assert.equal(matchVisible, true);
   await appendThinking('SEARCH_STAYS_VISIBLE');
   assert.ok(
     await thinking.evaluate(
