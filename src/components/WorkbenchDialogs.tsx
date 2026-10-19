@@ -130,7 +130,9 @@ export function WorkbenchDialogs(
               打开登录页面
             </button>
           )}
-          <button onClick={() => void attempt(() => api.invoke('cancelLogin'))}>取消登录</button>
+          <button onClick={() => selected && void attempt(() => api.invoke('cancelLogin', selected.id))}>
+            取消登录
+          </button>
         </div>
       )}
       {prompts[0] && (
@@ -138,7 +140,9 @@ export function WorkbenchDialogs(
           key={prompts[0].id}
           request={prompts[0]}
           remaining={prompts.length - 1}
-          respond={(v) => void attempt(() => api.invoke('respond', prompts[0].id, v))}
+          respond={(v) =>
+            selected && void attempt(() => api.invoke('respond', selected.id, prompts[0].id, v))
+          }
         />
       )}
     </>

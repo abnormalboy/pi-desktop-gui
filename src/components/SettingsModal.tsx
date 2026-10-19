@@ -244,7 +244,11 @@ export function SettingsModal(
                     className="input"
                     aria-label="选择模型"
                     disabled={modelLocked || !runtime.models.length}
-                    value={runtime.model ? `${runtime.model.provider}::${runtime.model.id}` : ''}
+                    value={
+                      (runtime.nextTask?.model ?? runtime.model)
+                        ? `${(runtime.nextTask?.model ?? runtime.model)!.provider}::${(runtime.nextTask?.model ?? runtime.model)!.id}`
+                        : ''
+                    }
                     onChange={(e) => void setModel(e.target.value)}
                   >
                     <option value="" disabled>
@@ -256,17 +260,29 @@ export function SettingsModal(
                       </option>
                     ))}
                   </select>
-                  <p className="settings-copy">模型从下一次请求生效，不中断当前回复，无需点击保存设置。</p>
+                  <p className="settings-copy">
+                    运行中修改模型和推理级别，将在下次发送新任务时生效。工具继续推理和补充要求沿用本轮设置，无需点击保存设置。
+                  </p>
+                  {runtime.nextTask && (
+                    <p className="environment-note">
+                      本轮：{runtime.model?.id} · {runtime.thinking}；下次新任务：{runtime.nextTask.model.id}{' '}
+                      · {runtime.nextTask.thinking}
+                    </p>
+                  )}
                   <label className="field-label">推理级别</label>
                   <select
                     className="input"
                     aria-label="推理级别"
-                    disabled={!runtime.thinkingLevels.length || running || pending}
-                    value={runtime.thinking || ''}
+                    disabled={
+                      !(runtime.nextTask?.thinkingLevels ?? runtime.thinkingLevels).length || modelLocked
+                    }
+                    value={runtime.nextTask?.thinking ?? runtime.thinking ?? ''}
                     onChange={(e) => void setThinking(e.target.value)}
                   >
-                    {runtime.thinkingLevels.length ? (
-                      runtime.thinkingLevels.map((v) => <option key={v}>{v}</option>)
+                    {(runtime.nextTask?.thinkingLevels ?? runtime.thinkingLevels).length ? (
+                      (runtime.nextTask?.thinkingLevels ?? runtime.thinkingLevels).map((v) => (
+                        <option key={v}>{v}</option>
+                      ))
                     ) : (
                       <option>当前模型未提供可选级别</option>
                     )}
@@ -479,16 +495,10 @@ export function SettingsModal(
           </div>
           <footer>
             <span className="settings-footer-note">
-              {running
-                ? runtime.status === 'starting'
-                  ? '正在连接 Pi，请稍候再修改运行环境'
-                  : runtime.status === 'stopping'
-                    ? '正在停止 Pi，请稍候再修改运行环境'
-                    : '任务执行中，运行环境设置暂不可修改'
-                : '设置保存在本机'}
+              运行环境路径在下一次启动对应进程时生效，现有进程继续运行。
             </span>
             <button onClick={() => setSettingsOpen(false)}>关闭</button>
-            <button className="primary" disabled={pending || running} onClick={saveSettings}>
+            <button className="primary" disabled={pending && !running} onClick={saveSettings}>
               {pending ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />}保存设置
             </button>
           </footer>

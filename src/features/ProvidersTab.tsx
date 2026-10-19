@@ -25,6 +25,8 @@ export function ProvidersTab({
   modelIds,
   setModelIds,
   disabled,
+  idleDisabled,
+  idleReason,
   configEditingDisabled,
   run,
   refresh,
@@ -56,6 +58,8 @@ export function ProvidersTab({
   | 'modelIds'
   | 'setModelIds'
   | 'disabled'
+  | 'idleDisabled'
+  | 'idleReason'
   | 'configEditingDisabled'
   | 'run'
   | 'refresh'
@@ -89,13 +93,14 @@ export function ProvidersTab({
       </select>
       <div className="button-row">
         <button
-          disabled={disabled || !providers.find((p) => p.id === provider)?.oauth}
+          disabled={idleDisabled || !providers.find((p) => p.id === provider)?.oauth}
           title={
-            !provider
+            idleReason ||
+            (!provider
               ? '请先选择供应商'
               : !providers.find((p) => p.id === provider)?.oauth
                 ? '此供应商不支持浏览器登录，请使用其支持的凭据方式'
-                : ''
+                : '')
           }
           onClick={() =>
             void run(async () => {
@@ -108,13 +113,14 @@ export function ProvidersTab({
           浏览器登录
         </button>
         <button
-          disabled={disabled || !providers.find((p) => p.id === provider)?.apiKey}
+          disabled={idleDisabled || !providers.find((p) => p.id === provider)?.apiKey}
           title={
-            !provider
+            idleReason ||
+            (!provider
               ? '请先选择供应商'
               : !providers.find((p) => p.id === provider)?.apiKey
                 ? '此供应商不支持 API Key 登录'
-                : ''
+                : '')
           }
           onClick={() =>
             void run(async () => {
@@ -127,8 +133,8 @@ export function ProvidersTab({
           设置 API Key
         </button>
         <button
-          disabled={disabled || !provider}
-          title={!provider ? '请先选择要退出的供应商' : ''}
+          disabled={idleDisabled || !provider}
+          title={idleReason || (!provider ? '请先选择要退出的供应商' : '')}
           onClick={() =>
             void run(async () => {
               await api.invoke('logout', session.id, provider);

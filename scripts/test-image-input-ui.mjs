@@ -190,7 +190,12 @@ try {
   throw error;
 } finally {
   // These fixtures do not test quit confirmations; also clean up a failed assertion during startup.
-  await page?.evaluate(() => window.desktop.invoke('stop')).catch(() => {});
+  await page
+    ?.evaluate(async () => {
+      const { state } = await window.desktop.invoke('bootstrap');
+      await window.desktop.invoke('stop', state.selectedSessionId);
+    })
+    .catch(() => {});
   await app?.close().catch(() => {});
   await provider.close();
 }

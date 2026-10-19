@@ -29,7 +29,7 @@ test('Pi settings are actionable after idle, completion, stop, and recoverable e
   }
 });
 
-test('running Pi work and pending actions prevent saves with actionable explanations', () => {
+test('running work allows reading and saving; only conflicting history actions require idle', () => {
   for (const status of [
     'starting',
     'running',
@@ -39,7 +39,9 @@ test('running Pi work and pending actions prevent saves with actionable explanat
     'stopping',
   ] as RunStatus[]) {
     const state = piFeatureAvailability({ ...available, runtime: { ...available.runtime, status } });
-    assert.match(state.operationReason, /等待|完成|停止/);
+    assert.equal(state.operationReason, '');
+    assert.equal(state.engineReason, '');
+    assert.match(state.idleReason, /停止本会话/);
   }
   assert.match(piFeatureAvailability({ ...available, pending: true }).operationReason, /上一项操作/);
   assert.match(piFeatureAvailability({ ...available, storage: { writable: false } }).operationReason, /只读/);
@@ -69,7 +71,7 @@ test('save notices distinguish disk persistence from application to Pi', () => {
   assert.match(notice, /检查 Pi 入口/);
 });
 
-test('unconfirmed process cleanup blocks saving even when the runtime is idle', () => {
+test('unconfirmed cleanup keeps configuration repair available and blocks conflicting operations', () => {
   for (const cleanup of ['checking', 'unconfirmed'] as const) {
     const state = piFeatureAvailability({
       ...available,
@@ -78,6 +80,7 @@ test('unconfirmed process cleanup blocks saving even when the runtime is idle', 
         crash: { cleanup, code: 1, signal: null, at: Date.now(), log: [], repeated: false },
       },
     });
-    assert.match(state.operationReason, /进程恢复/);
+    assert.equal(state.operationReason, '');
+    assert.match(state.idleReason, /进程恢复/);
   }
 });

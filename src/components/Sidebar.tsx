@@ -14,7 +14,7 @@ import {
   Pin,
   PinOff,
 } from 'lucide-react';
-import { type Session } from '../../shared/types';
+import { busy, type Session } from '../../shared/types';
 import { useEffect, useRef, useState } from 'react';
 import { isOlderSession } from '../../shared/usage';
 import '../styles/management.css';
@@ -111,7 +111,7 @@ export function Sidebar(
           待确认 {runtime.dialogs.length}
         </em>
       );
-    if (active && running)
+    if ((active && running) || sessions.some((session) => busy(session.lastStatus)))
       return <LoaderCircle size={13} className="spin project-running" aria-label="正在运行" />;
     if (sessions.some((session) => session.unread))
       return <i className="unread" aria-label="有未读完成会话" />;
@@ -137,7 +137,9 @@ export function Sidebar(
         {s.pinned ? <Pin size={14} className="pin-icon" /> : <MessageSquare size={14} />}
         <span>{s.title}</span>
         {s.unread && <i className="unread" />}
-        {s.id === runtime.sessionId && running && <LoaderCircle size={12} className="spin" />}
+        {busy(s.id === runtime.sessionId ? runtime.status : s.lastStatus) && (
+          <LoaderCircle size={12} className="spin" />
+        )}
       </button>
       <IconButton
         title={`${s.title} 会话操作`}
@@ -168,20 +170,21 @@ export function Sidebar(
             <Pencil size={14} />
             重命名
           </button>
-          <button
-            role="menuitem"
-            disabled={!s.file}
-            onClick={() => {
-              setMenuId('');
-              void attempt(async () => {
-                const file = await api.invoke('exportSession', s.id, 'html');
-                if (file) setNotice('已导出到 ' + file);
-              });
-            }}
-          >
-            <Download size={14} />
-            导出 HTML
-          </button>
+          {s.file && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuId('');
+                void attempt(async () => {
+                  const file = await api.invoke('exportSession', s.id, 'html');
+                  if (file) setNotice('已导出到 ' + file);
+                });
+              }}
+            >
+              <Download size={14} />
+              导出 HTML
+            </button>
+          )}
           <button
             role="menuitem"
             className="danger"
@@ -339,6 +342,9 @@ export function Sidebar(
         {!state.projects.length && <p className="sidebar-empty">需要处理本地文件时，打开项目。</p>}
       </div>
       <div className="sidebar-footer">
+        {state.sessions.some((session) => busy(session.lastStatus)) && (
+          <button onClick={() => void attempt(() => api.invoke('stopAll'))}>停止所有会话</button>
+        )}
         <button
           onClick={() =>
             void attempt(async () => {

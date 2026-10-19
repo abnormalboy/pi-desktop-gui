@@ -60,6 +60,11 @@ export function PiFeatures({
           ))}
         </nav>
         <div className="settings-content feature-content">
+          {model.runtime.configurationPending && (
+            <p className="environment-note" role="status">
+              配置已保存，本会话空闲后加载；当前任务继续使用已加载的资源。
+            </p>
+          )}
           {model.engineReason && (
             <p className="environment-note" role="status">
               {model.engineReason}

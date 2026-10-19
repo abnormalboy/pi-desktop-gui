@@ -6,8 +6,7 @@ export function HelpTab({ runtime, source }: Pick<FeatureModel, 'runtime' | 'sou
     <>
       <h3>当前支持情况</h3>
       <p className="settings-copy">
-        常用设置、完整 Pi 配置、供应商与 MCP 配置已支持编辑和保存。会话操作、登录和资源管理需要可用的 Pi
-        运行环境；运行中的任务结束后可操作。
+        配置可在运行中保存，相关会话空闲后加载。会话树、导出和新建分支在运行中可用；回退历史、手动压缩和终端交接需当前会话空闲，资源包安装需相关进程空闲。
       </p>
       <p className="settings-copy">
         终端主题、终端渲染选项和扩展自定义终端界面尚未在桌面实现。可在“会话与上下文 → 在 Pi

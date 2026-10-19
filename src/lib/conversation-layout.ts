@@ -1,6 +1,24 @@
 import { messageText, type Message, type ToolActivity } from '../../shared/types';
 import { splitUserContent } from './message-content';
 const readOnly = new Set(['read', 'grep', 'find', 'ls', 'tool_search']);
+export function hideRecoveredErrors(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let recovered = false;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === 'user') recovered = false;
+    if (message.role === 'assistant') {
+      if (message.stopReason === 'stop' || message.stopReason === 'toolUse') recovered = true;
+      else if (message.stopReason === 'error' && recovered) {
+        if (!message.content.length) continue;
+        result.push({ ...message, errorMessage: undefined });
+        continue;
+      }
+    }
+    result.push(message);
+  }
+  return result.reverse();
+}
 export type ConversationItem =
   { kind: 'message'; index: number } | { kind: 'group'; id: string; indices: number[] };
 export function groupConversation(

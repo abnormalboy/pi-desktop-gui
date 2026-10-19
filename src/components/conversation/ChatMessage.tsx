@@ -116,21 +116,21 @@ export const ChatMessage = memo(
                     <Undo2 size={13} />
                   </IconButton>
                 )}
-                <IconButton title="编辑后重新发送" disabled={ctx.locked} onClick={() => ctx.act(m, 'edit')}>
+                <IconButton
+                  title={ctx.running ? '本会话正在使用这段历史，请停止任务后编辑' : '编辑后重新发送'}
+                  disabled={ctx.locked}
+                  onClick={() => ctx.act(m, 'edit')}
+                >
                   <Pencil size={13} />
                 </IconButton>
-                <IconButton
-                  title="从这里分支到新会话"
-                  disabled={ctx.locked}
-                  onClick={() => ctx.act(m, 'fork')}
-                >
+                <IconButton title="从这里分支到新会话" onClick={() => ctx.act(m, 'fork')}>
                   <GitBranch size={13} />
                 </IconButton>
               </>
             )}
             {m.role === 'assistant' && m.timestamp && last && (
               <IconButton
-                title="重新生成这条回复"
+                title={ctx.running ? '本会话正在执行，请停止任务后重新生成' : '重新生成这条回复'}
                 disabled={ctx.locked}
                 onClick={() => ctx.act(m, 'regenerate')}
               >

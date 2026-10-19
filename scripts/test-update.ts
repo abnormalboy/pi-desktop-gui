@@ -319,7 +319,7 @@ try {
         page.evaluate(() => window.desktop.invoke('installUpdate')),
         /当前任务或审批/,
       );
-      await page.evaluate(() => window.desktop.invoke('stop'));
+      await page.evaluate((id) => window.desktop.invoke('stop', id), session.id);
     }
     const draft = `保留 ${mode} 更新前的新草稿`;
     await page.getByRole('textbox', { name: '任务输入' }).fill(draft);

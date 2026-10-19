@@ -34,12 +34,14 @@ export function ContextMeter({
   compact,
   branch,
   disabled,
+  branchDisabled,
 }: {
   stats: NonNullable<Runtime['stats']>;
   open: () => void;
   compact?: () => void;
   branch?: () => void;
   disabled?: boolean;
+  branchDisabled?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const panel = useRef<HTMLSpanElement>(null);
@@ -96,6 +98,7 @@ export function ContextMeter({
           <span>累计 {(stats.tokens ?? 0).toLocaleString()} tokens</span>
           <button
             disabled={disabled || !compact}
+            title={disabled ? '本会话正在执行任务或暂时无法修改历史，请停止相关任务后压缩' : ''}
             onClick={() => {
               setExpanded(false);
               compact?.();
@@ -104,7 +107,7 @@ export function ContextMeter({
             立即压缩上下文
           </button>
           <button
-            disabled={disabled || !branch}
+            disabled={branchDisabled || !branch}
             onClick={() => {
               setExpanded(false);
               branch?.();

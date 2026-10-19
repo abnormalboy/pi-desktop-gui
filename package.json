@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop-gui",
-  "version": "0.14.14",
+  "version": "0.14.15",
   "private": true,
   "description": "A local desktop workspace for the Pi coding agent",
   "author": "yeyuProject",
@@ -21,6 +21,7 @@
     "test:features-ui": "node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs && node --import tsx scripts/test-approval-ui.mjs && node --import tsx scripts/test-recovery-ui.mjs && node --import tsx scripts/test-compatibility-ui.mjs && node --import tsx scripts/test-update-ui.mjs && node --import tsx scripts/test-model-errors-ui.mjs && node --import tsx scripts/test-model-switch-ui.mjs && npm run test:v014-ui && node --import tsx scripts/test-retry-ui.mjs",
     "test:v014-ui": "node --import tsx scripts/test-management-v014-ui.mjs && node --import tsx scripts/test-conversation-v014-ui.mjs && node --import tsx scripts/test-workspace-v014-ui.mjs",
     "test:session-ui": "node --import tsx scripts/test-session-ui.mjs",
+    "test:concurrency": "node --import tsx scripts/test-concurrency-settings.ts && node --import tsx scripts/test-model-switch-ui.mjs",
     "test:update": "node --import tsx scripts/test-update.ts",
     "package": "npm run build && node scripts/package.mjs",
     "package:dir": "npm run build && node scripts/package.mjs --dir",
@@ -156,6 +157,7 @@
     "lucide-react": "1.55.0",
     "playwright": "1.64.0",
     "prettier": "3.9.10",
+    "proper-lockfile": "4.1.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "10.1.0",

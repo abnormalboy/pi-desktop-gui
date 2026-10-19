@@ -848,7 +848,12 @@ try {
   );
   if (app) {
     // Do not let a failed assertion leave a live fixture task or a confirmation hanging CI.
-    await page?.evaluate(() => window.desktop.invoke('stop')).catch(() => {});
+    await page
+      ?.evaluate(async () => {
+        const { state } = await window.desktop.invoke('bootstrap');
+        await window.desktop.invoke('stop', state.selectedSessionId);
+      })
+      .catch(() => {});
     await app
       .evaluate(({ app }) => {
         app.exit(0);

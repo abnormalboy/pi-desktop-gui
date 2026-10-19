@@ -90,6 +90,7 @@ try {
   await page.locator('.thread').getByText('SESSION_A_ONLY', { exact: true }).waitFor();
   const diagnostic = async () => JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics')));
   const originalPid = (await diagnostic()).sessionSwitch.pid;
+  const sessionPids = new Map([[a.id, originalPid]]);
   const durations = [],
     backendDurations = [];
   for (let i = 0; i < 12; i++) {
@@ -134,8 +135,9 @@ try {
     );
     assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), target.draft);
     const info = (await diagnostic()).sessionSwitch;
-    assert.equal(info.mode, 'reuse');
-    assert.equal(info.pid, originalPid);
+    assert.equal(info.mode, 'restart');
+    if (sessionPids.has(target.id)) assert.equal(info.pid, sessionPids.get(target.id));
+    else sessionPids.set(target.id, info.pid);
     if (i >= 2) {
       durations.push(elapsed);
       backendDurations.push(info.elapsedMs);
@@ -156,7 +158,8 @@ try {
   );
   console.log('Session click-to-message measurement:', JSON.stringify(measurement));
   reportSessionSwitchBudget(measurement);
-  console.log('PASS ten UI switches retain PID and drafts');
+  assert.notEqual(sessionPids.get(a.id), sessionPids.get(b.id));
+  console.log("PASS ten UI switches retain each chat's own process and draft");
 
   process.kill(originalPid);
   await page.waitForFunction(async () => {
@@ -172,14 +175,21 @@ try {
   }, b.id);
   const restarted = (await diagnostic()).sessionSwitch;
   assert.equal(restarted.mode, 'restart');
-  assert.notEqual(restarted.pid, originalPid);
+  assert.equal(restarted.pid, sessionPids.get(b.id));
   await page.waitForFunction(
     (draft) => document.querySelector('textarea[aria-label="任务输入"]')?.value === draft,
     b.draft,
     { timeout: 5000 },
   );
   assert.equal(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), b.draft);
-  console.log('PASS the first sidebar selection after an idle Pi exit reconnects and restores the target');
+  console.log('PASS an idle process exit in A leaves B connected to its original process');
+  await page.getByRole('button', { name: a.title, exact: true }).click();
+  await page.waitForFunction(async (id) => {
+    const { runtime } = await window.desktop.invoke('bootstrap');
+    return runtime.sessionId === id && runtime.connected && runtime.status === 'idle';
+  }, a.id);
+  assert.notEqual((await diagnostic()).sessionSwitch.pid, originalPid);
+  console.log('PASS selecting the exited chat reconnects only that chat');
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
   console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
 
@@ -191,6 +201,13 @@ try {
   }
   throw error;
 } finally {
+  if (page && !page.isClosed())
+    await page
+      .evaluate(async () => {
+        const { state } = await window.desktop.invoke('bootstrap');
+        await Promise.all(state.sessions.map((session) => window.desktop.invoke('stop', session.id)));
+      })
+      .catch(() => {});
   await app
     ?.evaluate(({ BrowserWindow }) => {
       return BrowserWindow.getAllWindows()[0]?.webContents.executeJavaScript(

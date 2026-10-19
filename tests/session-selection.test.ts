@@ -8,6 +8,7 @@ import { API } from 'typescript/unstable/sync';
 import { transformSync } from 'esbuild';
 import { Store } from '../electron/store';
 import { AgentService } from '../electron/agent';
+import { SessionAgents } from '../electron/session-agents';
 import { Workspace } from '../electron/workspace';
 import { busy, type AppEvent, type Message } from '../shared/types';
 
@@ -48,6 +49,7 @@ const textHelpers = source.statements.filter(
 assert.equal(textHelpers.length, 1);
 const { code } = transformSync(
   `const createHandler = (store, service, send, busy) => {
+    let sessionSelection = 0;
     ${textHelpers[0].getText(source)}
     const save = ${variable('save').getText(source)};
     return ${selection.initializer.getText(source)};
@@ -56,7 +58,7 @@ const { code } = transformSync(
 );
 const createHandler = new Function(`${code}\nreturn createHandler;`)() as (
   store: Store,
-  service: AgentService,
+  service: SessionAgents,
   send: (event: AppEvent) => void,
   isBusy: typeof busy,
 ) => (id: string) => Promise<Message[]>;
@@ -97,34 +99,37 @@ async function fixture(t: TestContext) {
   const [a, b, c] = sessions;
   store.selectSession(a.id);
   await store.save();
-  // Keep real history and shutdown/flush behavior; only replace backend RPC switching.
-  class Agent extends AgentService {
-    override async connect(id: string) {
-      this.runtime.sessionId = id;
-      this.runtime.connected = true;
-    }
-    override async disconnect() {
-      this.runtime.connected = false;
-    }
+  // Keep per-session ownership, history and persistence; replace only process startup.
+  const agents = new SessionAgents(store, new Workspace(dir));
+  const current = agents.get(a.id);
+  const service = agents.get(b.id);
+  for (const session of sessions) {
+    const agent = agents.get(session.id);
+    t.mock.method(agent, 'connect', async (id: string) => {
+      agent.runtime.sessionId = id;
+      agent.runtime.connected = true;
+    });
   }
-  const service = new Agent(store, new Workspace(dir));
-  service.runtime.connected = true;
-  service.runtime.sessionId = a.id;
+  current.runtime.connected = true;
+  current.runtime.sessionId = a.id;
   const events: AppEvent[] = [];
   const send = (event: AppEvent) => events.push(structuredClone(event));
   store.on('storage', (storage) => send({ type: 'storage', storage }));
   t.after(async () => {
+    await agents.dispose();
     await store.flush().catch(() => {});
     await fs.rm(dir, { recursive: true, force: true });
   });
   return {
     store,
     service,
+    agents,
+    current,
     a,
     b,
     c,
     events,
-    select: createHandler(store, service, send, busy),
+    select: createHandler(store, agents, send, busy),
     selectedEvents: () => events.filter((event) => event.type === 'state').map((event) => event.state),
     persisted: async () => JSON.parse(await fs.readFile(path.join(dir, 'state.json'), 'utf8')),
   };
@@ -157,6 +162,7 @@ test('selection is visible behind a blocked agent save, but invoke/history and f
   let agentSave!: Promise<void>;
   t.mock.method(f.service, 'connect', async (id: string) => {
     f.service.runtime.sessionId = id;
+    f.service.runtime.connected = true;
     agentSave = f.store.save(); // The backend saved while the previous session was still selected.
   });
   const history = t.mock.method(f.service, 'history');
@@ -190,60 +196,68 @@ test('selection is visible behind a blocked agent save, but invoke/history and f
   }
 });
 
-for (const operation of ['connect', 'disconnect'] as const) {
-  test(`selection waits for successful ${operation}, and cancellation preserves the old selection`, async (t) => {
-    const f = await fixture(t);
-    if (operation === 'disconnect') {
-      f.store.state.projects.push({
-        id: 'untrusted',
-        name: 'untrusted',
-        path: f.store.dir,
-        trusted: false,
-        createdAt: 0,
-      });
-      f.b.projectId = 'untrusted';
-    }
-    const backend = deferred();
-    let canceled = true;
-    const rpc = t.mock.method(f.service, operation, async () => {
-      await backend.promise;
-      if (canceled) throw new Error('switch canceled');
-      f.service.runtime.connected = operation === 'connect';
-      if (operation === 'connect') f.service.runtime.sessionId = f.b.id;
-    });
-    const save = t.mock.method(f.store, 'save');
-    const selected = observe(f.select(f.b.id));
-    await nextTurn();
-    assert.equal(rpc.mock.callCount(), 1);
-    assert.equal(f.store.state.selectedSessionId, f.a.id);
-    assert.deepEqual(f.events, []);
-    assert.equal(save.mock.callCount(), 0);
-    backend.resolve();
-    await assert.rejects(selected.promise, /switch canceled/);
-    assert.equal(f.store.state.selectedSessionId, f.a.id);
-    assert.deepEqual(f.events, []);
-    assert.equal(save.mock.callCount(), 0);
-
-    canceled = false;
-    const {
-      gates: [gate],
-    } = blockWrites(t, f.store);
-    const successful = observe(f.select(f.b.id));
-    try {
-      await gate.entered.promise;
-      assert.equal(f.selectedEvents().length, operation === 'connect' ? 1 : 0);
-      if (operation === 'connect') assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
-      assert.equal(successful.settled, false);
-      gate.release.resolve();
-      assert.deepEqual(await successful.promise, [{ role: 'user', content: 'history-1' }]);
-      assert.equal(f.selectedEvents().length, 1);
-      assert.equal(f.selectedEvents()[0].selectedProjectId, f.b.projectId);
-    } finally {
-      gate.release.resolve();
-      await successful.promise.catch(() => {});
-    }
+test('selection waits for its own connection, and cancellation preserves the old selection', async (t) => {
+  const f = await fixture(t);
+  const backend = deferred();
+  let canceled = true;
+  const rpc = t.mock.method(f.service, 'connect', async () => {
+    await backend.promise;
+    if (canceled) throw new Error('switch canceled');
+    f.service.runtime.connected = true;
+    f.service.runtime.sessionId = f.b.id;
   });
-}
+  const save = t.mock.method(f.store, 'save');
+  const selected = observe(f.select(f.b.id));
+  await nextTurn();
+  assert.equal(rpc.mock.callCount(), 1);
+  assert.equal(f.store.state.selectedSessionId, f.a.id);
+  assert.deepEqual(f.events, []);
+  assert.equal(save.mock.callCount(), 0);
+  backend.resolve();
+  await assert.rejects(selected.promise, /switch canceled/);
+  assert.equal(f.store.state.selectedSessionId, f.a.id);
+  assert.deepEqual(f.events, []);
+  assert.equal(save.mock.callCount(), 0);
+
+  canceled = false;
+  const {
+    gates: [gate],
+  } = blockWrites(t, f.store);
+  const successful = observe(f.select(f.b.id));
+  try {
+    await gate.entered.promise;
+    assert.equal(f.selectedEvents().length, 1);
+    assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
+    assert.equal(successful.settled, false);
+    gate.release.resolve();
+    assert.deepEqual(await successful.promise, [{ role: 'user', content: 'history-1' }]);
+    assert.equal(f.selectedEvents().length, 1);
+    assert.equal(f.selectedEvents()[0].selectedProjectId, f.b.projectId);
+  } finally {
+    gate.release.resolve();
+    await successful.promise.catch(() => {});
+  }
+});
+
+test('a slow earlier connection cannot replace the most recently selected chat', async (t) => {
+  const f = await fixture(t);
+  const backend = deferred();
+  t.mock.method(f.service, 'connect', async () => {
+    await backend.promise;
+    f.service.runtime.connected = true;
+    f.service.runtime.sessionId = f.b.id;
+  });
+  const earlier = f.select(f.b.id);
+  await nextTurn();
+  await f.select(f.c.id);
+  backend.resolve();
+  assert.deepEqual(await earlier, [{ role: 'user', content: 'history-1' }]);
+  assert.equal(f.store.state.selectedSessionId, f.c.id);
+  assert.deepEqual(
+    f.selectedEvents().map((state) => state.selectedSessionId),
+    [f.c.id],
+  );
+});
 
 test('ENOSPC still rejects selection and reports read-only storage after the early state', async (t) => {
   const f = await fixture(t);
@@ -336,10 +350,10 @@ test('rapid B to C keeps handler histories and draft snapshots separate through 
 });
 
 for (const status of ['disconnected', 'busy elsewhere'] as const) {
-  test(`${status} keeps the fallback selection event behind persistence`, async (t) => {
+  test(`${status} allows the selected chat to connect without touching the previous process`, async (t) => {
     const f = await fixture(t);
-    f.service.runtime.connected = status !== 'disconnected';
-    if (status === 'busy elsewhere') f.service.runtime.status = 'running';
+    f.current.runtime.connected = status !== 'disconnected';
+    if (status === 'busy elsewhere') f.current.runtime.status = 'running';
     const connect = t.mock.method(f.service, 'connect');
     const history = t.mock.method(f.service, 'history');
     const {
@@ -350,8 +364,10 @@ for (const status of ['disconnected', 'busy elsewhere'] as const) {
       await gate.entered.promise;
       await nextTurn();
       assert.equal(f.store.state.selectedSessionId, f.b.id);
-      assert.deepEqual(f.events, []);
-      assert.equal(connect.mock.callCount(), 0);
+      assert.equal(f.selectedEvents()[0].selectedSessionId, f.b.id);
+      assert.equal(connect.mock.callCount(), 1);
+      assert.equal(f.current.runtime.connected, status !== 'disconnected');
+      assert.equal(f.current.runtime.status, status === 'busy elsewhere' ? 'running' : 'idle');
       assert.equal(history.mock.callCount(), 0);
       assert.equal(selected.settled, false);
       gate.release.resolve();
@@ -373,7 +389,7 @@ test('a failed state delivery still waits for the selected-session save and flus
   const history = t.mock.method(f.service, 'history');
   const select = createHandler(
     f.store,
-    f.service,
+    f.agents,
     () => {
       throw new Error('window closed');
     },

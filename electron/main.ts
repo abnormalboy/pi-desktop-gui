@@ -23,7 +23,8 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, readSessionFile } from './store';
-import { AgentService, redact } from './agent';
+import { redact } from './agent';
+import { SessionAgents } from './session-agents';
 import {
   Workspace,
   listDirectory,
@@ -50,6 +51,8 @@ import type { ResourceCatalog } from '../shared/types';
 import type { CheckpointContext } from '../shared/checkpoints';
 import { detectEnvironment, requireSupportedPi, resolvePi, agentDirectory } from './environment';
 import { Configuration } from './configuration';
+import { toggleResourceSetting } from './resources-config';
+import { canonicalWritePath, isWithinDirectory } from './approval-paths';
 import { UpdateService, updateInstallation, fetchLatestRelease, fetchReleaseNotes } from './updater';
 import { createNativeUpdateDriver } from './update-driver';
 import { readImageAttachment, validateImages } from './images';
@@ -64,15 +67,15 @@ import {
   samePath,
   terminalOpen,
 } from './platform';
-import { busy, emptyRuntime, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
+import { busy, messageText, type AppEvent, type ApiMap, type Runtime } from '../shared/types';
 
-let window: BrowserWindow | undefined, store: Store, service: AgentService, workspace: Workspace;
+let window: BrowserWindow | undefined, store: Store, service: SessionAgents, workspace: Workspace;
 let updates: UpdateService;
 let quitting = false;
 let closing = false;
 let sessionEnding = false;
 let activeOperations = 0;
-let activeEngineOperations = 0;
+let sessionSelection = 0;
 let workspaceWatcher: WorkspaceWatcher | undefined;
 let watchedProject = '';
 let watcherRevision = 0;
@@ -131,15 +134,14 @@ const save = async () => {
   await store.save();
   send({ type: 'state', state: store.state });
 };
-const attention = { status: '', sessionId: '', dialogs: 0 };
+const attention = new Map<string, { status: string; dialogs: number }>();
 let lastToast: Notification | undefined;
 function notifyAttention(runtime: Runtime) {
-  const previous = { ...attention };
-  attention.status = runtime.status;
-  attention.sessionId = runtime.sessionId ?? '';
-  attention.dialogs = runtime.dialogs.length;
+  if (!runtime.sessionId) return;
+  const previous = attention.get(runtime.sessionId);
+  attention.set(runtime.sessionId, { status: runtime.status, dialogs: runtime.dialogs.length });
   if (!window || window.isDestroyed() || window.isFocused()) return;
-  if (!runtime.sessionId || runtime.sessionId !== previous.sessionId) return;
+  if (!previous) return;
   if (!store.state.settings.notifyOnFinish || !Notification.isSupported()) return;
   const session = store.state.sessions.find((s) => s.id === runtime.sessionId);
   if (!session) return;
@@ -164,6 +166,7 @@ function notifyAttention(runtime: Runtime) {
     window.show();
     window.focus();
     if (store.state.sessions.some((s) => s.id === session.id)) {
+      sessionSelection++;
       store.selectSession(session.id);
       void save();
     }
@@ -230,6 +233,7 @@ function strings(value: unknown): asserts value is string[] {
     throw new Error('列表格式无效');
 }
 async function newSession(projectId?: string) {
+  sessionSelection++;
   const s = store.createSession(projectId);
   await save();
   return s;
@@ -252,6 +256,7 @@ function sessionRoots() {
   return [path.join(agentDirectory(store.state.settings), 'sessions'), path.join(store.dir, 'sessions')];
 }
 async function adoptSessionFile(file: string, projectId?: string) {
+  sessionSelection++;
   const existing = store.state.sessions.find((s) => s.file && samePath(s.file, file));
   if (existing) {
     store.selectSession(existing.id);
@@ -281,6 +286,7 @@ async function chooseFile(title: string, filters?: Electron.FileFilter[]) {
 }
 let diagnosticPreview = '';
 const exec = promisify(execFile);
+let configurationWrites = Promise.resolve();
 let updatingConfiguration = false;
 function checkpointContext(projectId: string, value: unknown): CheckpointContext | undefined {
   if (value === undefined) return undefined;
@@ -294,7 +300,7 @@ function checkpointContext(projectId: string, value: unknown): CheckpointContext
 const sessionResourcePaths = new Map<string, string[]>();
 async function promptContext(id: string): Promise<PromptTemplateContext> {
   const session = store.session(id);
-  const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+  const catalog = (await service.get(id).admin(id, 'resources')) as ResourceCatalog;
   sessionResourcePaths.set(
     id,
     catalog.resources.map((item) => item.path),
@@ -305,32 +311,45 @@ async function promptContext(id: string): Promise<PromptTemplateContext> {
     resources: catalog.resources,
   };
 }
-const terminalLock = () => path.join(store.dir, 'terminal.lock');
-async function assertTerminalClosed() {
-  if (await terminalOpen(terminalLock()))
+const terminalLock = (id: string) => path.join(store.dir, 'terminal-' + encodeURIComponent(id) + '.lock');
+async function assertTerminalClosed(id: string) {
+  if (await terminalOpen(terminalLock(id)))
     throw new Error('当前会话已交给 Pi 终端，请关闭该终端后再使用桌面会话');
+}
+async function assertWorkspaceTerminalsClosed(root: string) {
+  const real = await canonicalWritePath(root);
+  for (const session of store.state.sessions) {
+    if (!(await terminalOpen(terminalLock(session.id)))) continue;
+    const cwd = await canonicalWritePath(await store.sessionDirectory(session.id));
+    if (isWithinDirectory(real, cwd) || isWithinDirectory(cwd, real))
+      throw new Error(`会话“${session.title}”的 Pi 终端仍在使用这个目录，请关闭相关终端后执行`);
+  }
 }
 async function exportSession(id: string, format: 'html' | 'jsonl') {
   if (!['html', 'jsonl'].includes(format)) throw new Error('导出格式无效');
-  if (busy(service.runtime.status)) throw new Error('请先等待当前任务结束');
-  await service.connect(id);
+  const agent = service.get(id);
+  // Capture before the save dialog, while other sessions and this task may keep producing output.
+  const temporary = path.join(store.dir, 'export-' + randomUUID() + '.' + format);
+  let snapshot: Buffer;
+  const original = store.session(id).file;
+  try {
+    snapshot = await agent.captureExport(id, format, temporary);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
   const chosen = await dialog.showSaveDialog(window!, {
     title: '导出完整会话',
     defaultPath: 'pi-session.' + format,
     filters: [{ name: format.toUpperCase(), extensions: [format] }],
   });
   if (chosen.canceled || !chosen.filePath) return null;
-  if (format === 'html') await service.exportHtml(id, chosen.filePath);
-  else {
-    const file = store.session(id).file;
-    if (!file) throw new Error('会话尚未产生可导出的内容');
-    if (samePath(file, chosen.filePath)) throw new Error('请选择不同于原会话文件的导出位置');
-    await fs.copyFile(file, chosen.filePath);
-  }
+  if (original && samePath(original, chosen.filePath)) throw new Error('请选择不同于原会话文件的导出位置');
+  await fs.writeFile(chosen.filePath, snapshot);
   return chosen.filePath;
 }
 async function diagnostics() {
   const environment = await detectEnvironment(store.state.settings, developmentRoot);
+  const agent = store.state.selectedSessionId ? service.get(store.state.selectedSessionId) : undefined;
   diagnosticPreview = redact(
     JSON.stringify(
       {
@@ -338,8 +357,8 @@ async function diagnostics() {
         platform: process.platform,
         environment,
         piCompatibility: environment.compatibility,
-        sessionSwitch: service.lastSwitch,
-        modelErrors: service.recentModelErrors,
+        sessionSwitch: agent?.lastSwitch,
+        modelErrors: agent?.recentModelErrors,
         runtime: {
           status: service.runtime.status,
           connected: service.runtime.connected,
@@ -414,6 +433,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const folder = await fs.realpath(chosen.filePaths[0]);
     const existing = store.state.projects.find((p) => samePath(p.path, folder));
     if (existing) {
+      sessionSelection++;
       store.state.selectedProjectId = existing.id;
       store.state.selectedSessionId = store.state.sessions.find((s) => s.projectId === existing.id)?.id;
       await save();
@@ -439,9 +459,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   removeProject: async (id) => {
     text(id, 100);
-    if (busy(service.runtime.status) && store.session(service.runtime.sessionId!).projectId === id)
-      throw new Error('请先停止该项目的任务');
+    if (service.projectBusy(id)) throw new Error('请先停止该项目的任务');
     const p = store.project(id);
+    await assertWorkspaceTerminalsClosed(p.path);
     const result = await showAppDialog({
       type: 'question',
       message: `从列表移除 ${p.name}？`,
@@ -451,11 +471,11 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return;
-    if (store.state.sessions.some((s) => s.id === service.runtime.sessionId && s.projectId === id)) {
-      await service.disconnect();
-      service.runtime = emptyRuntime();
-      service.publish(true);
-    }
+    if (service.projectBusy(id)) throw new Error('请先停止该项目的任务');
+    await assertWorkspaceTerminalsClosed(p.path);
+    await Promise.all(
+      store.state.sessions.filter((s) => s.projectId === id).map((s) => service.release(s.id)),
+    );
     store.state.projects = store.state.projects.filter((p) => p.id !== id);
     store.state.sessions = store.state.sessions.filter((s) => s.projectId !== id);
     if (store.state.selectedProjectId === id) {
@@ -494,19 +514,22 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   selectSession: async (id) => {
     text(id, 100);
+    const selection = ++sessionSelection;
     const s = store.session(id);
+    const agent = service.get(id);
     if (
       store.storage.writable &&
-      (service.runtime.connected || service.runtime.crash?.cleanup === 'confirmed') &&
-      !busy(service.runtime.status) &&
-      service.runtime.sessionId !== id
+      !agent.runtime.connected &&
+      !agent.hasPendingWork &&
+      !(await service.inTerminal(id)) &&
+      (!s.projectId || store.project(s.projectId).trusted)
     ) {
-      if (!s.projectId || store.project(s.projectId).trusted) await service.connect(id);
-      else await service.disconnect();
+      await agent.connect(id);
     }
+    if (selection !== sessionSelection) return agent.history(id);
     store.selectSession(s.id);
     if (store.storage.writable) {
-      if (service.runtime.connected && service.runtime.sessionId === s.id) {
+      if (agent.runtime.connected) {
         // The loaded runtime can render now; completion still waits for persistence.
         const saving = store.save();
         try {
@@ -516,21 +539,21 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
         }
       } else await save();
     } else send({ type: 'state', state: store.state });
-    return service.history(id);
+    return agent.history(id);
   },
   renameSession: async (id, name) => {
     text(id, 100);
     text(name, 120);
     if (!name.trim()) return;
     store.session(id).title = name.trim();
-    await service.rename(id, name.trim());
+    await service.get(id).rename(id, name.trim());
     await save();
   },
   deleteSession: async (id) => {
     text(id, 100);
+    await assertTerminalClosed(id);
     const s = store.session(id);
-    if (service.runtime.sessionId === id && busy(service.runtime.status))
-      throw new Error('请先停止这个会话的任务');
+    if (service.active(id)) throw new Error('请先停止这个会话的任务');
     const result = await showAppDialog({
       type: 'warning',
       message: `删除会话“${s.title}”？`,
@@ -541,13 +564,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     });
     if (result.response !== 1) return false;
     if (!store.state.sessions.includes(s)) return false;
-    if (service.runtime.sessionId === id && busy(service.runtime.status))
-      throw new Error('请先停止这个会话的任务');
-    if (service.runtime.sessionId === id) {
-      await service.disconnect();
-      service.runtime = emptyRuntime();
-      service.publish(true);
-    }
+    if (service.active(id)) throw new Error('请先停止这个会话的任务');
+    await service.release(id);
+    await assertTerminalClosed(id);
     if (s.file) {
       const exists = await fs.lstat(s.file).then(
         () => true,
@@ -578,7 +597,12 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const candidates = (
       await Promise.all(
         store.state.sessions.map(async (session) =>
-          (await isEmptySession(session, service.runtime.sessionId)) ? session.id : undefined,
+          (await isEmptySession(
+            session,
+            service.connected(session.id) || (await service.inTerminal(session.id)) ? session.id : undefined,
+          ))
+            ? session.id
+            : undefined,
         ),
       )
     ).filter((id): id is string => !!id);
@@ -596,14 +620,22 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const removable = new Set<string>();
     for (const id of candidates) {
       const session = store.state.sessions.find((item) => item.id === id);
-      if (session && (await isEmptySession(session, service.runtime.sessionId))) removable.add(id);
+      if (
+        session &&
+        (await isEmptySession(
+          session,
+          service.connected(id) || (await service.inTerminal(id)) ? id : undefined,
+        ))
+      )
+        removable.add(id);
     }
+    await Promise.all([...removable].map((id) => service.release(id)));
     // Draft saves can arrive while the file checks above await I/O; inspect current fields once more.
     const before = store.state.sessions.length;
     store.state.sessions = store.state.sessions.filter(
       (session) =>
         !removable.has(session.id) ||
-        session.id === service.runtime.sessionId ||
+        service.connected(session.id) ||
         session.pinned ||
         session.draft ||
         session.attachments.length ||
@@ -640,7 +672,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     text(provider, 200);
     text(modelId, 400);
-    await service.setModel(id, provider, modelId);
+    await service.get(id).setModel(id, provider, modelId);
   },
   setSessionThinking: async (id, level) => {
     text(id, 100);
@@ -651,18 +683,21 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     if (!['edit', 'regenerate', 'fork'].includes(action)) throw new Error('消息操作无效');
     if (!['user', 'assistant'].includes(role) || !Number.isFinite(timestamp)) throw new Error('消息无效');
-    await service.messageAction(id, action, role, timestamp);
+    await service.get(id).messageAction(id, action, role, timestamp);
   },
-  abortRetry: () => service.abortRetry(),
+  abortRetry: (id) => {
+    text(id, 100);
+    return service.get(id).abortRetry();
+  },
   setApprovalMode: async (id, mode) => {
     text(id, 100);
     if (mode !== 'auto' && mode !== 'confirm' && mode !== 'readonly') throw new Error('审批模式无效');
-    await service.setApprovalMode(id, mode);
+    await service.get(id).setApprovalMode(id, mode);
   },
   revokeApproval: async (id, grantId) => {
     text(id, 100);
     if (grantId !== undefined) text(grantId);
-    await service.revokeApproval(id, grantId);
+    await service.get(id).revokeApproval(id, grantId);
   },
   checkpoints: async (id) => {
     text(id, 100);
@@ -682,8 +717,6 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     strings(files);
     text(revision, 200);
     if (!files.length || !revision) throw new Error('请重新查看检查点并选择要撤销的文件');
-    service.assertCommandsStopped();
-    if (service.hasPendingWork) throw new Error('请等待当前任务或会话操作完成后再撤销');
     const session = store.session(id);
     if (!session.projectId) throw new Error('独立对话没有项目检查点');
     const result = await workspace.revert(
@@ -699,20 +732,14 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     text(entryId, 100);
     text(label, 200);
-    await service.admin(id, 'set_label', { entryId, label });
+    await service.get(id).admin(id, 'set_label', { entryId, label });
   },
   revertChanges: async (projectId, only, rawContext) => {
-    service.assertCommandsStopped();
     text(projectId, 100);
     if (only !== null) strings(only);
     const project = store.project(projectId);
     const context = checkpointContext(projectId, rawContext);
-    if (
-      busy(service.runtime.status) &&
-      service.runtime.sessionId &&
-      store.session(service.runtime.sessionId).projectId === projectId
-    )
-      throw new Error('请等待当前任务结束后再撤销');
+    if (service.projectBusy(projectId)) throw new Error('请等待当前任务结束后再撤销');
     const pending = (await workspace.changes(project, 'run', context)).files.filter(
       (f) => !only || only.includes(f.path),
     );
@@ -731,8 +758,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return [];
-    service.assertCommandsStopped();
-    if (busy(service.runtime.status)) throw new Error('任务正在执行，请停止后再撤销');
+    if (service.projectBusy(projectId)) throw new Error('任务正在执行，请停止后再撤销');
     return workspace.revert(project, only, (file) => shell.trashItem(file), context);
   },
   saveDraft: async (id, draft, attachments, images, snippets) => {
@@ -782,7 +808,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   readHistory: async (id) => {
     text(id, 100);
-    return service.history(id);
+    return service.get(id).history(id);
   },
   detect: () => detectEnvironment(store.state.settings, developmentRoot),
   choosePath: async (kind) => {
@@ -804,16 +830,6 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   saveSettings: async (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置格式无效');
-    const engineKeys = ['piPath', 'nodePath', 'agentDir'];
-    if (
-      Object.keys(value).some(
-        (k) =>
-          engineKeys.includes(k) && value[k] !== store.state.settings[k as keyof typeof store.state.settings],
-      )
-    ) {
-      if (busy(service.runtime.status)) throw new Error('任务运行时不能更改运行环境或模型');
-      await service.disconnect();
-    }
     const next = { ...store.state.settings };
     for (const key of [
       'piPath',
@@ -856,16 +872,16 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   connect: async (id) => {
     text(id, 100);
-    await service.connect(id);
+    await service.get(id).connect(id);
   },
   recover: async (id, prompt) => {
     text(id, 100);
     if (prompt !== undefined) text(prompt);
-    await service.recover(id, prompt);
+    await service.get(id).recover(id, prompt);
   },
   testConnection: async (id) => {
     text(id, 100);
-    return service.testConnection(id);
+    return service.get(id).testConnection(id);
   },
   send: async (id, prompt, attachments, mode, images = []) => {
     text(id, 100);
@@ -873,7 +889,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     strings(attachments);
     if (mode !== 'steer' && mode !== 'followUp') throw new Error('发送模式无效');
     validateImages(images);
-    await service.send(id, prompt, attachments, mode, images);
+    await service.get(id).send(id, prompt, attachments, mode, images);
   },
   pickImages: async () => {
     const picked = await dialog.showOpenDialog(window!, {
@@ -904,60 +920,64 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   sessionTree: async (id) => {
     text(id, 100);
-    return service.tree(id);
+    return service.get(id).tree(id);
   },
   branchSession: async (id, kind, entryId, summarize, instructions) => {
     text(id, 100);
     if (!['fork', 'clone', 'navigate'].includes(kind)) throw new Error('会话操作无效');
     if (kind !== 'clone') text(entryId, 100);
     if (instructions !== undefined) text(instructions);
-    await service.branch(id, kind, entryId, summarize === true, instructions);
+    await service.get(id).branch(id, kind, entryId, summarize === true, instructions);
   },
   compact: async (id, instructions) => {
     text(id, 100);
     text(instructions);
-    return service.compact(id, instructions);
+    return service.get(id).compact(id, instructions);
   },
   piOption: async (id, key, value) => {
     text(id, 100);
     text(key, 100);
-    await service.option(id, key, value);
+    await service.get(id).option(id, key, value);
   },
   exportSession,
   shareSession: async (id) => {
     text(id, 100);
-    await service.connect(id);
-    const out = path.join(store.dir, 'share-preview.html');
-    await service.exportHtml(id, out);
-    const result = await showAppDialog({
-      type: 'question',
-      message: '分享完整会话到 GitHub Gist？',
-      detail:
-        '会上传全部对话、工具输出和附件内容。链接持有者均可访问。请先导出并检查内容；使用本机 gh 登录的账户。',
-      buttons: ['取消', '上传并生成分享链接'],
-      cancelId: 0,
-      defaultId: 0,
-    });
-    if (result.response !== 1) return null;
-    const { stdout } = await exec('gh', ['gist', 'create', out, '--desc', 'Pi Desktop session'], {
-      windowsHide: true,
-      timeout: 120000,
-    });
-    const url = stdout
-      .trim()
-      .split(/\r?\n/)
-      .find((s) => /^https:\/\/gist\.github\.com\//.test(s));
-    if (!url) throw new Error('Gist 未返回分享地址，请检查 gh 状态');
-    clipboard.writeText(url);
-    return url;
+    await service.get(id).connect(id);
+    const out = path.join(store.dir, 'share-preview-' + randomUUID() + '.html');
+    try {
+      await fs.writeFile(out, await service.get(id).captureExport(id, 'html', out));
+      const result = await showAppDialog({
+        type: 'question',
+        message: '分享完整会话到 GitHub Gist？',
+        detail:
+          '会上传全部对话、工具输出和附件内容。链接持有者均可访问。请先导出并检查内容；使用本机 gh 登录的账户。',
+        buttons: ['取消', '上传并生成分享链接'],
+        cancelId: 0,
+        defaultId: 0,
+      });
+      if (result.response !== 1) return null;
+      const { stdout } = await exec('gh', ['gist', 'create', out, '--desc', 'Pi Desktop session'], {
+        windowsHide: true,
+        timeout: 120000,
+      });
+      const url = stdout
+        .trim()
+        .split(/\r?\n/)
+        .find((s) => /^https:\/\/gist\.github\.com\//.test(s));
+      if (!url) throw new Error('Gist 未返回分享地址，请检查 gh 状态');
+      clipboard.writeText(url);
+      return url;
+    } finally {
+      await fs.rm(out, { force: true });
+    }
   },
   reloadPi: async (id) => {
     text(id, 100);
-    await service.admin(id, 'reload');
+    await service.get(id).scheduleReload();
   },
   resources: async (id) => {
     text(id, 100);
-    const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+    const catalog = (await service.get(id).admin(id, 'resources')) as ResourceCatalog;
     sessionResourcePaths.set(
       id,
       catalog.resources.map((item) => item.path),
@@ -986,7 +1006,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       text(original?.revision, 100);
     }
     const document = await savePromptTemplate(await promptContext(id), input, original);
-    await service.admin(id, 'reload');
+    await service.reloadConfiguration(id, input.scope === 'project');
     return document;
   },
   promptDelete: async (id, file, revision) => {
@@ -994,7 +1014,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(file, 4096);
     text(revision, 100);
     await deletePromptTemplate(await promptContext(id), file, revision);
-    await service.admin(id, 'reload');
+    const local = !samePath(path.dirname(file), path.join(agentDirectory(store.state.settings), 'prompts'));
+    await service.reloadConfiguration(id, local);
   },
   usageSummary: async () => {
     await fillSessionUsage(store);
@@ -1003,10 +1024,15 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   toggleResource: async (id, resource, enabled) => {
     text(id, 100);
     if (typeof enabled !== 'boolean') throw new Error('启用状态无效');
-    const catalog = await service.admin(id, 'resources');
+    const catalog = await service.get(id).admin(id, 'resources');
     const found = catalog.resources.find((r: any) => r.path === resource?.path && r.kind === resource?.kind);
     if (!found) throw new Error('资源已变化，请刷新列表');
-    await service.admin(id, 'toggle_resource', { resource: found, enabled });
+    const local = found.metadata.scope === 'project';
+    const config = new Configuration(store);
+    const document = await config.read(id, 'settings', local);
+    const values = toggleResourceSetting(JSON.parse(document.text), found, enabled);
+    await config.save(id, 'settings', local, { ...document, text: JSON.stringify(values) });
+    await service.reloadConfiguration(id, local);
   },
   packageAction: async (id, action, source, local) => {
     text(id, 100);
@@ -1018,7 +1044,6 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const s = store.session(id);
     if (local && (!s.projectId || !store.project(s.projectId).trusted)) throw new Error('请先启用项目');
     await requireSupportedPi(store.state.settings, developmentRoot);
-    await service.disconnect();
     const pi = await resolvePi(store.state.settings, developmentRoot);
     const args = [
       ...pi.spec.args,
@@ -1027,31 +1052,36 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       ...(source ? [source] : []),
       ...(local ? ['--local'] : []),
     ];
-    await exec(pi.spec.command, args, {
-      cwd: await store.sessionDirectory(id),
-      windowsHide: true,
-      timeout: 300000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, PI_CODING_AGENT_DIR: agentDirectory(store.state.settings), PI_TELEMETRY: '0' },
-    });
-    await service.connect(id);
+    await service.updatePackages(id, local, async () =>
+      exec(pi.spec.command, args, {
+        cwd: await store.sessionDirectory(id),
+        windowsHide: true,
+        timeout: 300000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDirectory(store.state.settings), PI_TELEMETRY: '0' },
+      }),
+    );
+    await service.get(id).connect(id);
   },
   providers: async (id) => {
     text(id, 100);
-    return service.admin(id, 'providers');
+    return service.get(id).admin(id, 'providers');
   },
   login: async (id, provider, type) => {
     text(id, 100);
     text(provider, 200);
     if (!['oauth', 'api_key'].includes(type)) throw new Error('登录方式无效');
-    await service.admin(id, 'login', { provider, type });
+    await service.get(id).admin(id, 'login', { provider, type });
   },
   logout: async (id, provider) => {
     text(id, 100);
     text(provider, 200);
-    await service.admin(id, 'logout', { provider });
+    await service.get(id).admin(id, 'logout', { provider });
   },
-  cancelLogin: () => service.cancelLogin(),
+  cancelLogin: (id) => {
+    text(id, 100);
+    return service.get(id).cancelLogin();
+  },
   configRead: async (id, kind, local) => {
     text(id, 100);
     return new Configuration(store).read(id, kind, local);
@@ -1060,7 +1090,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     text(document?.text);
     text(document?.revision, 100);
-    return new Configuration(store).saveAndApply(id, kind, local, document, service);
+    return new Configuration(store).saveAndApply(id, kind, local, document, () =>
+      service.reloadConfiguration(id, local),
+    );
   },
   revealSessionDirectory: async (id) => {
     text(id, 100);
@@ -1069,16 +1101,18 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   openPiTerminal: async (id) => {
     text(id, 100);
     await requireSupportedPi(store.state.settings, developmentRoot);
-    await service.connect(id);
-    await service.disconnect();
+    const agent = service.get(id);
+    await agent.connect(id);
     const spec = (await resolvePi(store.state.settings, developmentRoot)).spec;
     const s = store.session(id);
     const args = s.file ? ['--session', s.file] : ['--session-id', s.id];
-    await openTerminal(
-      [spec.command, ...spec.args, ...args],
-      await store.sessionDirectory(id),
-      { PI_CODING_AGENT_DIR: agentDirectory(store.state.settings) },
-      terminalLock(),
+    await service.handoffToTerminal(id, async () =>
+      openTerminal(
+        [spec.command, ...spec.args, ...args],
+        await store.sessionDirectory(id),
+        { PI_CODING_AGENT_DIR: agentDirectory(store.state.settings) },
+        terminalLock(id),
+      ),
     );
   },
   editDraft: async (id) => {
@@ -1106,9 +1140,27 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     current.draftSnippets = [];
     await save();
   },
-  stop: () => service.stop(),
-  clearQueue: () => service.clearQueue(),
-  forceStop: async () => {
+  stop: (id) => {
+    text(id, 100);
+    return service.get(id).stop();
+  },
+  stopAll: async () => {
+    const result = await showAppDialog({
+      type: 'warning',
+      message: '停止所有会话的任务？',
+      detail: '所有正在运行的会话都将停止，未发送的队列内容会恢复到各自草稿。',
+      buttons: ['取消', '停止所有会话'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    if (result.response === 1) await service.stop();
+  },
+  clearQueue: (id) => {
+    text(id, 100);
+    return service.get(id).clearQueue();
+  },
+  forceStop: async (id) => {
+    text(id, 100);
     const result = await showAppDialog({
       type: 'warning',
       message: '强制结束当前 Pi 会话进程？',
@@ -1118,14 +1170,15 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       cancelId: 0,
     });
     if (result.response !== 1) return false;
-    await service.forceStop();
+    await service.get(id).forceStop();
     return true;
   },
-  respond: async (id, values) => {
+  respond: async (sessionId, id, values) => {
+    text(sessionId, 100);
     text(id, 200);
     if (!values || typeof values !== 'object') throw new Error('回复格式无效');
     if (values.value !== undefined) text(values.value);
-    return service.respond(id, {
+    return service.get(sessionId).respond(id, {
       value: values.value,
       confirmed: values.confirmed === true,
       cancelled: values.cancelled === true,
@@ -1169,7 +1222,6 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   createAgentRules: async (id) => {
     text(id, 100);
-    if (service.hasPendingWork) throw new Error('请等待当前任务完成后再生成项目规则');
     const project = store.project(id);
     const file = await createAgentRules(project);
     send({ type: 'workspaceChanged', projectId: id, changedPaths: [file.relativePath] });
@@ -1203,8 +1255,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(target, 4096);
     store.session(id);
     let known = sessionResourcePaths.get(id) ?? [];
-    if (!known.some((item) => samePath(item, target)) && !service.hasPendingWork) {
-      const catalog = (await service.admin(id, 'resources')) as ResourceCatalog;
+    if (!known.some((item) => samePath(item, target))) {
+      const catalog = (await service.get(id).admin(id, 'resources')) as ResourceCatalog;
       known = catalog.resources.map((item) => item.path);
       sessionResourcePaths.set(id, known);
     }
@@ -1254,7 +1306,10 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) }),
     ]);
   },
-  exportOutput: () => saveText('保存工具输出', service.output(), 'pi-output.txt'),
+  exportOutput: (id) => {
+    text(id, 100);
+    return saveText('保存工具输出', service.get(id).output(), 'pi-output.txt');
+  },
   diagnostics: () => diagnostics(),
   exportDiagnostics: async () => {
     if (!diagnosticPreview) throw new Error('请先生成诊断预览');
@@ -1360,7 +1415,8 @@ async function createWindow() {
     closing = true;
     void (async () => {
       try {
-        if (busy(service.runtime.status)) {
+        service.suspendReload(true);
+        if (service.hasPendingWork) {
           const result = await showAppDialog(
             {
               type: 'question',
@@ -1387,6 +1443,7 @@ async function createWindow() {
           }
         }
         quitting = true;
+        await configurationWrites;
         workspaceWatcher?.dispose();
         clearTimeout(windowTimer);
         windowTimer = undefined;
@@ -1397,6 +1454,7 @@ async function createWindow() {
         window?.destroy();
         app.quit();
       } finally {
+        if (!quitting) service.suspendReload(false);
         closing = false;
         appQuitRequested = false;
       }
@@ -1433,12 +1491,19 @@ else {
         await store.save().catch(() => {});
       workspace = new Workspace(store.dir);
       if (store.storage.writable) await workspace.cleanup();
-      service = new AgentService(store, workspace, developmentRoot, path.join(__dirname, 'pi-bridge.mjs'));
+      service = new SessionAgents(
+        store,
+        workspace,
+        developmentRoot,
+        path.join(__dirname, 'pi-bridge.mjs'),
+        (id) => terminalOpen(terminalLock(id)),
+      );
       await watchSelectedProject();
       service.on('runtimePatch', (patch) => {
         send({ type: 'runtimePatch', patch });
-        notifyAttention(service.runtime);
       });
+      service.on('attention', notifyAttention);
+      service.on('runtimeRemoved', (sessionId) => send({ type: 'runtimeRemoved', sessionId }));
       service.on('state', (state) => send({ type: 'state', state }));
       store.on('storage', (storage) => send({ type: 'storage', storage }));
       const installation = updateInstallation(process.platform, app.isPackaged, process.env);
@@ -1490,9 +1555,8 @@ else {
         )
           throw new Error('无效请求');
         let trackedOperation = false;
-        let trackedEngineOperation = false;
-        let configurationLocked = false;
         try {
+          if (quitting) throw new Error('应用正在关闭，请稍后重新打开');
           // Late layout cleanup must not create writes after the update's persistence barrier.
           if (updates.state.installing && method === 'saveView') return;
           if (
@@ -1527,6 +1591,11 @@ else {
             'diff',
             'changes',
             'configRead',
+            'sessionTree',
+            'resources',
+            'providers',
+            'promptRead',
+            'exportSession',
             'copy',
             'copyImage',
             'diagnostics',
@@ -1537,6 +1606,10 @@ else {
             'openFile',
             'openResource',
             'stop',
+            'stopAll',
+            'abortRetry',
+            'clearQueue',
+            'respond',
             'forceStop',
             'quit',
           ];
@@ -1557,6 +1630,11 @@ else {
               'saveView',
               'readHistory',
               'stop',
+              'stopAll',
+              'forceStop',
+              'abortRetry',
+              'clearQueue',
+              'respond',
               'quit',
             ].includes(method)
           )
@@ -1619,31 +1697,65 @@ else {
               'toggleResource',
               'reloadPi',
             ].includes(method);
-          const exclusiveOperation =
-            configOperation || ['revertChanges', 'revertCheckpoint', 'createAgentRules'].includes(method);
-          if (engineOperation && updatingConfiguration) throw new Error('正在保存配置或修改工作区，请稍候');
-          if (exclusiveOperation) {
-            service.assertCommandsStopped();
-            if (activeEngineOperations > 0 || service.hasPendingWork)
-              throw new Error('请等待当前任务或会话操作完成后再保存配置或修改工作区');
-            updatingConfiguration = true;
-            configurationLocked = true;
-          }
           trackedOperation = engineOperation || !readOnlyMethods.includes(method as keyof ApiMap);
           if (trackedOperation) activeOperations++;
-          if (engineOperation) {
-            activeEngineOperations++;
-            trackedEngineOperation = true;
-            service.assertCommandsStopped();
-            await assertTerminalClosed();
+          const invoke = () => handlers[method as keyof ApiMap](...args);
+          const execute = async () => {
+            const projectId = ['revertChanges', 'createAgentRules'].includes(method)
+              ? (args[0] as string)
+              : method === 'revertCheckpoint'
+                ? store.session(args[0] as string).projectId
+                : undefined;
+            if (projectId) {
+              const root = store.project(projectId).path;
+              return service.inWorkspace(root, true, async () => {
+                await assertWorkspaceTerminalsClosed(root);
+                return invoke();
+              });
+            }
+            const sessionOperation =
+              [
+                'connect',
+                'send',
+                'recover',
+                'compact',
+                'openPiTerminal',
+                'testConnection',
+                'login',
+                'logout',
+              ].includes(method) ||
+              (method === 'branchSession' && args[1] === 'navigate') ||
+              (method === 'messageAction' && args[1] !== 'fork');
+            if (sessionOperation) {
+              const id = args[0] as string;
+              await assertTerminalClosed(id);
+              return service.inWorkspace(await store.sessionDirectory(id), false, async () => {
+                await service.assertResourcesAvailable(id);
+                return invoke();
+              });
+            }
+            return invoke();
+          };
+          if (configOperation) {
+            const operation = configurationWrites.then(async () => {
+              updatingConfiguration = true;
+              try {
+                return await execute();
+              } finally {
+                updatingConfiguration = false;
+              }
+            });
+            configurationWrites = operation.then(
+              () => {},
+              () => {},
+            );
+            return await operation;
           }
-          return await handlers[method as keyof ApiMap](...args);
+          return await execute();
         } catch (e) {
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
         } finally {
           if (trackedOperation) activeOperations--;
-          if (trackedEngineOperation) activeEngineOperations--;
-          if (configurationLocked) updatingConfiguration = false;
         }
       });
       Menu.setApplicationMenu(

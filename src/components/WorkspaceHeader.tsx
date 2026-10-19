@@ -54,7 +54,7 @@ export function WorkspaceHeader(
         <h1 title={selected?.title}>{selected?.title || 'Pi Desktop'}</h1>
         <div className="breadcrumb" title={project?.path}>
           <span>{project?.name || '独立对话'}</span>
-          {changes?.branch && (
+          {project && changes?.branch && (
             <span className="branch">
               <GitBranch size={12} />
               {changes.branch}
@@ -63,26 +63,22 @@ export function WorkspaceHeader(
         </div>
       </div>
       <div className="header-actions">
-        <button
-          aria-label="Pi 功能"
-          disabled={!selected || (running && !ownRuntime)}
-          onClick={() => setFeatureTab('session')}
-        >
+        <button aria-label="Pi 功能" disabled={!selected} onClick={() => setFeatureTab('session')}>
           <Command size={16} />
           <span>Pi 功能</span>
         </button>
-        {project && (
+        {selected && (
           <button
             className={'workspace-toggle ' + (inspector ? 'active' : '')}
-            aria-label={inspector ? '收起工作区面板' : '查看工作区变更'}
+            aria-label={inspector ? '收起工作区面板' : project ? '查看工作区变更' : '查看会话输出'}
             aria-expanded={inspector}
             aria-controls="workspace-inspector"
             onClick={() => setInspector((v) => !v)}
-            title="变更、文件与输出"
+            title={project ? '变更、文件与输出' : '当前会话的工具输出'}
           >
             {inspector ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
-            <span>工作区</span>
-            {!!changes?.files.length && <span className="count">{changes.files.length}</span>}
+            <span>{project ? '工作区' : '输出'}</span>
+            {project && !!changes?.files.length && <span className="count">{changes.files.length}</span>}
           </button>
         )}
       </div>

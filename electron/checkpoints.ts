@@ -13,6 +13,7 @@ import {
 import { allFiles, info, snapshotCandidates, snapshotStorageBytes } from './workspace';
 import { isWindows } from './platform';
 import { normalizePiToolPath } from './pi/tool-path';
+import { canonicalWritePath, isWithinDirectory } from './approval-paths';
 
 export interface SnapshotData {
   version: 3;
@@ -51,7 +52,14 @@ interface SessionTracking {
   known: Record<string, string>;
   activity: Activity[];
 }
-type ToolBoundary = { names?: string[]; before: Record<string, string> };
+type ToolBoundary = {
+  projectId: string;
+  root: string;
+  sessionId: string;
+  names?: string[];
+  before: Record<string, string>;
+  overlapping: boolean;
+};
 const safeId = (value: string) => {
   if (!/^[\w-]{1,128}$/.test(value)) throw new Error('检查点标识无效，请重新打开会话');
   return value;
@@ -482,10 +490,33 @@ export class Checkpoints {
     if (!(await this.get(sessionId))) return;
     const before = await this.scanSession(project, sessionId, names);
     await this.observe(sessionId, before, 'manual', names);
-    this.tools.set(`${sessionId}:${toolId}`, { names, before });
+    const root = await canonicalWritePath(project.path);
+    const others = [...this.tools.values()].filter(
+      (tool) =>
+        tool.sessionId !== sessionId &&
+        (isWithinDirectory(root, tool.root) || isWithinDirectory(tool.root, root)),
+    );
+    for (const tool of others) tool.overlapping = true;
+    this.tools.set(`${sessionId}:${toolId}`, {
+      projectId: project.id,
+      root,
+      sessionId,
+      names,
+      before,
+      overlapping: others.length > 0,
+    });
   }
   endTool(project: Project, sessionId: string, toolId: string) {
     return this.serialize(() => this.endToolUnlocked(project, sessionId, toolId));
+  }
+  endSessionTools(project: Project, sessionId: string) {
+    return this.serialize(async () => {
+      const pending = [...this.tools.entries()].filter(([, boundary]) => boundary.sessionId === sessionId);
+      if (!pending.length) return;
+      for (const [key] of pending) this.tools.delete(key);
+      // Termination is confirmed, but partial writes have no reliable tool result.
+      await this.observe(sessionId, await this.scanSession(project, sessionId), 'manual');
+    });
   }
   private async endToolUnlocked(project: Project, sessionId: string, toolId: string) {
     const key = `${sessionId}:${toolId}`,
@@ -496,7 +527,9 @@ export class Checkpoints {
     const changed = (
       boundary.names ?? [...new Set([...Object.keys(boundary.before), ...Object.keys(after)])]
     ).filter((name) => boundary.before[name] !== after[name]);
-    await this.observe(sessionId, after, 'pi', changed);
+    // Concurrent commands can observe another chat's edits. Keep ambiguous paths
+    // unchecked in the undo preview instead of claiming they belong to this turn.
+    await this.observe(sessionId, after, boundary.overlapping ? 'manual' : 'pi', changed);
   }
   cleanup() {
     return this.serialize(() => this.cleanupUnlocked());

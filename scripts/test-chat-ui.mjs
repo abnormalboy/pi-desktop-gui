@@ -296,7 +296,10 @@ try {
   assert.equal(duringReply.sessionId, active.sessionId);
   assert.equal(duringReply.status, 'running', 'creating a chat must not interrupt the current response');
   assert.equal(await page.locator('.error-banner').count(), 0);
-  await page.evaluate(() => window.desktop.invoke('stop'));
+  await page.evaluate(async () => {
+    const { state } = await window.desktop.invoke('bootstrap');
+    await window.desktop.invoke('stop', state.selectedSessionId);
+  });
   await expectSelectedModel(baseModel);
   assert.equal(await page.locator('.error-banner').count(), 0);
   assert.equal(

@@ -29,6 +29,7 @@ import '../styles/workspace-v014.css';
 const api = window.desktop;
 import type { Workbench } from '../hooks/useWorkbench';
 import { busy, type AppState } from '../../shared/types';
+import { directoryTaskReason } from '../../shared/workspace';
 
 export function Inspector(
   props: Pick<
@@ -130,6 +131,9 @@ export function Inspector(
   const selectedSession = props.state.sessions.find(
     (session) => session.id === props.state.selectedSessionId,
   );
+  const directoryReason = project
+    ? directoryTaskReason(props.state, project, api.platform === 'win32' || api.platform === 'darwin')
+    : '';
   const canRerun =
     !pending &&
     !busy(runtime.status) &&
@@ -162,7 +166,10 @@ export function Inspector(
     );
   }, [previewRange, filePreview?.path]);
   useEffect(() => {
-    if (!project) return;
+    if (!project) {
+      setTab('output');
+      return;
+    }
     let alive = true;
     setRulesLoaded(false);
     void attempt(async () => {
@@ -287,25 +294,27 @@ export function Inspector(
                 ['files', Files, '文件'],
                 ['output', Terminal, '输出'],
               ] as const
-            ).map(([key, Icon, label]) => (
-              <button
-                key={key}
-                aria-pressed={tab === key}
-                className={tab === key ? 'active' : ''}
-                onClick={() => {
-                  setTab(key);
-                  setSelectedFile('');
-                  setFilePreview(undefined);
-                  setFileDiff(undefined);
-                }}
-              >
-                <Icon size={15} />
-                {label}
-                {key === 'changes' && !!changes?.files.length && (
-                  <span className="count">{changes.files.length}</span>
-                )}
-              </button>
-            ))}
+            )
+              .filter(([key]) => project || key === 'output')
+              .map(([key, Icon, label]) => (
+                <button
+                  key={key}
+                  aria-pressed={tab === key}
+                  className={tab === key ? 'active' : ''}
+                  onClick={() => {
+                    setTab(key);
+                    setSelectedFile('');
+                    setFilePreview(undefined);
+                    setFileDiff(undefined);
+                  }}
+                >
+                  <Icon size={15} />
+                  {label}
+                  {key === 'changes' && !!changes?.files.length && (
+                    <span className="count">{changes.files.length}</span>
+                  )}
+                </button>
+              ))}
             <IconButton
               title="关闭面板"
               onClick={() => {
@@ -321,7 +330,7 @@ export function Inspector(
               返回列表{tab === 'changes' ? `（共 ${changes?.files.length ?? 0} 项）` : ''}
             </button>
           )}
-          {!project ? (
+          {!project && tab !== 'output' ? (
             <div className="inspector-empty">
               <FolderOpen size={28} />
               <p>
@@ -330,7 +339,7 @@ export function Inspector(
                 在这里查看文件与变更
               </p>
             </div>
-          ) : tab === 'changes' ? (
+          ) : project && tab === 'changes' ? (
             <>
               <div className="change-controls">
                 <select
@@ -379,8 +388,8 @@ export function Inspector(
                 {changeMode === 'run' && changes?.baselineAvailable && !!changes.files.length && (
                   <button
                     className="revert-all"
-                    disabled={ownRunning || pending}
-                    title={ownRunning ? '执行中不能撤销' : '把本轮修改过的文件恢复到任务开始前'}
+                    disabled={Boolean(directoryReason) || pending}
+                    title={directoryReason || '把本轮修改过的文件恢复到任务开始前'}
                     onClick={() => void revert(null)}
                   >
                     <Undo2 size={13} />
@@ -489,7 +498,8 @@ export function Inspector(
                     {changeMode === 'run' && changes?.files.some((f) => f.path === selectedFile) && (
                       <button
                         className="danger"
-                        disabled={ownRunning || pending}
+                        disabled={Boolean(directoryReason) || pending}
+                        title={directoryReason || '撤销此文件在所选任务中的修改'}
                         onClick={() => void revert([selectedFile])}
                       >
                         <Undo2 size={12} />
@@ -507,7 +517,7 @@ export function Inspector(
                 </div>
               )}
             </>
-          ) : tab === 'files' ? (
+          ) : project && tab === 'files' ? (
             <>
               {rulesLoaded && (
                 <div className="project-rules-bar">
@@ -527,6 +537,8 @@ export function Inspector(
                     <>
                       <span>尚未配置 AGENTS.md，可固定构建、测试命令与代码规范。</span>
                       <button
+                        disabled={Boolean(directoryReason)}
+                        title={directoryReason || '创建项目规则文件并打开编辑器'}
                         onClick={() =>
                           void attempt(async () => {
                             const created = await api.invoke('createAgentRules', project.id);
@@ -636,12 +648,17 @@ export function Inspector(
                     ? '当前连接会话的工具输出'
                     : '其他会话的工具输出，重跑前请先切回该会话'}
                 </span>
-                <IconButton
-                  title="导出已接收的工具输出"
-                  onClick={() => void attempt(() => api.invoke('exportOutput'))}
-                >
-                  <Download size={15} />
-                </IconButton>
+                {runtime.tools.length > 0 && (
+                  <IconButton
+                    title="导出已接收的工具输出"
+                    onClick={() =>
+                      props.state.selectedSessionId &&
+                      void attempt(() => api.invoke('exportOutput', props.state.selectedSessionId!))
+                    }
+                  >
+                    <Download size={15} />
+                  </IconButton>
+                )}
               </div>
               <div className="output-filters">
                 <input

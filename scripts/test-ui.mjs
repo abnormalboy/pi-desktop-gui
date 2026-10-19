@@ -101,7 +101,7 @@ try {
   await page.getByLabel('运行中发送方式').selectOption('followUp');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.queue').getByText('停止后恢复这条后续任务', { exact: false }).waitFor();
-  await page.getByRole('button', { name: '停止全部', exact: true }).click();
+  await page.getByRole('button', { name: '停止任务', exact: true }).click();
   await waitStatus('stopped');
   assert.match(await page.getByRole('textbox', { name: '任务输入' }).inputValue(), /停止后恢复/);
   console.log('PASS UI stop and queue restoration');

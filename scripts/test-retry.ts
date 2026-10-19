@@ -56,7 +56,14 @@ try {
   assert.equal(service.runtime.tools.length, 1, 'recovery must not execute a finished tool twice');
   assert.equal(service.runtime.tools[0].status, 'done');
   assert.equal(service.runtime.retry, undefined);
-  assert.equal(service.runtime.notices.filter((n) => n.startsWith('重试已恢复')).length, 2);
+  assert.equal(service.runtime.notices.length, 0);
+  assert.deepEqual(
+    service.runtime.notifications?.map(({ text, level }) => ({ text, level })),
+    [
+      { text: '连接已恢复', level: 'info' },
+      { text: '连接已恢复', level: 'info' },
+    ],
+  );
   assert.ok(!service.runtime.notices.some((n) => /^(正在重试|等待重试)/.test(n)));
   console.log('PASS real Pi retries remain visible until recovery and continue the tool chain once');
 
@@ -99,7 +106,8 @@ try {
   assert.ok(Date.now() - started >= 1000, 'the silent request must reach its configured timeout');
   assert.equal(provider.count, 2);
   assert.equal(service.runtime.retry, undefined);
-  assert.match(service.runtime.notices.at(-1)!, /^重试已恢复/);
+  assert.equal(service.runtime.notices.length, 0);
+  assert.equal(service.runtime.notifications?.at(-1)?.text, '连接已恢复');
   console.log('PASS a silent HTTP response times out and recovers with the configured Pi timeout');
 } finally {
   await service.dispose();

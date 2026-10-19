@@ -12,6 +12,8 @@ export function SessionTab({
   instructions,
   setInstructions,
   disabled,
+  idleDisabled,
+  idleReason,
   run,
   exportFile,
 }: Pick<
@@ -24,11 +26,14 @@ export function SessionTab({
   | 'instructions'
   | 'setInstructions'
   | 'disabled'
+  | 'idleDisabled'
+  | 'idleReason'
   | 'run'
   | 'exportFile'
 >) {
   const [usagePeriod, setUsagePeriod] = useState<'today' | 'week' | 'all'>('all');
   const currentUsage = usage?.[usagePeriod];
+  const hasHistory = runtime.connected ? runtime.messages.length > 0 : Boolean(session.file);
   return (
     <>
       <h3>当前会话</h3>
@@ -45,18 +50,20 @@ export function SessionTab({
           <FolderOpen size={14} />
           打开工作目录
         </button>
-        <button
-          disabled={disabled}
-          onClick={() =>
-            void run(async () => {
-              await api.invoke('branchSession', session.id, 'clone');
-              close();
-            })
-          }
-        >
-          <Copy size={14} />
-          克隆会话
-        </button>
+        {hasHistory && (
+          <button
+            disabled={disabled}
+            onClick={() =>
+              void run(async () => {
+                await api.invoke('branchSession', session.id, 'clone');
+                close();
+              })
+            }
+          >
+            <Copy size={14} />
+            克隆会话
+          </button>
+        )}
       </div>
       <div className="feature-stats">
         <span>
@@ -124,6 +131,16 @@ export function SessionTab({
         )}
       </section>
       <h3>上下文与队列</h3>
+      <p className="settings-copy">
+        开关影响本会话后续步骤，已经开始的重试或压缩继续执行。取消当前步骤请使用单独操作。
+      </p>
+      {runtime.configurationPending && <p className="environment-note">配置已保存，等待本会话空闲后加载。</p>}
+      {runtime.retry && (
+        <button onClick={() => void run(() => api.invoke('abortRetry', session.id))}>取消当前重试</button>
+      )}
+      {runtime.status === 'compacting' && (
+        <button onClick={() => void run(() => api.invoke('stop', session.id))}>停止当前压缩及任务</button>
+      )}
       {[
         ['autoCompaction', '自动压缩上下文'],
         ['autoRetry', '临时错误自动重试'],
@@ -173,7 +190,8 @@ export function SessionTab({
         placeholder="例如：保留文件修改和待办事项"
       />
       <button
-        disabled={disabled}
+        disabled={idleDisabled}
+        title={idleReason}
         onClick={() =>
           void run(async () => {
             const result = await api.invoke('compact', session.id, instructions);
@@ -183,35 +201,42 @@ export function SessionTab({
       >
         立即压缩
       </button>
-      <h3>导出与分享</h3>
-      <div className="button-row">
-        <button disabled={disabled} onClick={() => void exportFile('html')}>
-          <Download size={14} />
-          导出 HTML
-        </button>
-        <button disabled={disabled} onClick={() => void exportFile('jsonl')}>
-          导出 JSONL
-        </button>
-        <button
-          disabled={disabled}
-          onClick={() =>
-            void run(async () => {
-              const url = await api.invoke('shareSession', session.id);
-              if (url) setNotice('分享链接已复制：' + url);
-            })
-          }
-        >
-          <Share2 size={14} />
-          分享会话
-        </button>
-      </div>
-      <p className="settings-copy">分享会生成 GitHub Gist 链接；上传前会再次确认。建议先导出检查完整内容。</p>
+      {hasHistory && (
+        <>
+          <h3>导出与分享</h3>
+          <div className="button-row">
+            <button disabled={disabled} onClick={() => void exportFile('html')}>
+              <Download size={14} />
+              导出 HTML
+            </button>
+            <button disabled={disabled} onClick={() => void exportFile('jsonl')}>
+              导出 JSONL
+            </button>
+            <button
+              disabled={disabled}
+              onClick={() =>
+                void run(async () => {
+                  const url = await api.invoke('shareSession', session.id);
+                  if (url) setNotice('分享链接已复制：' + url);
+                })
+              }
+            >
+              <Share2 size={14} />
+              分享会话
+            </button>
+          </div>
+          <p className="settings-copy">
+            分享会生成 GitHub Gist 链接；上传前会再次确认。建议先导出检查完整内容。
+          </p>
+        </>
+      )}
       <h3>Pi 原生终端</h3>
       <p className="settings-copy">
         依赖终端自定义界面的扩展、终端主题和渲染设置，可在同一会话的原生终端使用。关闭终端后回到桌面重新连接。
       </p>
       <button
-        disabled={disabled}
+        disabled={idleDisabled}
+        title={idleReason}
         onClick={() =>
           void run(async () => {
             await api.invoke('openPiTerminal', session.id);

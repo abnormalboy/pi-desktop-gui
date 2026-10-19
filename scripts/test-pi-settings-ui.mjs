@@ -223,22 +223,29 @@ try {
   await retry.check();
   await expect(nav('常用设置')).toBeDisabled();
   const formSave = modal.getByRole('button', { name: '保存并重新加载', exact: true });
-  await expect(formSave).toBeDisabled();
-  await modal.getByText(/等待任务完成或停止后再保存/).waitFor();
-  await page.evaluate(() => window.updateFeature({ runtime: window.idleRuntime }));
+  await expect(formSave).toBeEnabled();
+  await page.evaluate(() => {
+    window.mock.result = { applied: false, deferred: true };
+  });
   await formSave.click();
-  await modal.getByText('设置已保存，Pi 已重新加载。原文件已备份。', { exact: true }).waitFor();
+  await modal.getByText(/配置已保存并备份.*相关会话空闲后加载/).waitFor();
+  await page.evaluate(() => {
+    window.mock.result = { applied: true };
+  });
   await expect(retry).toBeEnabled();
   await expect(nav('常用设置')).toBeEnabled();
   const saved = await page.evaluate(() => window.mock.documents['settings:false']);
   assert.equal(saved.retry.enabled, true);
   assert.equal(saved.untouched, 'preserve me');
-  console.log('PASS running tasks allow local edits, prevent apply, and re-enable saves on idle');
+  console.log('PASS running tasks permit saving and explain deferred application');
 
   await page.evaluate(() => {
     window.mock.result = { applied: false, warning: '请检查 Pi 入口' };
   });
-  await mount({ environment: { supported: false } });
+  await mount({
+    environment: { supported: false },
+    runtime: { ...(await page.evaluate(() => window.idleRuntime)), connected: false },
+  });
   await readyJson('settings');
   await modal.getByText(/运行环境.*重新检测/).waitFor();
   await json.fill('{"offline":true}');
@@ -442,16 +449,19 @@ try {
   await expect(projectScope).toHaveAttribute('aria-checked', 'true');
   console.log('PASS common-settings save/read failure preserves saved status, scope and safe retry');
 
-  for (const props of [
-    { storage: { writable: false } },
-    { runtime: { ...(await page.evaluate(() => window.idleRuntime)), crash: { cleanup: 'unconfirmed' } } },
-  ]) {
+  for (const props of [{ storage: { writable: false } }]) {
     await mount(props);
     await readyJson('settings');
     await json.fill('{"safeLocalEdit":true}');
     await expect(nav('常用设置')).toBeDisabled();
     await expect(modal.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled();
   }
+  await mount({
+    runtime: { ...(await page.evaluate(() => window.idleRuntime)), crash: { cleanup: 'unconfirmed' } },
+  });
+  await readyJson('settings');
+  await json.fill('{"repairConfiguration":true}');
+  await expect(modal.getByRole('button', { name: '保存并应用', exact: true })).toBeEnabled();
   const providerCalls = await page.evaluate(
     () => window.mock.calls.filter((call) => call.method === 'providers').length,
   );
@@ -488,7 +498,7 @@ try {
   await json.fill('{"personalOfflineEdit":true}');
   await expect(modal.getByRole('button', { name: '保存并应用', exact: true })).toBeEnabled();
   console.log(
-    'PASS storage and process recovery still block saving; untrusted projects cannot use project configuration or engine actions',
+    'PASS read-only storage blocks writes, process recovery permits configuration repair, and project trust protections remain',
   );
   assert.deepEqual(errors, []);
 } finally {

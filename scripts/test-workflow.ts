@@ -10,6 +10,7 @@ import { messageText, busy } from '../shared/types';
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'workflow');
+const nativeSettings = JSON.parse(await fs.readFile(path.join(f.agentDir, 'settings.json'), 'utf8'));
 const models = JSON.parse(await fs.readFile(path.join(f.agentDir, 'models.json'), 'utf8'));
 models.providers['local-e2e'].models.push({
   ...models.providers['local-e2e'].models[0],
@@ -42,6 +43,11 @@ try {
   await s.connect(alternate.id);
   const alternateThinking = s.runtime.thinkingLevels.find((level) => level !== initialThinking)!;
   await s.setThinking(alternate.id, alternateThinking);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(f.agentDir, 'settings.json'), 'utf8')).defaultThinkingLevel,
+    nativeSettings.defaultThinkingLevel,
+    'a session choice must not change the shared Pi default',
+  );
   await s.connect(f.sessionId);
   assert.equal(s.runtime.model?.id, initialModel, 'default model must be remembered by the session');
   assert.equal(s.runtime.thinking, initialThinking);
@@ -56,7 +62,11 @@ try {
   const fresh = f.store.createSession(f.projectId);
   await s.connect(fresh.id);
   assert.equal(s.runtime.model?.id, 'local-e2e-reasoning', 'new sessions use the latest default');
-  assert.equal(s.runtime.thinking, alternateThinking);
+  assert.equal(
+    s.runtime.thinking,
+    'off',
+    'new sessions use the native Pi default, not another session choice',
+  );
   await s.connect(f.sessionId);
   console.log('PASS default session choices, existing history and new-session defaults stay separate');
 
@@ -68,27 +78,33 @@ try {
     });
   const beforeRejectedSwitch = preferences();
   await assert.rejects(s.setModel(f.sessionId, 'local-e2e', 'missing-model'), /模型当前不可用/);
-  await assert.rejects(s.setThinking(f.sessionId, 'unsupported-level'), /不支持这个推理级别/);
+  await assert.rejects(s.setThinking(f.sessionId, 'unsupported-level'), /推理级别无效/);
+  await assert.rejects(s.setThinking(f.sessionId, 'high'), /不支持这个推理级别/);
   assert.deepEqual(preferences(), beforeRejectedSwitch);
   const rpc = (s as any).rpc;
   const request = rpc.request.bind(rpc);
-  rpc.request = (type: string, ...args: any[]) =>
-    type === 'set_model' || type === 'set_thinking_level'
-      ? Promise.reject(new Error('TEST_SWITCH_REJECTED'))
-      : request(type, ...args);
+  rpc.request = async (type: string, ...args: any[]) => {
+    if (type !== 'set_model') return request(type, ...args);
+    alternate.draft = 'B_DRAFT_SAVED_DURING_MODEL_SWITCH';
+    await f.store.save();
+    throw new Error('TEST_SWITCH_REJECTED');
+  };
   try {
     await assert.rejects(s.setModel(f.sessionId, 'local-e2e', 'local-e2e-reasoning'), /TEST_SWITCH_REJECTED/);
-    await assert.rejects(s.setThinking(f.sessionId, s.runtime.thinkingLevels[0]), /TEST_SWITCH_REJECTED/);
   } finally {
     rpc.request = request;
   }
   assert.deepEqual(preferences(), beforeRejectedSwitch);
-  await f.store.save();
+  await f.store.flush();
   const persisted = JSON.parse(await fs.readFile(path.join(f.dataDir, 'state.json'), 'utf8'));
   assert.deepEqual(persisted.settings, beforeRejectedSwitch.settings);
   assert.deepEqual(
     persisted.sessions.find((session: { id: string }) => session.id === f.sessionId).model,
     beforeRejectedSwitch.model,
+  );
+  assert.equal(
+    persisted.sessions.find((session: { id: string }) => session.id === alternate.id).draft,
+    'B_DRAFT_SAVED_DURING_MODEL_SWITCH',
   );
   console.log('PASS rejected model/thinking changes leave saved preferences unchanged');
 
@@ -98,6 +114,30 @@ try {
   assert.equal(s.runtime.model?.id, 'local-e2e-reasoning');
   assert.ok(s.runtime.thinkingLevels.length > 1);
   const level = s.runtime.thinkingLevels.find((l) => l !== s.runtime.thinking)!;
+  const beforeRejectedThinking = preferences();
+  rpc.request = async (type: string, ...args: any[]) => {
+    if (type !== 'set_thinking_level') return request(type, ...args);
+    alternate.draft = 'B_DRAFT_SAVED_DURING_THINKING_SWITCH';
+    await f.store.save();
+    throw new Error('TEST_THINKING_REJECTED');
+  };
+  try {
+    await assert.rejects(s.setThinking(f.sessionId, level), /TEST_THINKING_REJECTED/);
+  } finally {
+    rpc.request = request;
+  }
+  assert.deepEqual(preferences(), beforeRejectedThinking);
+  assert.equal(s.runtime.nextTask, undefined, 'rejected choices must not remain pending');
+  await f.store.flush();
+  const afterRejectedThinking = JSON.parse(await fs.readFile(path.join(f.dataDir, 'state.json'), 'utf8'));
+  assert.equal(
+    afterRejectedThinking.sessions.find((session: { id: string }) => session.id === f.sessionId).thinking,
+    beforeRejectedThinking.thinking,
+  );
+  assert.equal(
+    afterRejectedThinking.sessions.find((session: { id: string }) => session.id === alternate.id).draft,
+    'B_DRAFT_SAVED_DURING_THINKING_SWITCH',
+  );
   await s.setThinking(f.sessionId, level);
   assert.equal(s.runtime.thinking, level);
   assert.deepEqual(f.store.session(f.sessionId).model, { provider: 'local-e2e', id: 'local-e2e-reasoning' });
@@ -136,8 +176,9 @@ try {
   const original = f.sessionId;
   const first = s.runtime.messages.find((m) => messageText(m) === 'WORKFLOW_FIRST')!;
   await s.messageAction(original, 'fork', 'user', first.timestamp!);
-  const forked = s.runtime.sessionId!;
+  const forked = f.store.state.selectedSessionId!;
   assert.notEqual(forked, original);
+  assert.equal(s.runtime.sessionId, original, 'fork must leave the source process untouched');
   assert.equal(f.store.session(forked).draft, 'WORKFLOW_FIRST');
   assert.notEqual(f.store.session(forked).file, f.store.session(original).file);
   console.log('PASS fork from a message creates a new session and keeps the original');

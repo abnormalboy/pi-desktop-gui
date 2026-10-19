@@ -23,23 +23,27 @@ export function piFeatureAvailability({
     ? '正在处理上一项操作，请稍候。'
     : !storage.writable
       ? '本机数据目录当前只读。请关闭窗口，在工作区的存储提示中修复后重试。'
-      : runtime.crash && runtime.crash.cleanup !== 'confirmed'
-        ? '尚未确认 Pi 启动的命令已结束。请先处理工作区中的进程恢复提示。'
-        : busy(runtime.status)
-          ? runtime.status === 'waiting'
-            ? 'Pi 正在等待确认或登录。请先完成弹出的确认，或关闭此窗口后停止任务。'
-            : 'Pi 正在运行或连接。可先编辑配置，等待任务完成或停止后再保存和应用。'
-          : '';
+      : '';
   const prerequisiteReason = !projectEnabled
     ? '当前项目尚未信任。请关闭此窗口，在工作区选择“信任并启用”后使用 Pi 功能。'
-    : !environment?.supported
+    : !environment?.supported && !runtime.connected
       ? '尚未检测到可用的 Pi。请到“设置 → 运行环境”检查 Pi 入口并重新检测。'
       : '';
-  return { operationReason, prerequisiteReason, engineReason: operationReason || prerequisiteReason };
+  const engineReason = operationReason || prerequisiteReason;
+  const idleReason =
+    engineReason ||
+    (runtime.crash && runtime.crash.cleanup !== 'confirmed'
+      ? '尚未确认本会话的残留命令已结束，请先处理进程恢复提示。'
+      : busy(runtime.status)
+        ? '本会话正在使用当前任务和历史，请停止本会话后执行。'
+        : '');
+  return { operationReason, prerequisiteReason, engineReason, idleReason };
 }
 
 export function configSaveNotice(result: ConfigSaveResult) {
-  return result.applied
-    ? '已保存并重新连接 Pi。原配置已备份。'
-    : `配置已保存，原配置已备份；尚未应用到 Pi。${result.warning ?? '请修复运行环境后重新连接。'}`;
+  return result.deferred
+    ? '配置已保存并备份。相关会话空闲后加载；未连接的会话下次连接时加载。'
+    : result.applied
+      ? '已保存并重新连接 Pi。原配置已备份。'
+      : `配置已保存，原配置已备份；尚未应用到 Pi。${result.warning ?? '请修复运行环境后重新连接。'}`;
 }

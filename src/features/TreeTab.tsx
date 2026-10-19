@@ -17,6 +17,8 @@ export function TreeTab({
   summarize,
   setSummarize,
   disabled,
+  idleDisabled,
+  idleReason,
   run,
   refresh,
 }: Pick<
@@ -36,6 +38,8 @@ export function TreeTab({
   | 'summarize'
   | 'setSummarize'
   | 'disabled'
+  | 'idleDisabled'
+  | 'idleReason'
   | 'run'
   | 'refresh'
 >) {
@@ -153,7 +157,8 @@ export function TreeTab({
               )}
               <div className="button-row">
                 <button
-                  disabled={disabled}
+                  disabled={idleDisabled}
+                  title={idleReason}
                   onClick={() =>
                     void run(async () => {
                       await api.invoke(
@@ -172,8 +177,8 @@ export function TreeTab({
                 </button>
                 {e.role === 'user' && (
                   <button
-                    disabled={disabled || !e.active}
-                    title={e.active ? '' : '先切换到所在分支'}
+                    disabled={disabled}
+                    title="创建独立会话，原任务继续运行"
                     onClick={() =>
                       void run(async () => {
                         await api.invoke('branchSession', session.id, 'fork', e.id);

@@ -7,7 +7,6 @@ import { PiRpc } from './rpc';
 import { agentDirectory, requireSupportedPi, resolvePi } from './environment';
 import { Store, readSessionFile } from './store';
 import { Workspace, attachmentPrompt } from './workspace';
-import { Configuration } from './configuration';
 import { CheckpointRecorder, type WorkspaceRequest } from './checkpoint-recorder';
 import { composeDraftText } from '../shared/draft';
 import { stripAnsi } from '../shared/ansi';
@@ -32,6 +31,7 @@ import { APPROVAL_DENY, APPROVAL_PREFIX } from '../shared/approval';
 import { validateImages } from './images';
 import { piShellEnvironment, samePath } from './platform';
 import { sessionStats } from './pi/protocol';
+import { normalizePiToolPath } from './pi/tool-path';
 import { DESKTOP_BRIDGE_COMMAND, DESKTOP_WORKSPACE_PREFIX } from '../shared/pi-bridge';
 import { classifyModelError, redact, redactMessageError, type ModelErrorKind } from '../shared/errors';
 export { redact } from '../shared/errors';
@@ -81,12 +81,17 @@ export class AgentService extends EventEmitter {
   private rpc?: PiRpc;
   private publishing?: NodeJS.Timeout;
   private operation = Promise.resolve();
+  private settingsOperation = Promise.resolve();
+  private reading = 0;
+  private preferring = 0;
+  private activeWriteTargets = new Map<string, string>();
   private pendingOperations = 0;
   private stopRequested = false;
   private retryNotice?: number;
   private retryCancelled = false;
   private connecting = false;
   private shutdown = false;
+  private reloadSuspended = false;
   private fullOutput = '';
   private dialogTimers = new Map<string, NodeJS.Timeout>();
   private probe?: PiRpc;
@@ -97,6 +102,7 @@ export class AgentService extends EventEmitter {
   private crashTimes = new Map<string, number>();
   private crashCleanup = Promise.resolve();
   private unsafeExit = false;
+  private processAgentDir?: string;
   private switchEvents?: any[];
   private switchStarted = false;
   lastSwitch?: { mode: 'reuse' | 'restart'; elapsedMs: number; reason?: string; pid?: number };
@@ -113,11 +119,33 @@ export class AgentService extends EventEmitter {
       this.runtime.dialogs.length > 0
     );
   }
+  get workspaceInUse() {
+    // Passive RPC reads and an isolated --no-tools connection probe do not modify the project.
+    return (
+      this.pendingOperations > this.reading ||
+      busy(this.runtime.status) ||
+      this.connecting ||
+      this.unsafeExit ||
+      this.runtime.dialogs.length > 0
+    );
+  }
+  get configurationDirectory() {
+    return this.processAgentDir ?? agentDirectory(this.store.state.settings);
+  }
+  get writingPaths() {
+    return [...this.activeWriteTargets.values()];
+  }
+  suspendReload(value: boolean) {
+    this.reloadSuspended = value;
+    if (!value && this.runtime.configurationPending && !busy(this.runtime.status))
+      void this.scheduleReload().catch((error) => this.diagnostic(errorText(error)));
+  }
   constructor(
     readonly store: Store,
     readonly workspace: Workspace,
     private developmentRoot?: string,
     private bridgeSource = path.resolve('dist-electron/pi-bridge.mjs'),
+    private beforeConnect?: (operation: 'connect' | 'read' | 'write', target?: string) => Promise<void>,
   ) {
     super();
     this.checkpointRecorder = new CheckpointRecorder(store, workspace);
@@ -221,6 +249,23 @@ export class AgentService extends EventEmitter {
       this.pendingOperations--;
     });
   }
+  private preference<T>(action: () => Promise<T>): Promise<T> {
+    this.preferring++;
+    this.pendingOperations++;
+    const result = this.settingsOperation.then(action, action);
+    this.settingsOperation = result.then(
+      () => {},
+      () => {},
+    );
+    return result.finally(() => {
+      this.pendingOperations--;
+      this.preferring--;
+      if (!this.preferring && this.runtime.configurationPending && !busy(this.runtime.status))
+        void this.exclusive(() => this.applyPendingConfiguration()).catch((error) =>
+          this.diagnostic(errorText(error)),
+        );
+    });
+  }
   private diagnostic(s: string) {
     this.runtime.diagnostic.push(redact(s).slice(-4000));
     this.runtime.diagnostic = this.runtime.diagnostic.slice(-100);
@@ -252,10 +297,10 @@ export class AgentService extends EventEmitter {
       this.recentModelErrors = [...this.recentModelErrors, { kind, at: Date.now() }].slice(-5);
     }
   }
-  private notify(text: string, level: RuntimeNotification['level'] = 'info') {
+  private notify(text: string, level: RuntimeNotification['level'] = 'info', keepInHistory = true) {
     text = redact(text);
     const r = this.runtime;
-    r.notices.push(text);
+    if (keepInHistory) r.notices.push(text);
     r.notifications = [...(r.notifications ?? []), { id: ++this.notificationId, text, level }].slice(-5);
   }
   private clearDialogs() {
@@ -273,15 +318,19 @@ export class AgentService extends EventEmitter {
   private finishRetry(outcome: 'recovered' | 'failed' | 'cancelled' | 'interrupted') {
     const retry = this.runtime.retry;
     if (!retry) return;
-    const label = {
-      recovered: '重试已恢复',
-      failed: '重试失败',
-      cancelled: '重试已取消',
-      interrupted: '重试已中断',
-    }[outcome];
-    this.updateRetryNotice(
-      `${label}（${retry.attempt}/${retry.maxAttempts}）${retry.error ? `：${retry.error}` : ''}`,
-    );
+    if (outcome === 'recovered') {
+      if (this.retryNotice !== undefined) this.runtime.notices.splice(this.retryNotice, 1);
+      this.notify('连接已恢复', 'info', false);
+    } else {
+      const label = {
+        failed: '重试失败',
+        cancelled: '重试已取消',
+        interrupted: '重试已中断',
+      }[outcome];
+      this.updateRetryNotice(
+        `${label}（${retry.attempt}/${retry.maxAttempts}）${retry.error ? `：${retry.error}` : ''}`,
+      );
+    }
     this.runtime.retry = undefined;
     this.retryNotice = undefined;
   }
@@ -448,7 +497,13 @@ export class AgentService extends EventEmitter {
             t.output += '\n执行已结束但未收到工具结果';
           }
         void this.refresh().catch((e) => this.diagnostic(errorText(e)));
-        void this.exclusive(() => this.syncApprovalMode()).catch((e) => this.diagnostic(errorText(e)));
+        const sessionId = r.sessionId;
+        void this.exclusive(async () => {
+          if (sessionId) await this.checkpointRecorder.finish(sessionId);
+          this.activeWriteTargets.clear();
+          await this.syncApprovalMode();
+          await this.applyPendingConfiguration();
+        }).catch((e) => this.diagnostic(errorText(e)));
         break;
       }
       case 'session_info_changed':
@@ -491,7 +546,22 @@ export class AgentService extends EventEmitter {
           const request = JSON.parse(
             String(record.title).slice(DESKTOP_WORKSPACE_PREFIX.length),
           ) as WorkspaceRequest;
+          if (
+            request.phase === 'tool-start' &&
+            ['write', 'edit'].includes(request.toolName ?? '') &&
+            typeof request.args?.path === 'string'
+          ) {
+            const target = normalizePiToolPath(r.cwd!, request.args.path);
+            this.activeWriteTargets.set(request.toolId!, target);
+            try {
+              await this.beforeConnect?.('write', target);
+            } catch (error) {
+              this.activeWriteTargets.delete(request.toolId!);
+              throw error;
+            }
+          }
           await this.checkpointRecorder.handle(r.sessionId, request);
+          if (request.phase === 'tool-end') this.activeWriteTargets.delete(request.toolId!);
           if (this.rpc !== rpc || this.runtime !== r || epoch !== this.stopEpoch || this.stopRequested)
             throw new Error('检查点操作已取消');
           result = { ok: true };
@@ -621,12 +691,15 @@ export class AgentService extends EventEmitter {
     return fallback.map(redactMessageError);
   }
   connect(sessionId: string) {
-    return this.exclusive(() => this.ensureConnected(sessionId));
+    return this.exclusive(async () => {
+      await this.ensureConnected(sessionId);
+      await this.applyPendingConfiguration();
+    });
   }
   assertCommandsStopped() {
     if (this.unsafeExit)
       throw new Error(
-        '无法确认 Pi 启动的命令已结束，已暂停启动任务、切换会话和撤销文件。请在系统任务管理器或终端结束残留命令，再重新启动 Pi Desktop；可先打开诊断查看最后的命令。',
+        '无法确认本会话启动的命令已结束，暂不能重连本会话或撤销相关目录的文件。其他会话仍可使用。请在任务管理器或终端结束残留命令，再重新启动 Pi Desktop；可先打开诊断查看最后的命令。',
       );
   }
   private async ensureConnected(sessionId: string) {
@@ -644,9 +717,11 @@ export class AgentService extends EventEmitter {
     if (busy(this.runtime.status) && this.runtime.sessionId !== sessionId)
       throw new Error('另一个会话正在运行，请先停止或等待完成');
     if (this.rpc && !this.rpc.closed && this.runtime.sessionId === sessionId) {
+      await this.applyPendingConfiguration();
       await this.syncApprovalMode();
       return;
     }
+    await this.beforeConnect?.('connect');
     const cwd = await this.store.sessionDirectory(sessionId);
     let reason = this.rpc?.closed ? 'Pi 进程已退出' : '当前没有 Pi 连接';
     const outgoing = this.store.state.sessions.find((s) => s.id === this.runtime.sessionId);
@@ -719,7 +794,7 @@ export class AgentService extends EventEmitter {
       const args = ['--mode', 'rpc', '--name', session.title];
       if (session.file) args.push('--session', session.file);
       else args.push('--session-id', session.id);
-      const bridge = path.join(this.store.dir, 'desktop-bridge.mjs');
+      const bridge = path.join(this.store.dir, `desktop-bridge-${sessionId}.mjs`);
       await fs.copyFile(this.bridgeSource, bridge);
       args.push('--extension', bridge);
       // Project trust is answered in Pi's own dialog; no implicit --approve flag.
@@ -730,6 +805,7 @@ export class AgentService extends EventEmitter {
         PI_DESKTOP_CHECKPOINTS: '1',
         ...piShellEnvironment(environment.bash),
       };
+      this.processAgentDir = agentDirectory(this.store.state.settings);
       // Pi searches PATH after conventional Git locations. Prefer the Git Bash we detected,
       // including installations on another drive, over Windows' legacy WSL bash launcher.
       rpc.start(resolved.spec, cwd, args, shellEnv);
@@ -750,9 +826,11 @@ export class AgentService extends EventEmitter {
   }
   private resetSession(sessionId: string, cwd: string) {
     this.checkpointRecorder.reset();
+    this.activeWriteTargets.clear();
     this.clearDialogs();
     const crash = this.runtime.sessionId === sessionId ? this.runtime.crash : undefined;
-    this.runtime = { ...emptyRuntime(), sessionId, cwd, crash };
+    const configurationPending = this.runtime.configurationPending;
+    this.runtime = { ...emptyRuntime(), sessionId, cwd, crash, configurationPending };
     this.retryNotice = undefined;
     this.retryCancelled = false;
     this.queuedImages = [];
@@ -810,8 +888,13 @@ export class AgentService extends EventEmitter {
       this.queuedImages = [];
       if (last) {
         this.unsafeExit = true;
-        this.crashCleanup = rpc.treeTerminationConfirmed().then((confirmed) => {
+        this.crashCleanup = rpc.treeTerminationConfirmed().then(async (confirmed) => {
           this.unsafeExit = !confirmed;
+          if (confirmed)
+            await this.checkpointRecorder
+              .finish(sessionId)
+              .catch((error) => this.diagnostic(errorText(error)));
+          if (confirmed) this.activeWriteTargets.clear();
           if (this.runtime.crash) this.runtime.crash.cleanup = confirmed ? 'confirmed' : 'unconfirmed';
           if (!confirmed) this.setError('无法确认残留命令已结束，请结束命令后重新启动 Pi Desktop。');
           this.publish(true);
@@ -973,6 +1056,8 @@ export class AgentService extends EventEmitter {
     if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('消息超过 1 MiB，请缩短后发送');
     const prompt = project ? await attachmentPrompt(project, text, attachments) : text;
     await this.ensureConnected(id);
+    // A tool continuation or a queued steer/follow-up is still the same user task.
+    if (!busy(this.runtime.status)) await this.applyTaskSelection(id);
     const shellCommand = /^!!?\S/.test(text);
     if (!this.runtime.model && !text.startsWith('/') && !shellCommand) throw new Error('请选择一个可用模型');
     if (images.length && !this.runtime.model?.input?.includes('image'))
@@ -989,7 +1074,8 @@ export class AgentService extends EventEmitter {
       this.status('starting');
       if (project)
         try {
-          if (shellCommand) await this.workspace.capture(project);
+          if (shellCommand)
+            await this.workspace.captureCheckpoint(project, id, await this.workspace.nextCheckpointTurn(id));
           else if (!text.startsWith('/')) await this.checkpointRecorder.prepare(id);
         } catch (error) {
           this.setError(`无法建立本轮快照，任务未开始：${errorText(error)}`);
@@ -1009,6 +1095,10 @@ export class AgentService extends EventEmitter {
         this.status('running');
         await this.store.flush();
         if (this.stopRequested || epoch !== this.stopEpoch) throw new Error('任务已取消，内容保留在草稿中');
+        if (project)
+          await this.workspace.beginTool(project, id, 'desktop-bash', 'bash', {
+            command: text.replace(/^!!?/, ''),
+          });
         this.runtime.tools.push({
           id: 'desktop-bash',
           name: 'bash',
@@ -1030,6 +1120,7 @@ export class AgentService extends EventEmitter {
         this.status(output.cancelled ? 'stopped' : output.exitCode === 0 ? 'completed' : 'error');
         await this.refresh();
         await this.syncApprovalMode();
+        await this.applyPendingConfiguration();
       } else
         result = await this.rpc!.request(
           'prompt',
@@ -1071,62 +1162,124 @@ export class AgentService extends EventEmitter {
     this.runtime.thinkingLevels = levels.levels;
   }
   setModel(id: string, provider: string, modelId: string) {
-    if (this.connecting) return Promise.reject(new Error('Pi 正在连接或切换会话，请稍后再切换模型'));
-    return this.exclusive(async () => {
+    return this.preference(async () => {
       const session = this.store.session(id);
-      if (this.runtime.sessionId === id && ['starting', 'stopping'].includes(this.runtime.status))
-        throw new Error('Pi 正在连接或停止，请稍后再切换模型');
-      const rpc = this.rpc;
-      if (rpc && !rpc.closed && this.runtime.sessionId === id) {
-        if (!this.runtime.models.some((m) => m.provider === provider && m.id === modelId))
-          throw new Error('该模型当前不可用，请刷新模型列表');
-        this.runtime.model = displayModel(await rpc.request('set_model', { provider, modelId }));
-        await this.loadThinkingLevels(rpc);
-        const state = await rpc.request('get_state');
-        this.runtime.thinking = state.thinkingLevel;
-        session.thinking = state.thinkingLevel;
+      const previous = { model: session.model, thinking: session.thinking, nextTask: this.runtime.nextTask };
+      try {
+        const rpc = this.rpc;
+        if (rpc && !rpc.closed && this.runtime.sessionId === id) {
+          if (!this.runtime.models.some((m) => m.provider === provider && m.id === modelId))
+            throw new Error('该模型当前不可用，请刷新模型列表');
+          const options = await rpc.bridge('task_options', {
+            provider,
+            modelId,
+            thinking: session.thinking ?? this.runtime.thinking ?? 'off',
+          });
+          session.thinking = options.thinking;
+          this.runtime.nextTask = {
+            model: this.runtime.models.find((m) => m.provider === provider && m.id === modelId)!,
+            thinking: options.thinking,
+            thinkingLevels: options.thinkingLevels,
+          };
+        }
+        session.model = { provider, id: modelId };
+        if (!busy(this.runtime.status))
+          await this.exclusive(async () => {
+            if (!busy(this.runtime.status)) await this.applyTaskSelection(id);
+          });
+      } catch (error) {
+        session.model = previous.model;
+        session.thinking = previous.thinking;
+        this.runtime.nextTask = previous.nextTask;
+        this.save();
+        this.publish(true);
+        throw error;
       }
-      session.model = { provider, id: modelId };
       this.store.state.settings.provider = provider;
       this.store.state.settings.modelId = modelId;
+      this.clearUnchangedSelection();
       this.save();
       this.publish(true);
     });
   }
   setThinking(id: string, level: string) {
-    return this.exclusive(async () => {
+    if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(level))
+      return Promise.reject(new Error('推理级别无效，请从模型提供的级别中选择'));
+    return this.preference(async () => {
       const session = this.store.session(id);
-      if (this.runtime.sessionId === id && busy(this.runtime.status))
-        throw new Error('执行中不能切换推理级别，请等待本轮结束');
-      const rpc = this.rpc;
-      if (rpc && !rpc.closed && this.runtime.sessionId === id) {
-        if (!this.runtime.thinkingLevels.includes(level)) throw new Error('当前模型不支持这个推理级别');
-        await rpc.request('set_thinking_level', { level });
-        this.runtime.thinking = level;
+      const previous = { thinking: session.thinking, nextTask: this.runtime.nextTask };
+      try {
+        const rpc = this.rpc;
+        if (rpc && !rpc.closed && this.runtime.sessionId === id) {
+          const levels = this.runtime.nextTask?.thinkingLevels ?? this.runtime.thinkingLevels;
+          if (!levels.includes(level)) throw new Error('所选模型不支持这个推理级别');
+          if (this.runtime.model)
+            this.runtime.nextTask = {
+              model: this.runtime.nextTask?.model ?? this.runtime.model,
+              thinking: level,
+              thinkingLevels: levels,
+            };
+        }
+        session.thinking = level;
+        if (!busy(this.runtime.status))
+          await this.exclusive(async () => {
+            if (!busy(this.runtime.status)) await this.applyTaskSelection(id);
+          });
+      } catch (error) {
+        session.thinking = previous.thinking;
+        this.runtime.nextTask = previous.nextTask;
+        this.save();
+        this.publish(true);
+        throw error;
       }
-      const config = new Configuration(this.store);
-      const document = await config.read(id, 'settings', false);
-      const values = JSON.parse(document.text);
-      values.defaultThinkingLevel = level;
-      await config.save(id, 'settings', false, { ...document, text: JSON.stringify(values) });
-      session.thinking = level;
       this.store.state.settings.thinking = level;
+      this.clearUnchangedSelection();
       this.save();
       this.publish(true);
     });
+  }
+  private clearUnchangedSelection() {
+    const next = this.runtime.nextTask;
+    if (
+      next &&
+      next.model.provider === this.runtime.model?.provider &&
+      next.model.id === this.runtime.model?.id &&
+      next.thinking === this.runtime.thinking
+    )
+      this.runtime.nextTask = undefined;
+  }
+  private async applyTaskSelection(id: string) {
+    const rpc = this.rpc;
+    if (!rpc || rpc.closed || this.runtime.sessionId !== id) return;
+    const session = this.store.session(id);
+    const model = session.model;
+    if (model && (model.provider !== this.runtime.model?.provider || model.id !== this.runtime.model?.id)) {
+      this.runtime.model = displayModel(
+        await rpc.request('set_model', { provider: model.provider, modelId: model.id }),
+      );
+      await this.loadThinkingLevels(rpc);
+    }
+    if (session.thinking && session.thinking !== this.runtime.thinking) {
+      await rpc.request('set_thinking_level', { level: session.thinking });
+    }
+    const state = await rpc.request('get_state');
+    this.runtime.model = displayModel(state.model);
+    this.runtime.thinking = state.thinkingLevel;
+    this.runtime.nextTask = undefined;
+    session.thinking = state.thinkingLevel;
+    this.publish(true);
   }
   async setApprovalMode(id: string, mode: ApprovalMode) {
     if (!['auto', 'confirm', 'readonly'].includes(mode)) throw new Error('审批模式无效');
     this.store.session(id).approvalMode = mode;
     this.save();
-    if (this.runtime.sessionId === id && !busy(this.runtime.status))
-      await this.exclusive(() => this.syncApprovalMode());
+    if (this.runtime.sessionId === id) await this.preference(() => this.syncApprovalMode());
     this.publish(true);
   }
   private async syncApprovalMode() {
     const rpc = this.rpc;
     const id = this.runtime.sessionId;
-    if (!rpc || rpc.closed || !id || !this.runtime.connected || busy(this.runtime.status)) return;
+    if (!rpc || rpc.closed || !id || !this.runtime.connected) return;
     // Read the current session's saved choice, including changes made before a stop or reconnect.
     const mode = this.store.session(id).approvalMode ?? 'auto';
     if (this.runtime.approvalMode === mode) return;
@@ -1171,7 +1324,7 @@ export class AgentService extends EventEmitter {
   }
   async messageAction(id: string, action: MessageAction, role: string, timestamp: number) {
     if (action === 'fork') {
-      const entry = await this.idleTask(id, (rpc) => this.entryFor(rpc, role, timestamp));
+      const entry = await this.readTask(id, (rpc) => this.entryFor(rpc, role, timestamp));
       return this.branch(id, 'fork', entry.id);
     }
     const restored = await this.idleTask(id, async (rpc) => {
@@ -1274,12 +1427,78 @@ export class AgentService extends EventEmitter {
         if (!this.stopRequested && this.runtime.connected) {
           this.status('idle');
           await this.refresh();
+          await this.applyPendingConfiguration();
         }
       }
     });
   }
+  private async readTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
+    await this.beforeConnect?.('read');
+    this.reading++;
+    this.pendingOperations++;
+    try {
+      if (!this.rpc || this.rpc.closed || this.runtime.sessionId !== id) await this.connect(id);
+      return await action(this.rpc!);
+    } finally {
+      this.reading--;
+      this.pendingOperations--;
+      if (!this.reading && this.runtime.configurationPending && !busy(this.runtime.status))
+        void this.exclusive(() => this.applyPendingConfiguration()).catch((error) =>
+          this.diagnostic(errorText(error)),
+        );
+    }
+  }
+  async scheduleReload() {
+    if (!this.runtime.connected && !this.connecting) return true;
+    this.runtime.configurationPending = true;
+    this.publish(true);
+    // Do not queue a resource reload behind a long-running manual compaction.
+    if (
+      busy(this.runtime.status) ||
+      this.connecting ||
+      this.probing ||
+      this.reading ||
+      this.preferring ||
+      this.runtime.dialogs.length ||
+      this.unsafeExit
+    )
+      return false;
+    return this.exclusive(() => this.applyPendingConfiguration());
+  }
+  private async applyPendingConfiguration() {
+    if (this.shutdown || this.reloadSuspended) return false;
+    if (!this.runtime.configurationPending) return true;
+    if (
+      busy(this.runtime.status) ||
+      this.runtime.dialogs.length ||
+      this.connecting ||
+      this.probing ||
+      this.reading ||
+      this.preferring ||
+      this.unsafeExit
+    )
+      return false;
+    const id = this.runtime.sessionId!;
+    const status = this.runtime.status;
+    const epoch = this.stopEpoch;
+    const rpc = this.rpc;
+    this.rpc = undefined;
+    await rpc?.close();
+    this.runtime.connected = false;
+    this.runtime.configurationPending = undefined;
+    try {
+      await this.ensureConnected(id);
+      this.status(status);
+      return true;
+    } catch (error) {
+      this.runtime.configurationPending = true;
+      if (epoch === this.stopEpoch) this.status(status);
+      this.notify(`配置已保存，加载失败：${errorText(error)}。可修正配置后重新连接。`, 'warning');
+      throw error;
+    }
+  }
   tree(id: string): Promise<TreeEntry[]> {
-    return this.idleTask(id, (rpc) => rpc.bridge('tree'));
+    return this.readTask(id, (rpc) => rpc.bridge('tree'));
   }
   branch(
     id: string,
@@ -1288,45 +1507,47 @@ export class AgentService extends EventEmitter {
     summarize = false,
     instructions = '',
   ) {
+    if (kind !== 'navigate') return this.forkCopy(id, kind, entryId);
     return this.idleTask(id, async (rpc) => {
-      const old = this.store.session(id);
-      const cwd = await this.store.sessionDirectory(id);
-      const forkMessage =
-        kind === 'fork'
-          ? (await rpc.request('get_entries')).entries?.find((e: any) => e.id === entryId)?.message
-          : undefined;
-      const result =
-        kind === 'navigate'
-          ? await rpc.bridge('navigate', { entryId, summarize, instructions })
-          : await rpc.request(kind, kind === 'fork' ? { entryId } : {}, 600000);
+      const result = await rpc.bridge('navigate', { entryId, summarize, instructions });
       if (result?.cancelled) throw new Error('Pi 扩展取消了这次操作');
-      if (kind !== 'navigate') {
-        const state = await rpc.request('get_state');
-        const next = this.store.createSession(old.projectId);
-        next.file = state.sessionFile;
-        if (!next.projectId) next.cwd = cwd;
-        next.title = old.title + (kind === 'fork' ? ' · 分支' : ' · 副本');
-        next.draft = result?.text ?? '';
-        next.images = (Array.isArray(forkMessage?.content) ? forkMessage.content : [])
-          .filter((b: any) => b.type === 'image')
-          .map((b: any, i: number) => ({
-            id: randomUUID(),
-            name: `历史图片 ${i + 1}`,
-            data: b.data,
-            mimeType: b.mimeType,
-          }));
-        this.runtime.sessionId = next.id;
-        await rpc.request('set_session_name', { name: next.title });
-        await this.store.save();
-        this.emit('state', this.store.state);
-      }
       this.runtime.tools = [];
     });
   }
+  private async forkCopy(id: string, kind: 'fork' | 'clone', entryId?: string) {
+    const old = this.store.session(id);
+    const result = await this.readTask(id, (rpc) => rpc.bridge('fork_copy', { kind, entryId }));
+    const next = this.store.createSession(old.projectId);
+    next.file = result.file;
+    if (!next.projectId) next.cwd = await this.store.sessionDirectory(id);
+    next.title = old.title + (kind === 'fork' ? ' · 分支' : ' · 副本');
+    next.model = old.model ? { ...old.model } : undefined;
+    next.thinking = old.thinking;
+    next.approvalMode = old.approvalMode;
+    if (result.message) {
+      next.draft = messageText(result.message);
+      next.images = (Array.isArray(result.message.content) ? result.message.content : [])
+        .filter((b: any) => b.type === 'image')
+        .map((b: any, i: number) => ({
+          id: randomUUID(),
+          name: `历史图片 ${i + 1}`,
+          data: b.data,
+          mimeType: b.mimeType,
+        }));
+    }
+    await this.store.save();
+    this.emit('state', this.store.state);
+  }
   compact(id: string, customInstructions: string) {
-    return this.idleTask(id, async (rpc) => {
+    return this.readTask(id, async (rpc) => {
+      if (busy(this.runtime.status)) throw new Error('本会话正在执行任务，请停止后再手动压缩');
       this.status('compacting');
-      return rpc.request('compact', { customInstructions }, 600000);
+      try {
+        return await rpc.request('compact', { customInstructions }, 600000);
+      } finally {
+        if (!this.stopRequested) this.status('idle');
+        await this.exclusive(() => this.applyPendingConfiguration());
+      }
     });
   }
   option(id: string, key: string, value: boolean | string) {
@@ -1339,13 +1560,17 @@ export class AgentService extends EventEmitter {
     if (!command) throw new Error('未知 Pi 设置');
     if (key.endsWith('Mode') ? !['all', 'one-at-a-time'].includes(String(value)) : typeof value !== 'boolean')
       throw new Error('设置值无效');
-    return this.idleTask(id, async (rpc) => {
+    return this.readTask(id, async (rpc) => {
       await rpc.request(command, key.endsWith('Mode') ? { mode: value } : { enabled: value });
+      await this.refresh();
       await this.refreshCapabilities();
     });
   }
   admin(id: string, method: string, params: unknown = {}) {
-    return this.idleTask(id, async (rpc) => {
+    const task = ['tree', 'resources', 'providers', 'options', 'set_label'].includes(method)
+      ? this.readTask.bind(this)
+      : this.idleTask.bind(this);
+    return task(id, async (rpc) => {
       const result = await rpc.bridge(method, params);
       if (['login', 'logout', 'reload', 'toggle_resource'].includes(method)) await this.refreshCapabilities();
       return result;
@@ -1355,7 +1580,65 @@ export class AgentService extends EventEmitter {
     await this.rpc?.bridge('cancel_auth');
   }
   exportHtml(id: string, outputPath: string) {
-    return this.idleTask(id, (rpc) => rpc.request('export_html', { outputPath }, 120000));
+    return this.readTask(id, (rpc) => rpc.request('export_html', { outputPath }, 120000));
+  }
+  async captureExport(id: string, format: 'html' | 'jsonl', temporary: string): Promise<Buffer> {
+    const file = this.store.session(id).file;
+    if (!file) throw new Error('会话尚未产生可导出的内容');
+    const current = this.runtime.sessionId === id && busy(this.runtime.status);
+    const message = current ? structuredClone(this.runtime.messages.at(-1)) : undefined;
+    const output = current
+      ? this.runtime.tools
+          .filter((tool) => tool.status === 'running' && tool.output)
+          .map((tool) => ({ name: tool.name, output: tool.output }))
+      : [];
+    const raw = await fs.readFile(file, 'utf8');
+    const entries = raw
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    const partial =
+      message?.role === 'assistant' &&
+      !entries.some(
+        (entry) => entry.message?.role === 'assistant' && entry.message?.timestamp === message.timestamp,
+      )
+        ? message
+        : undefined;
+    if (format === 'jsonl') {
+      let parentId = entries.at(-1)?.id ?? null;
+      const append = (entry: object) => {
+        const id = randomUUID().slice(0, 8);
+        entries.push({ ...entry, id, parentId, timestamp: new Date().toISOString() });
+        parentId = id;
+      };
+      if (partial)
+        append({
+          type: 'message',
+          message: {
+            ...partial,
+            stopReason: 'aborted',
+            errorMessage: '导出快照：此回复在导出时尚未完成，原任务继续运行。',
+          },
+        });
+      if (output.length) append({ type: 'custom', customType: 'desktop-export-output', data: output });
+      return Buffer.from(entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+    }
+    await this.exportHtml(id, temporary);
+    let html = await fs.readFile(temporary, 'utf8');
+    const live = [partial && messageText(partial), ...output.map((tool) => `[${tool.name}]\n${tool.output}`)]
+      .filter(Boolean)
+      .join('\n\n');
+    if (live) {
+      const escaped = live.replace(
+        /[&<>"']/g,
+        (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!,
+      );
+      html = html.replace(
+        '</body>',
+        `<section style="padding:24px"><h2>导出时尚未完成的输出</h2><p>以下内容固定于导出时，原任务继续运行。</p><pre style="white-space:pre-wrap">${escaped}</pre></section></body>`,
+      );
+    }
+    return Buffer.from(html);
   }
   async rename(id: string, name: string) {
     if (this.runtime.sessionId === id && this.runtime.connected)
@@ -1371,22 +1654,38 @@ export class AgentService extends EventEmitter {
       this.status('stopped');
       return;
     }
+    const rpc = this.rpc;
     try {
       if (this.runtime.auth) await this.cancelLogin();
       for (const dialog of [...this.runtime.dialogs])
         await this.respond(dialog.id, { cancelled: true }).catch(() => {});
-      await this.clearQueue();
-      await this.rpc.request('abort_bash');
-      await this.rpc.request('abort', {}, 60000);
-      if (this.rpc && !this.rpc.closed) {
-        const state = await this.rpc.request('get_state');
+      try {
+        await this.clearQueue();
+        if (!rpc.closed) await rpc.request('abort_bash');
+        if (!rpc.closed) await rpc.request('abort', {}, 60000);
+      } catch (error) {
+        // A cancelled startup/reload can close this process while stop is awaiting its response.
+        if (!rpc.closed) throw error;
+        await this.crashCleanup;
+        this.assertCommandsStopped();
+      }
+      if (!rpc.closed) {
+        const state = await rpc.request('get_state');
         if (state.isStreaming || state.isCompacting || state.pendingMessageCount)
           throw new Error('Pi 尚未停止，请重试或强制结束');
       }
       this.clearDialogs();
+      if (this.runtime.sessionId)
+        await this.checkpointRecorder
+          .finish(this.runtime.sessionId)
+          .catch((error) => this.diagnostic(errorText(error)));
       this.status('stopped');
+      this.activeWriteTargets.clear();
       await this.refresh();
-      await this.exclusive(() => this.syncApprovalMode());
+      await this.exclusive(async () => {
+        await this.syncApprovalMode().catch((error) => this.diagnostic(errorText(error)));
+        await this.applyPendingConfiguration().catch((error) => this.diagnostic(errorText(error)));
+      });
     } catch (e) {
       this.setError(`停止未完成：${errorText(e)}`);
       this.publish(true);
@@ -1397,6 +1696,11 @@ export class AgentService extends EventEmitter {
     this.stopEpoch++;
     this.stopRequested = true;
     await this.rpc?.killTree();
+    this.activeWriteTargets.clear();
+    if (this.runtime.sessionId)
+      await this.checkpointRecorder
+        .finish(this.runtime.sessionId)
+        .catch((error) => this.diagnostic(errorText(error)));
     this.runtime.connected = false;
     this.clearDialogs();
     this.status('stopped');
@@ -1420,9 +1724,9 @@ export class AgentService extends EventEmitter {
     const session = this.store.session(sessionId);
     const cwd = await this.store.sessionDirectory(session.id);
     const settings = this.store.state.settings;
-    const model = this.runtime.model;
-    const provider = settings.provider || model?.provider,
-      modelId = settings.modelId || model?.id;
+    const model = session.model ?? this.runtime.model;
+    const provider = model?.provider || settings.provider,
+      modelId = model?.id || settings.modelId;
     if (!provider || !modelId) throw new Error('请先连接 Pi 并选择模型');
     this.probing = true;
     const probe = new PiRpc();
@@ -1480,6 +1784,10 @@ export class AgentService extends EventEmitter {
       await probe.close();
       this.probe = undefined;
       this.probing = false;
+      if (this.runtime.configurationPending)
+        void this.exclusive(() => this.applyPendingConfiguration()).catch((error) =>
+          this.diagnostic(errorText(error)),
+        );
     }
   }
   output() {
@@ -1496,6 +1804,7 @@ export class AgentService extends EventEmitter {
   }
   async dispose() {
     this.shutdown = true;
+    await this.settingsOperation;
     this.clearDialogs();
     if (this.publishing) clearTimeout(this.publishing);
     await this.probe?.close();

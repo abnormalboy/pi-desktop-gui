@@ -19,6 +19,11 @@ export class CheckpointRecorder {
   reset() {
     this.prepared = undefined;
   }
+  async finish(sessionId: string) {
+    const session = this.store.session(sessionId);
+    if (session.projectId)
+      await this.workspace.endSessionTools(this.store.project(session.projectId), sessionId);
+  }
   async prepare(sessionId: string) {
     this.reset();
     const session = this.store.session(sessionId);

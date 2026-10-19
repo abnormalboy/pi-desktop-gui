@@ -94,6 +94,48 @@ test('commands attribute only changes during their boundaries; later manual edit
   assert.equal(preview.files.find((file) => file.path === 'test.txt')?.selected, false);
 });
 
+test('overlapping tools from different chats protect ambiguous files from automatic undo', async (t) => {
+  const { project, workspace, sessionId, write, data, directory } = await fixture(t);
+  const other = randomUUID();
+  const first = (await workspace.captureCheckpoint(project, sessionId, 1))!;
+  const second = (await workspace.captureCheckpoint(project, other, 1))!;
+  await workspace.beginTool(project, sessionId, 'shell-A', 'bash', { command: 'work in A' });
+  await workspace.beginTool(project, other, 'write-B', 'write', { path: 'b.txt' });
+  await write('b.txt', 'B must be preserved');
+  await workspace.endTool(project, other, 'write-B');
+  await write('a.txt', 'A wrote this while B was running');
+  await workspace.endTool(project, sessionId, 'shell-A');
+  const reopened = new Workspace(data);
+  for (const [id, checkpoint] of [
+    [sessionId, first],
+    [other, second],
+  ] as const) {
+    const preview = await reopened.checkpointPreview(project, id, checkpoint.id);
+    const b = preview.files.find((file) => file.path === 'b.txt');
+    assert.ok(b);
+    assert.equal(b.manual, true);
+    assert.equal(b.selected, false);
+  }
+  assert.equal(await fs.readFile(path.join(directory, 'b.txt'), 'utf8'), 'B must be preserved');
+});
+
+test('confirmed termination clears old tool boundaries without claiming partial writes', async (t) => {
+  const { project, workspace, sessionId, write } = await fixture(t);
+  const first = (await workspace.captureCheckpoint(project, sessionId, 1))!;
+  await workspace.beginTool(project, sessionId, 'stopped-shell', 'bash', { command: 'partial work' });
+  await write('partial.txt', 'incomplete');
+  await workspace.endSessionTools(project, sessionId);
+  const partial = await workspace.checkpointPreview(project, sessionId, first.id);
+  assert.equal(partial.files.find((file) => file.path === 'partial.txt')?.selected, false);
+  const other = randomUUID();
+  const second = (await workspace.captureCheckpoint(project, other, 1))!;
+  await workspace.beginTool(project, other, 'later-write', 'write', { path: 'later.txt' });
+  await write('later.txt', 'normal later work');
+  await workspace.endTool(project, other, 'later-write');
+  const preview = await workspace.checkpointPreview(project, other, second.id);
+  assert.equal(preview.files.find((file) => file.path === 'later.txt')?.selected, true);
+});
+
 test('commit keeps checkpoints usable; switching branch permanently invalidates previous checkpoints', async (t) => {
   const { project, workspace, sessionId, write, toolWrite, git, directory } = await fixture(t);
   await write('a.txt', 'original');

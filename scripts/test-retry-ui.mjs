@@ -57,15 +57,24 @@ try {
   await page.locator('.run-meta .completed').waitFor();
   await page.locator('.retry-banner').waitFor({ state: 'detached' });
   await page.locator('.message.assistant').getByText('RECOVERED', { exact: true }).waitFor();
-  assert.equal(await page.locator('.runtime-notices').evaluate((node) => node.open), false);
-  await page.locator('.runtime-notices summary').filter({ hasText: '历史运行记录' }).waitFor();
-  await page.locator('.runtime-notices summary').click();
-  assert.equal(await page.locator('.runtime-notices p').count(), 2);
-  assert.equal(await page.locator('.runtime-notices p').filter({ hasText: '重试已恢复' }).count(), 2);
-  assert.equal(await page.locator('.runtime-notices p').filter({ hasText: '继续执行' }).count(), 0);
+  assert.equal(await page.locator('.runtime-notices').count(), 0);
+  assert.equal(await page.locator('.message.assistant .inline-error').count(), 0);
+  const recoveredToasts = page.getByRole('status').filter({ hasText: '连接已恢复' });
+  await recoveredToasts.first().waitFor();
+  assert.ok((await recoveredToasts.count()) > 0);
+  for (const text of await recoveredToasts.allTextContents()) {
+    assert.equal(text, '连接已恢复');
+  }
   assert.equal(provider.count, 4);
   await page.screenshot({ path: path.join(output, 'recovered.png'), animations: 'disabled' });
-  console.log('PASS retry banner persists while waiting; recovered records replace active wording');
+  await recoveredToasts.last().waitFor({ state: 'detached', timeout: 6500 });
+  assert.equal(await page.locator('.runtime-notices').count(), 0);
+  await page.reload();
+  await input.waitFor();
+  await page.locator('.message.assistant').getByText('RECOVERED', { exact: true }).waitFor();
+  assert.equal(await page.locator('.message.assistant .inline-error').count(), 0);
+  assert.equal(await recoveredToasts.count(), 0);
+  console.log('PASS recovered errors leave the conversation and recovery toasts automatically disappear');
 
   provider.reset('cancel-request');
   await send('RETRY_CANCEL_REQUEST');
@@ -87,6 +96,7 @@ try {
   assert.equal(await page.locator('.runtime-notices').evaluate((node) => node.open), false);
   await page.locator('.runtime-notices summary').click();
   assert.match(await page.locator('.runtime-notices p').last().innerText(), /^重试失败（2\/2）/);
+  assert.ok((await page.locator('.message.assistant .inline-error').count()) > 0);
   assert.equal(provider.count, 3);
   assert.deepEqual(errors, []);
   await fs.writeFile(
@@ -95,7 +105,7 @@ try {
       {
         passed: true,
         packaged: Boolean(process.env.PI_DESKTOP_EXE),
-        checks: ['requesting banner', 'recovered history', 'cancel active request', 'exhaustion'],
+        checks: ['requesting banner', 'recovery toast auto-dismiss', 'cancel active request', 'exhaustion'],
         rendererErrors: errors,
       },
       null,

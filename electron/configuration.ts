@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { lock } from 'proper-lockfile';
 import { agentDirectory } from './environment';
 import type { ConfigDocument, ConfigKind, ConfigSaveResult } from '../shared/types';
 import { redact } from '../shared/errors';
@@ -59,23 +60,44 @@ export class Configuration {
     kind: ConfigKind,
     local: boolean,
     document: ConfigDocument,
-    service: { disconnect: () => Promise<void>; connect: (id: string) => Promise<unknown> },
+    apply: () => Promise<ConfigSaveResult>,
   ): Promise<ConfigSaveResult> {
-    await service.disconnect();
     await this.save(id, kind, local, document);
     try {
-      await service.connect(id);
-      return { applied: true };
+      const result = await apply();
+      return result.warning ? { ...result, warning: redact(result.warning) } : result;
     } catch (error) {
       // The file is already persisted. A failed reconnect must not be reported as a failed write.
       return { applied: false, warning: redact(error instanceof Error ? error.message : String(error)) };
     }
   }
   async save(id: string, kind: ConfigKind, local: boolean, document: ConfigDocument) {
-    const file = await this.file(id, kind, local),
-      raw = await this.raw(file);
+    const file = await this.file(id, kind, local);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    // Native Pi's SettingsManager uses this same lock. Keep its writes and our revision check atomic.
+    const release = await lock(file, {
+      realpath: false,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 25 },
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ELOCKED')
+        throw new Error('配置正由 Pi 或其他程序保存，请稍后重新读取再保存', { cause: error });
+      throw error;
+    });
+    try {
+      await this.saveLocked(file, kind, document);
+    } finally {
+      await release();
+    }
+  }
+  private async saveLocked(file: string, kind: ConfigKind, document: ConfigDocument) {
+    const raw = await this.raw(file);
     if (document.revision !== revision(raw)) throw new Error('配置已被其他程序修改，请重新读取后再保存');
-    const parsed = JSON.parse(document.text);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(document.text);
+    } catch (error) {
+      throw new Error('配置不是有效的 JSON，请检查括号、逗号和引号', { cause: error });
+    }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
       throw new Error('配置必须是 JSON 对象');
     const value = restore(parsed, JSON.parse(raw));

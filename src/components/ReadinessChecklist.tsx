@@ -24,7 +24,7 @@ export function ReadinessChecklist({
 }) {
   if (!environment) return null;
   const connected = ownRuntime && runtime.connected;
-  const piReady = environment.supported;
+  const piReady = connected || environment.supported;
   const modelReady = connected ? Boolean(runtime.model) : Boolean(modelLabel);
   if (piReady && modelReady) return null;
   const chooseModel = () => document.querySelector<HTMLButtonElement>('.model-pill')?.click();

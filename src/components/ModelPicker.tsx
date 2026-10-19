@@ -60,7 +60,12 @@ export function ModelPicker({
     if (!open) return;
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [open, index]);
-  const current = runtime.model ? `${runtime.model.provider}::${runtime.model.id}` : '';
+  const selection = runtime.nextTask ?? {
+    model: runtime.model,
+    thinking: runtime.thinking,
+    thinkingLevels: runtime.thinkingLevels,
+  };
+  const current = selection.model ? `${selection.model.provider}::${selection.model.id}` : '';
   const q = query.trim().toLowerCase();
   const models = runtime.models.filter((m) => `${m.provider} ${m.name} ${m.id}`.toLowerCase().includes(q));
   const providers = [...new Set(models.map((m) => m.provider))];
@@ -88,8 +93,8 @@ export function ModelPicker({
         aria-haspopup="dialog"
         aria-expanded={open}
       >
-        <span>{runtime.model?.name || fallback || '选择模型'}</span>
-        {runtime.thinking && runtime.thinking !== 'off' && <em>{runtime.thinking}</em>}
+        <span>{selection.model?.name || fallback || '选择模型'}</span>
+        {selection.thinking && selection.thinking !== 'off' && <em>{selection.thinking}</em>}
         <ChevronDown size={12} />
       </button>
       {open && (
@@ -180,17 +185,17 @@ export function ModelPicker({
               ))
             )}
           </div>
-          {runtime.thinkingLevels.length > 0 && (
+          {selection.thinkingLevels.length > 0 && (
             <div className="thinking-row">
               <span>推理级别</span>
               <div role="radiogroup" aria-label="推理级别">
-                {runtime.thinkingLevels.map((level) => (
+                {selection.thinkingLevels.map((level) => (
                   <button
                     key={level}
                     role="radio"
-                    aria-checked={runtime.thinking === level}
+                    aria-checked={selection.thinking === level}
                     disabled={thinkingLocked}
-                    onClick={() => level !== runtime.thinking && setThinking(level)}
+                    onClick={() => level !== selection.thinking && setThinking(level)}
                   >
                     {level}
                   </button>
@@ -199,7 +204,11 @@ export function ModelPicker({
             </div>
           )}
           <div className="model-picker-foot">
-            {locked ? <span>请等待当前操作完成</span> : <span>模型从下一次请求生效，不中断当前回复</span>}
+            {locked ? (
+              <span>请等待当前操作完成</span>
+            ) : (
+              <span>运行中修改将在下次发送新任务时生效；补充要求仍使用本轮设置</span>
+            )}
             <button
               onClick={() => {
                 close();

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { parseAnsi, stripAnsi } from '../shared/ansi';
 import { composeDraftText, moveSnippetOffsets, shouldCollapsePaste, textBytes } from '../shared/draft';
-import { groupConversation, conversationTurns } from '../src/lib/conversation-layout';
+import { groupConversation, conversationTurns, hideRecoveredErrors } from '../src/lib/conversation-layout';
 import { searchSession, limitForMessage } from '../src/lib/session-search';
 import { parseArgumentHint, parsePromptArguments, formatPromptArguments } from '../src/lib/prompt-arguments';
 import { tokenizeCode } from '../src/lib/code-tokens';
@@ -101,6 +101,76 @@ const tool = (id: string, name = 'read', status: ToolActivity['status'] = 'done'
   output: 'done',
   startedAt: 0,
 });
+test('successful retries hide old model errors while retaining reply content, tool results and native history', () => {
+  const emptyFailure: Message = {
+    role: 'assistant',
+    content: [],
+    stopReason: 'error',
+    errorMessage: 'Connection error.',
+  };
+  const partialFailure: Message = {
+    role: 'assistant',
+    content: 'Partial reply',
+    stopReason: 'error',
+    errorMessage: 'Connection error.',
+  };
+  const toolResult: Message = { role: 'toolResult', toolCallId: 'read', content: 'Read result' };
+  const messages: Message[] = [
+    { role: 'user', content: 'Recover this request' },
+    emptyFailure,
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'read', name: 'read' }], stopReason: 'toolUse' },
+    toolResult,
+    partialFailure,
+    { role: 'assistant', content: 'Recovered', stopReason: 'stop' },
+  ];
+  const displayed = hideRecoveredErrors(messages);
+  assert.equal(displayed.includes(emptyFailure), false);
+  assert.ok(displayed.includes(toolResult));
+  assert.equal(displayed.find((message) => message.content === 'Partial reply')?.errorMessage, undefined);
+  assert.equal(conversationTurns(displayed, () => tool('read'))[0].failed, false);
+  assert.equal(emptyFailure.errorMessage, 'Connection error.');
+  assert.equal(partialFailure.errorMessage, 'Connection error.');
+  assert.equal(messages.length, 6);
+});
+
+test('recovery does not hide errors from other turns, final failures, aborted requests or failed tools', () => {
+  const failure = (errorMessage: string): Message => ({
+    role: 'assistant',
+    content: [],
+    stopReason: 'error',
+    errorMessage,
+  });
+  const previous = failure('Previous turn failed');
+  const final = failure('Final request failed');
+  const aborted = failure('Request failed before cancellation');
+  const toolFailure: Message = {
+    role: 'toolResult',
+    toolCallId: 'read',
+    content: 'Failed tool',
+    isError: true,
+  };
+  const messages: Message[] = [
+    { role: 'user', content: 'Previous turn' },
+    previous,
+    { role: 'user', content: 'Recovered turn' },
+    failure('Recovered error'),
+    toolFailure,
+    { role: 'assistant', content: 'Recovered', stopReason: 'stop' },
+    { role: 'user', content: 'Failed turn' },
+    final,
+    { role: 'user', content: 'Cancelled turn' },
+    aborted,
+    { role: 'assistant', content: [], stopReason: 'aborted' },
+  ];
+  const displayed = hideRecoveredErrors(messages);
+  for (const message of [previous, final, aborted, toolFailure]) assert.ok(displayed.includes(message));
+  assert.equal(
+    displayed.some((message) => message.errorMessage === 'Recovered error'),
+    false,
+  );
+  assert.equal(conversationTurns(displayed, () => tool('read', 'read', 'error'))[1].failed, true);
+});
+
 test('only consecutive completed read-only tools group; writes, commands, failures and expanded tools stay visible', () => {
   const tools = [
     tool('1'),

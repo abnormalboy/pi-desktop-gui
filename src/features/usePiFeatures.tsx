@@ -74,8 +74,8 @@ export function usePiFeatures({
     [serverType, setServerType] = useState('http'),
     [serverTarget, setServerTarget] = useState(''),
     [serverArgs, setServerArgs] = useState('[]');
-  const { operationReason, prerequisiteReason, engineReason } = piFeatureAvailability({
-    runtime,
+  const { operationReason, prerequisiteReason, engineReason, idleReason } = piFeatureAvailability({
+    runtime: currentRuntime,
     pending,
     environment,
     storage,
@@ -253,8 +253,7 @@ export function usePiFeatures({
       <p className="settings-copy">
         {document?.path}
         <br />
-        已有密钥显示为占位符，保存时保留原值。修改前会保留备份；保存后尝试重新连接
-        Pi，连接失败时配置仍会保留。
+        已有密钥显示为占位符，保存时保留原值。修改前会保留备份；运行中可保存，相关会话空闲后加载。加载失败时保留配置并显示原因。
       </p>
       <textarea
         className="json-editor"
@@ -285,6 +284,8 @@ export function usePiFeatures({
     operationReason,
     prerequisiteReason,
     engineReason,
+    idleReason,
+    idleDisabled: Boolean(idleReason) || loading,
     loading,
     reportError,
     projectEnabled,
@@ -302,6 +303,7 @@ export function usePiFeatures({
     setSummarize,
     refresh,
     catalog,
+    setCatalog,
     source,
     setSource,
     local,

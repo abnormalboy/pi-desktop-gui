@@ -32,7 +32,7 @@ export default function App() {
         )}
       </main>
     );
-  const updateBusy = model.running || model.runtime.dialogs.length > 0 || model.pending;
+  const updateBusy = model.anyRunning || model.pending;
   const installUpdate = async () => {
     if (model.selected && model.storage.writable)
       await window.desktop.invoke(

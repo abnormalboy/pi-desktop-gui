@@ -287,20 +287,6 @@ export function Conversation(
           </button>
         </div>
       )}
-      {running && runtime.status !== 'starting' && !ownRuntime && (
-        <div className="banner">
-          <LoaderCircle size={15} className="spin" />
-          另一个会话正在执行
-          <button
-            onClick={() => {
-              const s = state.sessions.find((s) => s.id === runtime.sessionId);
-              if (s) void selectSession(s);
-            }}
-          >
-            查看任务
-          </button>
-        </div>
-      )}
       {project && !project.trusted && (
         <div className="trust-banner">
           <CircleHelp size={19} />
@@ -446,7 +432,9 @@ export function Conversation(
                 key={d.id}
                 dialog={d}
                 first={i === 0}
-                respond={(value) => void attempt(() => api.invoke('respond', d.id, { value }))}
+                respond={(value) =>
+                  selected && void attempt(() => api.invoke('respond', selected.id, d.id, { value }))
+                }
               />
             ))}
           {props.recovery}

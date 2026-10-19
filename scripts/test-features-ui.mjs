@@ -189,8 +189,9 @@ try {
   if (page && !page.isClosed()) {
     await page
       .evaluate(async () => {
-        await window.desktop.invoke('cancelLogin');
-        await window.desktop.invoke('stop');
+        const { state } = await window.desktop.invoke('bootstrap');
+        await window.desktop.invoke('cancelLogin', state.selectedSessionId);
+        await window.desktop.invoke('stop', state.selectedSessionId);
       })
       .catch(() => {});
   }

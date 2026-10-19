@@ -527,7 +527,7 @@ export function Composer(props: ComposerProps) {
                   await api.invoke('setApprovalMode', selected.id, mode);
                   setNotice(
                     running
-                      ? '审批模式会在本轮结束后生效'
+                      ? '审批模式用于后续工具调用；已开始的命令和已有审批不变'
                       : mode === 'auto'
                         ? 'Pi 将直接修改文件和执行命令'
                         : mode === 'confirm'
@@ -543,7 +543,7 @@ export function Composer(props: ComposerProps) {
               runtime={modelState.runtime}
               fallback={modelState.label}
               locked={modelLocked}
-              thinkingLocked={running || pending || !sessionEnabled}
+              thinkingLocked={modelLocked}
               canConnect={sessionEnabled && !running && !pending}
               connect={() => void connect()}
               pick={(key) => void setModel(key)}
@@ -584,12 +584,12 @@ export function Composer(props: ComposerProps) {
             {ownRunning && (
               <button
                 className={'stop-button' + (stopArmed ? ' armed' : '')}
-                title="停止全部（连按两次 Esc）"
-                onClick={() => void attempt(() => api.invoke('stop'))}
+                title="停止当前会话（连按两次 Esc）"
+                onClick={() => selected && void attempt(() => api.invoke('stop', selected.id))}
                 disabled={runtime.status === 'stopping'}
               >
                 <Square size={12} fill="currentColor" />
-                {runtime.status === 'stopping' ? '停止中' : '停止全部'}
+                {runtime.status === 'stopping' ? '停止中' : '停止任务'}
               </button>
             )}
             <button
@@ -603,8 +603,7 @@ export function Composer(props: ComposerProps) {
                 !selected ||
                 pending ||
                 !sessionEnabled ||
-                !environment?.supported ||
-                (running && !ownRuntime) ||
+                (!environment?.supported && !runtime.connected) ||
                 runtime.status === 'stopping'
               }
               onClick={sendComposer}

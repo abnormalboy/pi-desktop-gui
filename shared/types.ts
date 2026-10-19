@@ -175,6 +175,7 @@ export interface ConfigDocument {
 /** Returned only after the configuration file has been persisted successfully. */
 export interface ConfigSaveResult {
   applied: boolean;
+  deferred?: boolean;
   warning?: string;
 }
 export interface ResourceItem {
@@ -215,6 +216,9 @@ export interface Runtime {
   thinkingLevels: string[];
   model?: Model;
   thinking?: string;
+  /** Saved selection for the next user task; the active task keeps model/thinking above. */
+  nextTask?: { model: Model; thinking: string; thinkingLevels: string[] };
+  configurationPending?: boolean;
   error?: string;
   errorKind?: ModelErrorKind;
   errorCount?: number;
@@ -348,6 +352,7 @@ export type AppEvent =
   | { type: 'storage'; storage: StorageStatus }
   | { type: 'update'; update: UpdateState }
   | { type: 'runtime'; runtime: Runtime }
+  | { type: 'runtimeRemoved'; sessionId: string }
   | { type: 'runtimePatch'; patch: RuntimePatch };
 /** Apply a patch; arrays before the change point keep their identity so the UI can skip them. */
 export function applyRuntimePatch(previous: Runtime, patch: RuntimePatch): Runtime {
@@ -396,7 +401,7 @@ export interface ApiMap {
   setSessionModel: { args: [string, string, string]; result: void };
   setSessionThinking: { args: [string, string]; result: void };
   messageAction: { args: [string, MessageAction, 'user' | 'assistant', number]; result: void };
-  abortRetry: { args: []; result: void };
+  abortRetry: { args: [sessionId: string]; result: void };
   setApprovalMode: { args: [string, ApprovalMode]; result: void };
   revokeApproval: { args: [string, string?]; result: void };
   checkpoints: { args: [string]; result: CheckpointSummary[] };
@@ -447,16 +452,20 @@ export interface ApiMap {
   providers: { args: [string]; result: ProviderInfo[] };
   login: { args: [string, string, 'oauth' | 'api_key']; result: void };
   logout: { args: [string, string]; result: void };
-  cancelLogin: { args: []; result: void };
+  cancelLogin: { args: [sessionId: string]; result: void };
   configRead: { args: [string, ConfigKind, boolean]; result: ConfigDocument };
   configSave: { args: [string, ConfigKind, boolean, ConfigDocument]; result: ConfigSaveResult };
   revealSessionDirectory: { args: [string]; result: void };
   openPiTerminal: { args: [string]; result: void };
   editDraft: { args: [string]; result: void };
-  stop: { args: []; result: void };
-  clearQueue: { args: []; result: void };
-  forceStop: { args: []; result: boolean };
-  respond: { args: [string, { value?: string; confirmed?: boolean; cancelled?: boolean }]; result: void };
+  stop: { args: [sessionId: string]; result: void };
+  stopAll: { args: []; result: void };
+  clearQueue: { args: [sessionId: string]; result: void };
+  forceStop: { args: [sessionId: string]; result: boolean };
+  respond: {
+    args: [sessionId: string, dialogId: string, { value?: string; confirmed?: boolean; cancelled?: boolean }];
+    result: void;
+  };
   files: { args: [string, string]; result: FileItem[] };
   searchFiles: { args: [string, string]; result: string[] };
   preview: { args: [string, string]; result: FilePreview };
@@ -478,7 +487,7 @@ export interface ApiMap {
   openLink: { args: [string]; result: void };
   copy: { args: [string]; result: void };
   copyImage: { args: [string]; result: void };
-  exportOutput: { args: []; result: string | null };
+  exportOutput: { args: [sessionId: string]; result: string | null };
   diagnostics: { args: []; result: string };
   exportDiagnostics: { args: []; result: string | null };
   revealData: { args: []; result: void };

@@ -1,6 +1,7 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   applyRuntimePatch,
+  busy,
   emptyRuntime,
   type AppState,
   type Runtime,
@@ -11,12 +12,13 @@ import {
 import { readableError } from '../lib/format';
 import type { UpdateState } from '../../shared/app-update';
 const api = window.desktop;
+const noRuntime = emptyRuntime();
 export function useRuntime(
   setError: (value: string) => void,
   setPrefs: Dispatch<SetStateAction<Settings | undefined>>,
 ) {
   const [state, setState] = useState<AppState>(),
-    [runtime, setRuntime] = useState<Runtime>(emptyRuntime),
+    [runtimes, setRuntimes] = useState<Record<string, Runtime>>({}),
     [environment, setEnvironment] = useState<Environment>(),
     [update, setUpdate] = useState<UpdateState>(),
     [storage, setStorage] = useState<StorageStatus>({ writable: false });
@@ -27,16 +29,32 @@ export function useRuntime(
       if (event.type === 'state') setState(event.state);
       else if (event.type === 'storage') setStorage(event.storage);
       else if (event.type === 'update') setUpdate(event.update);
-      else if (event.type === 'runtimePatch')
-        setRuntime((previous) => applyRuntimePatch(previous, event.patch));
-      else if (event.type === 'runtime') setRuntime(event.runtime);
+      else if (event.type === 'runtimeRemoved') {
+        setRuntimes((previous) => {
+          const next = { ...previous };
+          delete next[event.sessionId];
+          return next;
+        });
+      } else if (event.type === 'runtimePatch' && event.patch.sessionId) {
+        const id = event.patch.sessionId;
+        setRuntimes((previous) => ({
+          ...previous,
+          [id]: applyRuntimePatch(previous[id] ?? emptyRuntime(), event.patch),
+        }));
+      } else if (event.type === 'runtime' && event.runtime.sessionId) {
+        const id = event.runtime.sessionId;
+        setRuntimes((previous) => ({ ...previous, [id]: event.runtime }));
+      }
     });
     api
       .invoke('bootstrap')
       .then((v) => {
         if (!alive) return;
         setState(v.state);
-        setRuntime(v.runtime);
+        if (v.runtime.sessionId) {
+          const id = v.runtime.sessionId;
+          setRuntimes((previous) => ({ ...previous, [id]: v.runtime }));
+        }
         setEnvironment(v.environment);
         setPrefs(v.state.settings);
         setStorage(v.storage);
@@ -48,5 +66,7 @@ export function useRuntime(
       unsubscribe();
     };
   }, []);
-  return { state, setState, runtime, environment, setEnvironment, storage, update };
+  const runtime = (state?.selectedSessionId && runtimes[state.selectedSessionId]) || noRuntime;
+  const anyRunning = Object.values(runtimes).some((item) => busy(item.status) || item.dialogs.length > 0);
+  return { state, setState, runtime, anyRunning, environment, setEnvironment, storage, update };
 }

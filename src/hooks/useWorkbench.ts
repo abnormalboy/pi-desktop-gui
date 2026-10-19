@@ -16,6 +16,7 @@ import {
 } from '../../shared/types';
 
 import { readableError } from '../lib/format';
+import { hideRecoveredErrors } from '../lib/conversation-layout';
 import { PI_SOURCE_URL } from '../../shared/pi-version';
 
 import { useFocusScope } from './useFocusScope';
@@ -24,13 +25,16 @@ const api = window.desktop;
 const noTools: ToolActivity[] = [];
 export function useWorkbench() {
   const [history, setHistory] = useState<Message[]>([]);
-  const [error, setError] = useState(''),
-    [notice, setNotice] = useState(''),
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState(''),
     [settingsOpen, setSettingsOpen] = useState(false),
     [settingsTab, setSettingsTab] = useState('environment'),
     [prefs, setPrefs] = useState<Settings>();
-  const { state, runtime, environment, setEnvironment, storage, update } = useRuntime(setError, setPrefs);
-  const [pending, setPending] = useState(false);
+  const { state, runtime, anyRunning, environment, setEnvironment, storage, update } = useRuntime(
+    setError,
+    setPrefs,
+  );
+  const [pendingSessions, setPendingSessions] = useState<Record<string, number>>({});
   const [featureTab, setFeatureTab] = useState('');
   const [sidebar, setSidebar] = useState(() => localStorage.getItem('pi.sidebar') !== 'hidden'),
     [compact, setCompact] = useState(false),
@@ -63,6 +67,19 @@ export function useWorkbench() {
   runtimeRef.current = runtime;
   const selected = state?.sessions.find((s) => s.id === state.selectedSessionId),
     project = state?.projects.find((p) => p.id === state.selectedProjectId);
+  const pending = Boolean(pendingSessions[selected?.id ?? '']);
+  const error = errors[selected?.id ?? ''] ?? errors[''] ?? '';
+  function setError(value: string) {
+    const id = selected?.id ?? '';
+    setErrors((previous) => ({ ...previous, '': '', [id]: value }));
+  }
+  function setPending(value: boolean) {
+    const id = selected?.id ?? '';
+    setPendingSessions((previous) => ({
+      ...previous,
+      [id]: Math.max(0, (previous[id] ?? 0) + (value ? 1 : -1)),
+    }));
+  }
   const sessionEnabled =
     storage.writable &&
     (!runtime.crash || runtime.crash.cleanup === 'confirmed') &&
@@ -70,10 +87,7 @@ export function useWorkbench() {
   const ownRuntime = runtime.sessionId === selected?.id,
     running = busy(runtime.status),
     ownRunning = ownRuntime && running;
-  const modelLocked =
-    pending ||
-    !sessionEnabled ||
-    (running && (!ownRuntime || ['starting', 'stopping'].includes(runtime.status)));
+  const modelLocked = !sessionEnabled || !runtime.models.length || (pending && !running);
   const draftState = useDraft({
     state,
     stateRef,
@@ -131,7 +145,10 @@ export function useWorkbench() {
   useEffect(() => {
     setCheckpointRevision((value) => value + 1);
   }, [checkpoints]);
-  const messages = ownRuntime ? runtime.messages : history;
+  const messages = useMemo(
+    () => hideRecoveredErrors(ownRuntime ? runtime.messages : history),
+    [ownRuntime, runtime.messages, history],
+  );
   const approvals = runtime.dialogs.filter((d) => d.approval);
   const prompts = runtime.dialogs.filter((d) => !d.approval);
   const lastAssistant = messages.findLast((m) => m.role === 'assistant');
@@ -296,6 +313,7 @@ export function useWorkbench() {
   }, [toasts.map((n) => n.id).join(',')]);
   useEffect(() => {
     setSeenNotification(Math.max(0, ...(runtime.notifications ?? []).map((n) => n.id)));
+    setDismissed([]);
   }, [runtime.sessionId]);
   useEffect(() => {
     if (runtime.status !== 'retrying' || !runtime.retry) return;
@@ -391,7 +409,7 @@ export function useWorkbench() {
   async function selectSession(s: Session) {
     await action(async () => {
       const m = await api.invoke('selectSession', s.id);
-      setHistory(m);
+      if (stateRef.current?.selectedSessionId === s.id) setHistory(m);
     });
     setSearchOpen(false);
   }
@@ -636,6 +654,7 @@ export function useWorkbench() {
     sessionEnabled,
     ownRuntime,
     running,
+    anyRunning,
     modelLocked,
     messages,
     approvals,

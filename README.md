@@ -45,7 +45,8 @@ Sessions and workspaces stay on your machine. Model requests go to whichever pro
 - **Branching conversations** — Edit and resend any message, fork a new branch, or clone the active one to try a different approach.
 - **Ecosystem control center** — Manage model providers (API key / OAuth / any OpenAI-compatible endpoint), MCP servers, Skills, extensions and prompt templates without hand-editing config files.
 - **Quick chat or full project** — Start a standalone chat without a repository, or open a project to get the file tree, Git changes and snapshots.
-- **Steer while it runs** — Add instructions mid-run (steer) or queue follow-ups, and stop everything with a double <kbd>Esc</kbd>.
+- **Concurrent conversations** — Each connected chat has its own Pi process. Switch chats while tasks continue. Model and reasoning changes apply to the next new user task; tool continuations and mid-run additions retain the current settings. A double <kbd>Esc</kbd> stops only the current chat.
+- **Steer while it runs** — Add instructions mid-run (steer) or queue follow-ups within each conversation.
 - **Clear retry progress** — See retry backoff and response wait time, cancel an active retry request, and distinguish recovered attempts from failures in the run log.
 - **Keyboard-first** — Global search across sessions, in-session find, and shortcuts for every panel.
 - **Consistent appearance** — Light, dark and system themes cover the desktop title bar and confirmations while retaining native window controls. Pi configuration stays editable during a run; saving waits until it is safe and reports separately when a saved change could not yet be applied.
@@ -126,7 +127,7 @@ New session logs use Pi's native directory (`~/.pi/agent/sessions/<encoded-cwd>/
 | Shortcut cheat sheet                 |       <kbd>Ctrl</kbd> <kbd>/</kbd>       |       <kbd>⌘</kbd> <kbd>/</kbd>        |
 | Browse sent history (empty composer) |       <kbd>↑</kbd> / <kbd>↓</kbd>        |      <kbd>↑</kbd> / <kbd>↓</kbd>       |
 | Close panel and focus composer       |              <kbd>Esc</kbd>              |             <kbd>Esc</kbd>             |
-| **Stop all running tasks**           |      <kbd>Esc</kbd> <kbd>Esc</kbd>       |     <kbd>Esc</kbd> <kbd>Esc</kbd>      |
+| **Stop the current chat's task**     |      <kbd>Esc</kbd> <kbd>Esc</kbd>       |     <kbd>Esc</kbd> <kbd>Esc</kbd>      |
 
 ## How it works
 

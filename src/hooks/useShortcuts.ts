@@ -118,12 +118,12 @@ export function useShortcuts({
       e.preventDefault();
       if (stopArmed) {
         setStopArmed(false);
-        void attempt(() => api.invoke('stop'));
+        if (runtime.sessionId) void attempt(() => api.invoke('stop', runtime.sessionId!));
       } else setStopArmed(true);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [ownRunning, runtime.status, stopArmed, inspector]);
+  }, [ownRunning, runtime.status, runtime.sessionId, stopArmed, inspector]);
   useEffect(() => {
     if (!inspector) return;
     const key = (e: KeyboardEvent) => {

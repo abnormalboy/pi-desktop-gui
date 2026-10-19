@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Configuration } from '../electron/configuration';
 import { Store } from '../electron/store';
+import { lock } from 'proper-lockfile';
 
 // Exercise the same persistence/apply method as the IPC handler with real files and synthetic errors.
 async function fixture(t: test.TestContext) {
@@ -28,31 +29,22 @@ async function fixture(t: test.TestContext) {
 test('configuration persists and backs up before applying, preserving masked secrets', async (t) => {
   const f = await fixture(t);
   const calls: string[] = [];
-  const result = await f.config.saveAndApply(f.session.id, 'settings', false, f.document, {
-    disconnect: async () => {
-      calls.push('disconnect');
-      assert.equal(await fs.readFile(f.file, 'utf8'), f.original);
-    },
-    connect: async (id) => {
-      calls.push('connect');
-      assert.equal(id, f.session.id);
-      const saved = JSON.parse(await fs.readFile(f.file, 'utf8'));
-      assert.equal(saved.retry.enabled, false);
-      assert.equal(saved.apiKey, 'private-fixture-secret');
-      assert.equal(await fs.readFile(f.file + '.desktop-backup', 'utf8'), f.original);
-    },
+  const result = await f.config.saveAndApply(f.session.id, 'settings', false, f.document, async () => {
+    calls.push('apply');
+    const saved = JSON.parse(await fs.readFile(f.file, 'utf8'));
+    assert.equal(saved.retry.enabled, false);
+    assert.equal(saved.apiKey, 'private-fixture-secret');
+    assert.equal(await fs.readFile(f.file + '.desktop-backup', 'utf8'), f.original);
+    return { applied: true };
   });
   assert.deepEqual(result, { applied: true });
-  assert.deepEqual(calls, ['disconnect', 'connect']);
+  assert.deepEqual(calls, ['apply']);
 });
 
 test('failed reconnect returns saved-but-not-applied and redacts the warning', async (t) => {
   const f = await fixture(t);
-  const result = await f.config.saveAndApply(f.session.id, 'settings', false, f.document, {
-    disconnect: async () => {},
-    connect: async () => {
-      throw new Error('Cannot connect: Authorization: Bearer private-token API_KEY="private-key"');
-    },
+  const result = await f.config.saveAndApply(f.session.id, 'settings', false, f.document, async () => {
+    throw new Error('Cannot connect: Authorization: Bearer private-token API_KEY="private-key"');
   });
   assert.equal(result.applied, false);
   assert.match(result.warning!, /Cannot connect/);
@@ -65,10 +57,7 @@ test('failed reconnect returns saved-but-not-applied and redacts the warning', a
   assert.notEqual(refreshed.revision, f.document.revision);
   const next = { ...refreshed, text: JSON.stringify({ ...JSON.parse(refreshed.text), nextEdit: true }) };
   assert.deepEqual(
-    await f.config.saveAndApply(f.session.id, 'settings', false, next, {
-      disconnect: async () => {},
-      connect: async () => {},
-    }),
+    await f.config.saveAndApply(f.session.id, 'settings', false, next, async () => ({ applied: true })),
     { applied: true },
   );
   assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).nextEdit, true);
@@ -78,39 +67,45 @@ test('save rejection remains a failure and does not reconnect or overwrite the o
   const f = await fixture(t);
   let connected = false;
   await assert.rejects(
-    f.config.saveAndApply(
-      f.session.id,
-      'settings',
-      false,
-      { ...f.document, revision: 'stale' },
-      {
-        disconnect: async () => {},
-        connect: async () => {
-          connected = true;
-        },
-      },
-    ),
+    f.config.saveAndApply(f.session.id, 'settings', false, { ...f.document, revision: 'stale' }, async () => {
+      connected = true;
+      return { applied: true };
+    }),
     /其他程序修改/,
   );
   assert.equal(connected, false);
   assert.equal(await fs.readFile(f.file, 'utf8'), f.original);
 });
 
-test('disconnect failure remains a failure and cannot write or reconnect', async (t) => {
+test('a running session can defer loading after the file has been saved', async (t) => {
   const f = await fixture(t);
-  let connected = false;
-  await assert.rejects(
-    f.config.saveAndApply(f.session.id, 'settings', false, f.document, {
-      disconnect: async () => {
-        throw new Error('cleanup incomplete');
-      },
-      connect: async () => {
-        connected = true;
-      },
-    }),
-    /cleanup incomplete/,
-  );
-  assert.equal(connected, false);
-  assert.equal(await fs.readFile(f.file, 'utf8'), f.original);
-  await assert.rejects(fs.access(f.file + '.desktop-backup'), { code: 'ENOENT' });
+  const result = await f.config.saveAndApply(f.session.id, 'settings', false, f.document, async () => ({
+    applied: false,
+    deferred: true,
+  }));
+  assert.deepEqual(result, { applied: false, deferred: true });
+  assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).retry.enabled, false);
+  assert.equal(await fs.readFile(f.file + '.desktop-backup', 'utf8'), f.original);
+});
+
+test('the native Pi file lock prevents a config save from overwriting a concurrent settings update', async (t) => {
+  const f = await fixture(t);
+  const release = await lock(f.file, {
+    realpath: false,
+    retries: { retries: 0, minTimeout: 10, maxTimeout: 10 },
+  });
+  let finished = false;
+  const saving = f.config.save(f.session.id, 'settings', false, f.document).finally(() => {
+    finished = true;
+  });
+  const rejected = assert.rejects(saving, /其他程序修改/);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(finished, false, 'desktop save must wait while native Pi owns the file lock');
+    await fs.writeFile(f.file, JSON.stringify({ retry: { enabled: true }, nativeUpdate: true }));
+  } finally {
+    await release();
+  }
+  await rejected;
+  assert.equal(JSON.parse(await fs.readFile(f.file, 'utf8')).nativeUpdate, true);
 });

@@ -44,8 +44,28 @@ export function ComposerFeedback(
               : `，${Math.max(0, Math.ceil((runtime.retry.startedAt + runtime.retry.delayMs - Date.now()) / 1000))} 秒后开始`}
             {runtime.retry.error && <small>{runtime.retry.error}</small>}
           </span>
-          <button onClick={() => void attempt(() => api.invoke('abortRetry'))}>取消重试</button>
+          <button onClick={() => selected && void attempt(() => api.invoke('abortRetry', selected.id))}>
+            取消重试
+          </button>
         </div>
+      )}
+      {ownRuntime && runtime.nextTask && (
+        <div className="environment-note" role="status">
+          本轮使用 {runtime.model?.provider} / {runtime.model?.name || runtime.model?.id} · {runtime.thinking}
+          ； 下次新任务使用 {runtime.nextTask.model.provider} /{' '}
+          {runtime.nextTask.model.name || runtime.nextTask.model.id} · {runtime.nextTask.thinking}。
+          工具后的继续推理和运行中补充要求沿用本轮设置。
+        </div>
+      )}
+      {ownRuntime && runtime.configurationPending && (
+        <p className="environment-note" role="status">
+          配置已保存，等待本会话空闲后加载。
+        </p>
+      )}
+      {ownRuntime && runtime.status === 'compacting' && (
+        <button onClick={() => selected && void attempt(() => api.invoke('stop', selected.id))}>
+          停止当前压缩及任务
+        </button>
       )}
       {ownRuntime && runtime.error && runtime.errorKind ? (
         <ModelErrorCard
@@ -75,7 +95,9 @@ export function ComposerFeedback(
         <div className="queue">
           <div>
             <span>待处理</span>
-            <button onClick={() => void attempt(() => api.invoke('clearQueue'))}>清空并恢复草稿</button>
+            <button onClick={() => selected && void attempt(() => api.invoke('clearQueue', selected.id))}>
+              清空并恢复草稿
+            </button>
           </div>
           {runtime.steering.map((q, i) => (
             <p key={'s' + i}>
@@ -159,12 +181,15 @@ export function ComposerFooter(props: ComposerProps) {
         {runtime.status === 'stopping' &&
         runtime.stopStartedAt &&
         Date.now() - runtime.stopStartedAt > 15000 ? (
-          <button className="danger-link" onClick={() => void attempt(() => api.invoke('forceStop'))}>
+          <button
+            className="danger-link"
+            onClick={() => selected && void attempt(() => api.invoke('forceStop', selected.id))}
+          >
             强制结束
           </button>
         ) : stopArmed ? (
           <span className="composer-footnote stop-armed" role="status">
-            再按一次 <kbd>Esc</kbd> 停止全部
+            再按一次 <kbd>Esc</kbd> 停止当前会话
           </span>
         ) : (
           <span
@@ -180,6 +205,7 @@ export function ComposerFooter(props: ComposerProps) {
                 stats={runtime.stats}
                 open={() => setFeatureTab('session')}
                 disabled={running || pending || !sessionEnabled}
+                branchDisabled={!sessionEnabled || (pending && !running)}
                 compact={() => selected && void attempt(() => api.invoke('compact', selected.id, ''))}
                 branch={() =>
                   selected && void attempt(() => api.invoke('branchSession', selected.id, 'clone'))

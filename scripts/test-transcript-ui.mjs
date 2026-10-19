@@ -61,7 +61,12 @@ const launch = async () => {
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
 };
 const close = async () => {
-  await page?.evaluate(() => window.desktop.invoke('stop')).catch(() => {});
+  await page
+    ?.evaluate(async () => {
+      const { state } = await window.desktop.invoke('bootstrap');
+      await window.desktop.invoke('stop', state.selectedSessionId);
+    })
+    .catch(() => {});
   await app?.close().catch(() => {});
   app = undefined;
 };

@@ -34,6 +34,7 @@ function resourceDisplayName(r: ResourceItem) {
 export function ResourcesTab({
   session,
   catalog,
+  setCatalog,
   source,
   setSource,
   local,
@@ -41,6 +42,8 @@ export function ResourcesTab({
   resourceQuery,
   setResourceQuery,
   disabled,
+  idleDisabled,
+  idleReason,
   run,
   refresh,
   setFormDirty,
@@ -49,6 +52,7 @@ export function ResourcesTab({
   | 'session'
   | 'filter'
   | 'catalog'
+  | 'setCatalog'
   | 'source'
   | 'setSource'
   | 'local'
@@ -57,6 +61,8 @@ export function ResourcesTab({
   | 'setResourceQuery'
   | 'kind'
   | 'disabled'
+  | 'idleDisabled'
+  | 'idleReason'
   | 'run'
   | 'refresh'
   | 'setFormDirty'
@@ -294,8 +300,19 @@ export function ResourcesTab({
                 disabled={disabled || !!template}
                 onChange={(e) =>
                   void run(async () => {
-                    await api.invoke('toggleResource', session.id, r, e.target.checked);
+                    const enabled = e.target.checked;
+                    await api.invoke('toggleResource', session.id, r, enabled);
                     await refresh();
+                    setCatalog((previous) =>
+                      previous
+                        ? {
+                            ...previous,
+                            resources: previous.resources.map((item) =>
+                              item.path === r.path && item.kind === r.kind ? { ...item, enabled } : item,
+                            ),
+                          }
+                        : previous,
+                    );
                   })
                 }
               />
@@ -382,6 +399,9 @@ export function ResourcesTab({
         <p className="settings-copy">尚未发现额外资源。可以安装 npm / Git 包，也可以填写本机资源目录。</p>
       )}
       <h3>安装与管理资源包</h3>
+      <p className="settings-copy">
+        包安装会改动实际资源文件，需相关会话空闲；配置编辑和启用开关可先保存，空闲后加载。
+      </p>
       <input
         className="input"
         aria-label="资源包来源"
@@ -397,7 +417,8 @@ export function ResourcesTab({
       )}
       <div className="button-row">
         <button
-          disabled={disabled || !source.trim()}
+          disabled={idleDisabled || !source.trim()}
+          title={idleReason || (!source.trim() ? '请填写资源包来源' : '')}
           onClick={() =>
             void run(async () => {
               await api.invoke('packageAction', session.id, 'install', source, local);
@@ -410,7 +431,8 @@ export function ResourcesTab({
           安装
         </button>
         <button
-          disabled={disabled}
+          disabled={idleDisabled}
+          title={idleReason}
           onClick={() =>
             void run(async () => {
               await api.invoke('packageAction', session.id, 'update', '', false);
@@ -439,7 +461,8 @@ export function ResourcesTab({
             <small> · {scopeLabels[p.scope] ?? p.scope}</small>
           </span>
           <button
-            disabled={disabled}
+            disabled={idleDisabled}
+            title={idleReason}
             onClick={() =>
               void run(async () => {
                 await api.invoke('packageAction', session.id, 'remove', p.source, p.scope === 'project');

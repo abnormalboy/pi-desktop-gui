@@ -37,6 +37,8 @@ jobs:
       - run: npm test
       - run: npm run test:integration
       - run: npm run test:features
+      - name: Test concurrent sessions and settings with real Pi
+        run: node --import tsx scripts/test-concurrency-settings.ts
       - name: Package Windows and macOS acceptance builds
         if: matrix.os != 'ubuntu-latest'
         run: node scripts/package.mjs --dir

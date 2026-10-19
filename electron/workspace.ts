@@ -374,6 +374,9 @@ export class Workspace {
   endTool(project: Project, sessionId: string, toolId: string) {
     return this.checkpoints.endTool(project, sessionId, toolId);
   }
+  endSessionTools(project: Project, sessionId: string) {
+    return this.checkpoints.endSessionTools(project, sessionId);
+  }
   async checkpointPreview(
     project: Project,
     sessionId: string,

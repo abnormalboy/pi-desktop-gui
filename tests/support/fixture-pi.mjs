@@ -13,6 +13,12 @@ const model = {
   name: 'Protocol fixture',
   headers: { Authorization: 'Bearer test-secret-do-not-expose' },
 };
+const models = [model, { ...model, id: 'test-next', name: 'Next protocol model' }];
+let selectedModel = model;
+let selectedThinking = 'off';
+let autoCompaction = true,
+  autoRetry = true;
+let approvalMode = process.env.PI_DESKTOP_APPROVAL || 'auto';
 let messages = [],
   steering = [],
   followUp = [],
@@ -54,8 +60,9 @@ io.on('line', (line) => {
       break;
     case 'get_state':
       respond(r, {
-        model,
-        thinkingLevel: 'off',
+        model: selectedModel,
+        thinkingLevel: selectedThinking,
+        autoCompactionEnabled: autoCompaction,
         sessionName: config().sessionName,
         isStreaming: active,
         isCompacting: false,
@@ -66,17 +73,31 @@ io.on('line', (line) => {
       respond(r, { messages });
       break;
     case 'get_available_models':
-      respond(r, { models: [model] });
+      respond(r, { models });
       break;
     case 'get_available_thinking_levels':
-      respond(r, { levels: ['off'] });
+      respond(r, { levels: ['off', 'low', 'high'] });
+      break;
+    case 'set_thinking_level':
+      selectedThinking = r.level;
+      respond(r);
+      break;
+    case 'set_auto_compaction':
+      autoCompaction = r.enabled;
+      respond(r);
+      break;
+    case 'set_auto_retry':
+      autoRetry = r.enabled;
+      respond(r);
       break;
     case 'get_session_stats':
       if (config().exitOnStats) process.exit(9);
       respond(r, { tokens: { total: 42 } });
       break;
     case 'set_model':
-      respond(r, model);
+      selectedModel =
+        models.find((item) => item.provider === r.provider && item.id === r.modelId) ?? selectedModel;
+      respond(r, selectedModel);
       break;
     case 'new_session':
     case 'switch_session':
@@ -112,15 +133,22 @@ io.on('line', (line) => {
     case 'prompt': {
       if (r.message.startsWith('/desktop-internal ')) {
         const request = JSON.parse(Buffer.from(r.message.split(' ')[1], 'base64').toString('utf8'));
+        if (request.method === 'approval_mode') approvalMode = request.params.mode;
         out({
           type: 'desktop_result',
           id: request.id,
-          data: {
-            protocolVersion: 3,
-            autoRetry: true,
-            approvalMode: process.env.PI_DESKTOP_APPROVAL || 'auto',
-            approvalGrants: [],
-          },
+          data:
+            request.method === 'task_options'
+              ? {
+                  thinking: request.params.thinking,
+                  thinkingLevels: ['off', 'low', 'high'],
+                }
+              : {
+                  protocolVersion: 3,
+                  autoRetry,
+                  approvalMode,
+                  approvalGrants: [],
+                },
         });
         respond(r, { disposition: 'handled' });
         break;

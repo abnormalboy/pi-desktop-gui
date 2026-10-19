@@ -4,7 +4,9 @@ import {
   SettingsManager,
   DefaultPackageManager,
   getAgentDir,
+  SessionManager,
 } from '@earendil-works/pi-coding-agent';
+import { getSupportedThinkingLevels, clampThinkingLevel } from '@earendil-works/pi-ai/compat';
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -174,6 +176,39 @@ export default function desktopBridge(pi: ExtensionAPI) {
         const p = request.params ?? {};
         let data: unknown;
         switch (request.method) {
+          case 'task_options': {
+            const model = ctx.modelRegistry.find(p.provider, p.modelId);
+            if (!model) throw new Error('该模型当前不可用，请刷新模型列表');
+            data = {
+              thinkingLevels: getSupportedThinkingLevels(model),
+              thinking: clampThinkingLevel(model, p.thinking),
+            };
+            break;
+          }
+          case 'fork_copy': {
+            // Use a separate native manager. Replacing the live manager would abort its task.
+            const file = ctx.sessionManager.getSessionFile();
+            if (!file) throw new Error('这个会话还没有可分支的历史');
+            const manager = SessionManager.open(file);
+            const target = p.entryId ? manager.getEntry(p.entryId) : manager.getLeafEntry();
+            if (!target) throw new Error('找不到要分支的历史消息，请刷新会话树');
+            const leaf = p.kind === 'fork' ? target.parentId : target.id;
+            const output = leaf ? manager.createBranchedSession(leaf) : undefined;
+            const persisted =
+              output &&
+              (await fs.stat(output).then(
+                () => true,
+                (error) => {
+                  if (error.code === 'ENOENT') return false;
+                  throw error;
+                },
+              ));
+            data = {
+              file: persisted ? output : undefined,
+              message: p.kind === 'fork' ? (target as any).message : undefined,
+            };
+            break;
+          }
           case 'options':
             data = {
               protocolVersion: DESKTOP_BRIDGE_PROTOCOL,

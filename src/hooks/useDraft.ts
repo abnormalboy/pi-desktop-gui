@@ -66,7 +66,9 @@ export function useDraft({
   const commandQuery = commandMatch?.[2].toLowerCase();
   const piOnly = commandMatch?.[1] === '//';
   const allCommands: (PiCommand & { prefix: string })[] = [
-    ...(piOnly ? [] : builtinCommands.map((c) => ({ ...c, prefix: '/' }))),
+    ...(piOnly
+      ? []
+      : builtinCommands.filter((c) => project || c.name !== 'trust').map((c) => ({ ...c, prefix: '/' }))),
     ...runtime.commands.map((c) => ({
       ...c,
       prefix: piOnly || builtinCommands.some((b) => b.name === c.name) ? '//' : '/',
