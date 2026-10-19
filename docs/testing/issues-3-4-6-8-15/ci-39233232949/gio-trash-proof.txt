@@ -1,0 +1,1 @@
+gio: file:///tmp/pi-trash-probe.txt: Trashing on system internal mounts is not supported

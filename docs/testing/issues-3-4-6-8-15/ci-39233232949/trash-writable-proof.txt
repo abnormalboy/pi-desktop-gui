@@ -1,0 +1,2 @@
+XDG_DATA_HOME /tmp/pi-ui-wm/data
+TRASH_FAILED electronApplication.evaluate: Error: Failed to move item to trash

@@ -1,0 +1,16 @@
+PASS confirmed cleanup rechecks an arriving draft and preserves every protected record
+PASS concurrent requests reuse one placeholder per scope and preserve autosaves and all protected metadata
+PASS real IPC reuses untouched placeholder, protects draft, and keeps Pi disconnected
+PASS the next assistant thinking search match reopens a manually collapsed turn
+PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+page.waitForFunction: Timeout 1000ms exceeded.
+    at /workspace/pi-desktop-gui/scripts/.polish-delivery.tmp.mjs:252:14 {
+  log: [],
+  name: 'TimeoutError'
+}
+
+Node.js v24.19.0

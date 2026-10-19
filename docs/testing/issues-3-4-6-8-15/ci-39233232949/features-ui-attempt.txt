@@ -1,0 +1,92 @@
+
+> pi-desktop-gui@0.14.20 test:features-ui
+> node --import tsx scripts/test-features-ui.mjs && node --import tsx scripts/test-coding-ui.mjs && node --import tsx scripts/test-approval-ui.mjs && node --import tsx scripts/test-recovery-ui.mjs && node --import tsx scripts/test-compatibility-ui.mjs && node --import tsx scripts/test-update-ui.mjs && node --import tsx scripts/test-model-errors-ui.mjs && node --import tsx scripts/test-model-switch-ui.mjs && npm run test:v014-ui && node --import tsx scripts/test-retry-ui.mjs
+
+PASS real Pi settings/models/MCP same-tab selection retains editable configuration
+PASS desktop local resource package install, update and removal
+Feature UI PASS /workspace/pi-desktop-gui/work/features-ui/中文项目 space-Tx6exz
+PASS double-slash completion preserves the Pi command and executes its template
+PASS an empty tool selection stays empty and enabling grep adds no other tools
+PASS project controls display inherited values and save only explicit overrides
+PASS clearing project tools disables inherited tools in the running Pi
+PASS new sessions use Pi defaults, project overrides stay local, existing sessions retain their choice
+Coding UI PASS /workspace/pi-desktop-gui/work/coding-ui/中文项目 space-Zh1wvu
+PASS approval preserves typing focus; Escape closes its menu without arming stop
+PASS refresh resyncs history and the pending approval; denial reaches the tool result
+PASS read-only mode also blocks manual commands in the UI
+Approval UI PASS /workspace/pi-desktop-gui/work/approval-ui/中文项目 space-GhNKkf
+PASS a damaged index starts normally and restores the draft with a dismissible explanation
+PASS unconfirmed tool cleanup blocks recovery and undo, including after a window reload
+PASS a real Pi crash shows its last tool and changed files; edited continuation resumes explicitly
+PASS an actual disk write failure disables input and rejects sending at the IPC boundary
+PASS an index with no usable backup starts with instructions to reopen Pi history
+PASS restoring a missing index also shows the backup time and supports dismissal
+PASS 1.1.1 welcome/settings, sending policy and diagnostic compatibility
+PASS 1.2.0 welcome/settings, sending policy and diagnostic compatibility
+PASS 2.0.0 welcome/settings, sending policy and diagnostic compatibility
+PASS no version welcome/settings, sending policy and diagnostic compatibility
+PASS development/test environment disables update checks in both UI and IPC
+PASS portable/macOS/deb notification-only actions and correct release links
+PASS quiet offline failure, manual fallback link, persisted download preference and progress
+PASS task/approval block restart, and the restart action saves the latest draft
+PASS newer unknown schema stays read-only across startup, settings and shutdown
+PASS authentication card opens providers; rendered details, clipboard, history and diagnostics redact the key
+PASS a fresh application reads the stored provider failure through the redacted history boundary
+PASS three consecutive rate-limit failures are counted; regenerate performs a fourth real request
+PASS quota guidance stays in the app and the card remains readable at 200 percent font size
+PASS context actions perform and persist real compaction, and enable automatic compaction
+PASS model recovery opens the picker and changes the real session model; diagnostics retain only five categories and times
+PASS an actual refused connection opens HTTP proxy settings without renderer errors
+PASS real Pi preserves model/thinking through tool continuation and runtime supplements; new user task uses the saved choice
+PASS two sessions run concurrently, change models independently, survive renderer reload and stop independently
+PASS idle controls hide without an operation; standalone chats retain output and hide project-only controls
+
+> pi-desktop-gui@0.14.20 test:v014-ui
+> node --import tsx scripts/test-management-v014-ui.mjs && node --import tsx scripts/test-conversation-v014-ui.mjs && node --import tsx scripts/test-workspace-v014-ui.mjs && node --import tsx scripts/test-polish-ui.mjs
+
+PASS multiple projects expand independently, persist and show collapsed unread status; older sessions fold
+PASS actual Pi command prefix grants, compound-command confirmation and individual revoke
+PASS project write grant, sensitive target still prompts, collapsed waiting badge and clear all
+PASS native project template create/edit/delete refreshes commands and usage shows its accounting basis
+PASS empty-session cleanup preserves drafts, attachments and sessions with messages
+PASS both width separators drag, keyboard, reload persistence, double-click reset and panel shortcuts
+Search/highlight UI performance {
+  medianMs: 4.399999999906868,
+  p95Ms: 8.199999999720603,
+  unrelatedMutations: 0
+}
+PASS search across 500 messages, thinking, attachments and grouped tools
+PASS tool groups, turn navigation and both explicit command reruns
+PASS code header, syntax, wrapping, copy feedback and clean ANSI output
+PASS @ keyboard choice/ranges and long paste persistence, ordering and expansion
+PASS capacity warning, largest attachment and 1 MiB send limit
+PASS template parameters, labeled context/cache usage, popover dismissal and compact action
+PASS image lightbox zoom, navigation, clipboard IPC and Escape
+PASS checkpoint selector, highlighted aligned diff and hunk follow-up preserve the draft
+PASS filtered files, range chips, watcher stale preview, scroll preservation, maximize and reveal
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+locator.waitFor: Timeout 15000ms exceeded.
+Call log:
+[2m  - waiting for getByRole('dialog', { name: '文件已恢复' }) to be visible[22m
+
+    at /workspace/pi-desktop-gui/scripts/test-workspace-v014-ui.mjs:124:53 {
+  log: [
+    "  - waiting for getByRole('dialog', { name: '文件已恢复' }) to be visible"
+  ],
+  name: 'TimeoutError'
+}
+
+Node.js v24.19.0
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

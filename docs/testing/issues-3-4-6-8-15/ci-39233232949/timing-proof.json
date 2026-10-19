@@ -1,0 +1,92 @@
+{
+  "immediate": {
+    "at": 1225.6000000000931,
+    "count": 2,
+    "text": "THIRD 独立轮次",
+    "received": [
+      {
+        "at": 904,
+        "type": "runtime",
+        "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+        "status": "running",
+        "marker": false,
+        "domMarker": false
+      },
+      {
+        "at": 1225.1000000000931,
+        "type": "runtime",
+        "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+        "status": "running",
+        "marker": true,
+        "domMarker": false
+      }
+    ]
+  },
+  "settled": {
+    "at": 1502.9000000001397,
+    "text": "THIRD 独立轮次\nSTREAM_APPEND",
+    "received": [
+      {
+        "at": 904,
+        "type": "runtime",
+        "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+        "status": "running",
+        "marker": false,
+        "domMarker": false
+      },
+      {
+        "at": 1225.1000000000931,
+        "type": "runtime",
+        "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+        "status": "running",
+        "marker": true,
+        "domMarker": false
+      },
+      {
+        "at": 1428.6000000000931,
+        "type": "DOM_COMMIT",
+        "marker": true
+      }
+    ]
+  },
+  "sends": [
+    {
+      "source": "production",
+      "type": "runtimePatch",
+      "status": "idle",
+      "marker": false
+    },
+    {
+      "source": "production",
+      "type": "runtimePatch",
+      "status": "idle",
+      "marker": false
+    },
+    {
+      "source": "production",
+      "type": "runtimePatch",
+      "status": "idle",
+      "marker": false
+    },
+    {
+      "source": "production",
+      "type": "runtimePatch",
+      "status": "idle",
+      "marker": false
+    },
+    {
+      "source": "fixture",
+      "type": "runtime",
+      "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+      "status": "running",
+      "marker": false
+    },
+    {
+      "source": "fixture",
+      "type": "runtime",
+      "id": "4288d4d3-af77-4db4-876f-888b3cd56011",
+      "status": "running",
+      "marker": true
+    }
+  ]
+}

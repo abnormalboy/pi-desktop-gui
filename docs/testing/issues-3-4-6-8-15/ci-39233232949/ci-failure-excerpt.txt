@@ -1,0 +1,29 @@
+PASS capacity warning, largest attachment and 1 MiB send limit
+2026-10-19T09:56:00.5189235Z PASS template parameters, labeled context/cache usage, popover dismissal and compact action
+2026-10-19T09:56:00.8082590Z PASS image lightbox zoom, navigation, clipboard IPC and Escape
+2026-10-19T09:56:03.8077149Z PASS checkpoint selector, highlighted aligned diff and hunk follow-up preserve the draft
+2026-10-19T09:56:05.0937511Z PASS filtered files, range chips, watcher stale preview, scroll preservation, maximize and reveal
+2026-10-19T09:56:07.3503956Z PASS background command output and rerun actions stay with their source session across project switches
+2026-10-19T09:56:07.3917924Z PASS multi-turn restore dialog leaves manual edits unchecked and separately returns to the original message
+2026-10-19T09:56:09.4388928Z PASS confirmed cleanup rechecks an arriving draft and preserves every protected record
+2026-10-19T09:56:09.4471949Z PASS concurrent requests reuse one placeholder per scope and preserve autosaves and all protected metadata
+2026-10-19T09:56:09.4472401Z PASS real IPC reuses untouched placeholder, protects draft, and keeps Pi disconnected
+2026-10-19T09:56:09.9084069Z PASS the next assistant thinking search match reopens a manually collapsed turn
+2026-10-19T09:56:09.9514246Z PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search
+2026-10-19T09:56:10.0894013Z node:internal/modules/run_main:123
+2026-10-19T09:56:10.0894369Z     triggerUncaughtException(
+2026-10-19T09:56:10.0894899Z     ^
+2026-10-19T09:56:10.0894994Z 
+2026-10-19T09:56:10.0895150Z AssertionError [ERR_ASSERTION]: false == true
+2026-10-19T09:56:10.0895631Z     at file:///home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-polish-ui.mjs:239:10 {
+2026-10-19T09:56:10.0896030Z   generatedMessage: true,
+2026-10-19T09:56:10.0896233Z   code: 'ERR_ASSERTION',
+2026-10-19T09:56:10.0896435Z   actual: false,
+2026-10-19T09:56:10.0896627Z   expected: true,
+2026-10-19T09:56:10.0896798Z   operator: '==',
+2026-10-19T09:56:10.0896969Z   diff: 'simple'
+2026-10-19T09:56:10.0897150Z }
+2026-10-19T09:56:10.0897239Z 
+2026-10-19T09:56:10.0897352Z Node.js v22.22.0
+2026-10-19T09:56:10.1181683Z ##[error]Process completed with exit code 1.
+2026-10-19T09:56:10.1248813Z 

@@ -1,0 +1,77 @@
+--- a/scripts/test-polish-ui.mjs
++++ b/scripts/test-polish-ui.mjs
+@@ -157,9 +157,20 @@
+       },
+     ],
+   };
+-  await app.evaluate(({ ipcMain }, runtime) => {
++  await app.evaluate(({ ipcMain, BrowserWindow }, runtime) => {
+     const handler = ipcMain._invokeHandlers.get('desktop:invoke');
+     globalThis.polishRuntime = runtime;
++    globalThis.polishSendTrace = [];
++    const wc = BrowserWindow.getAllWindows()[0].webContents;
++    const originalSend = wc.send.bind(wc);
++    wc.send = (channel, event, ...rest) => {
++      if (channel === 'desktop:event' && ['runtime', 'runtimePatch', 'runtimeRemoved'].includes(event?.type)) {
++        const value = event.runtime ?? event.patch ?? {};
++        globalThis.polishSendTrace.push({ source: globalThis.polishSending ? 'fixture' : 'production', type: event.type,
++          id: value.sessionId ?? event.sessionId, status: value.status, marker: JSON.stringify(value).includes('STREAM_APPEND') });
++      }
++      return originalSend(channel, event, ...rest);
++    };
+     globalThis.polishActions = [];
+     ipcMain.removeHandler('desktop:invoke');
+     ipcMain.handle('desktop:invoke', async (event, method, args) => {
+@@ -220,23 +231,50 @@
+     'PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search',
+   );
+ 
++  await page.evaluate(() => {
++    window.polishReceiveTrace = [];
++    window.desktop.onEvent(event => {
++      if (['runtime', 'runtimePatch', 'runtimeRemoved'].includes(event.type)) window.polishReceiveTrace.push({
++        at: performance.now(), type: event.type, id: event.runtime?.sessionId ?? event.patch?.sessionId ?? event.sessionId,
++        status: event.runtime?.status ?? event.patch?.status, marker: JSON.stringify(event).includes('STREAM_APPEND'),
++        domMarker: [...document.querySelectorAll('.thinking pre')].some(el => el.textContent.includes('STREAM_APPEND')),
++      });
++    });
++    new MutationObserver(() => {
++      if ([...document.querySelectorAll('.thinking pre')].some(el => el.textContent.includes('STREAM_APPEND')))
++        window.polishReceiveTrace.push({ at: performance.now(), type: 'DOM_COMMIT', marker: true });
++    }).observe(document.querySelector('.thread'), { childList: true, characterData: true, subtree: true });
++  });
+   // Publish actual IPC runtime events to exercise the same mounted thinking block during streaming.
+   const publish = async (patch) =>
+     app.evaluate(({ BrowserWindow }, patch) => {
+       Object.assign(globalThis.polishRuntime, patch);
++      globalThis.polishSending = true;
+       BrowserWindow.getAllWindows()[0].webContents.send('desktop:event', {
+         type: 'runtime',
+         runtime: globalThis.polishRuntime,
+       });
++      globalThis.polishSending = false;
+     }, patch);
+   await publish({ status: 'running' });
+   await page.locator('.thinking summary').last().click();
+   await page.waitForFunction(() => document.querySelectorAll('.thinking[open]').length === 1);
++  const cdp = await page.context().newCDPSession(page);
++  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 8 });
+   const appended = structuredClone(runtime.messages);
+   appended[appended.length - 1].content[0].thinking += '\nSTREAM_APPEND';
+   await publish({ messages: appended });
+-  assert.equal(await page.locator('.thinking').count(), 2);
+-  assert.ok((await page.locator('.thinking pre').last().textContent()).includes('STREAM_APPEND'));
++  const immediate = await page.evaluate(() => ({ at: performance.now(), count: document.querySelectorAll('.thinking').length,
++    text: [...document.querySelectorAll('.thinking pre')].at(-1)?.textContent, received: [...window.polishReceiveTrace] }));
++  await page.waitForFunction(() => [...document.querySelectorAll('.thinking pre')].at(-1)?.textContent.includes('STREAM_APPEND'), null, { timeout: 5000 });
++  const settled = await page.evaluate(() => ({ at: performance.now(), text: [...document.querySelectorAll('.thinking pre')].at(-1)?.textContent,
++    received: [...window.polishReceiveTrace] }));
++  const sends = await app.evaluate(() => globalThis.polishSendTrace);
++  await fs.writeFile('/tmp/pi-ci-39233232949/timing-proof.json', JSON.stringify({ immediate, settled, sends }, null, 2));
++  console.log('TIMING_PROOF', JSON.stringify({ immediate, settled, sends }));
++  assert.equal(immediate.count, 2);
++  assert.ok(immediate.text.includes('STREAM_APPEND'));
++  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+   await publish({ status: 'completed' });
+   await page.waitForFunction(() => document.querySelectorAll('.thinking[open]').length === 0);
+   const longTurn = [

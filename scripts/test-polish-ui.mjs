@@ -235,6 +235,11 @@ try {
   const appended = structuredClone(runtime.messages);
   appended[appended.length - 1].content[0].thinking += '\nSTREAM_APPEND';
   await publish({ messages: appended });
+  // webContents.send acknowledges IPC dispatch, not React's committed DOM.
+  await page.waitForFunction(
+    (expected) => [...document.querySelectorAll('.thinking pre')].at(-1)?.textContent === expected,
+    appended.at(-1).content[0].thinking,
+  );
   assert.equal(await page.locator('.thinking').count(), 2);
   assert.ok((await page.locator('.thinking pre').last().textContent()).includes('STREAM_APPEND'));
   await publish({ status: 'completed' });

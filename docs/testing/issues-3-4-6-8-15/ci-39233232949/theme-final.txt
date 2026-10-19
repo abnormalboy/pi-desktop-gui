@@ -1,0 +1,25 @@
+
+> pi-desktop-gui@0.14.20 test:theme-ui
+> node --import tsx scripts/test-theme-ui.mjs
+
+PASS native application menu retains File/Edit/View, platform roles and CmdOrCtrl+N
+PASS appearance UI synchronizes nativeTheme, native background/overlay, renderer CSS, and current system appearance
+PASS light/dark native popup APIs execute; renderer screenshots deliberately make no claim about OS popup pixels
+PASS Ctrl/Cmd+N creates exactly one session
+PASS 80%/125% zoom reserve native control geometry, avoid menu overlap, and convert popup anchors to DIP
+PASS F10/arrows/Escape and Alt+F/E/V preserve editor focus; menu IPC validates arguments and sender/frame
+PASS native Edit Cut/Paste dispatch edits the focused textarea; opening menu preserves editor selection
+PASS light/dark business confirmations default to Cancel; Enter/Escape/backdrop/Close cancel safely and background shortcuts/native New Session stay blocked
+PASS pending confirmation blocks competing actions; independent IDs and invalid/stale responses never grant deletion
+PASS renderer reload cancels pending deletion; only a fresh explicit confirmation moves the real fixture file to the mocked recycle sink
+PASS native maximize/unmaximize API state and maximized titlebar geometry
+PASS native minimize/restore API state
+PASS saved dark appearance survives renderer reload and a real application restart
+PASS busy quit from visible/hidden/minimized states restores a visible confirmation; cancellation keeps the task running
+PASS injected unresponsive/crashed renderer lifecycle uses cancel-safe native quit fallback and keeps ordinary business confirmations fail-closed
+PASS explicit Stop and Quit stops the deterministic task and exits Electron
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

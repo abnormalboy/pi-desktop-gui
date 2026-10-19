@@ -1,0 +1,45 @@
+--- a/scripts/test-polish-ui.mjs
++++ b/scripts/test-polish-ui.mjs
+@@ -157,9 +157,20 @@
+       },
+     ],
+   };
+-  await app.evaluate(({ ipcMain }, runtime) => {
++  await app.evaluate(({ ipcMain, BrowserWindow }, runtime) => {
+     const handler = ipcMain._invokeHandlers.get('desktop:invoke');
+     globalThis.polishRuntime = runtime;
++    const wc = BrowserWindow.getAllWindows()[0].webContents;
++    const originalSend = wc.send.bind(wc);
++    wc.send = (channel, event, ...rest) => {
++      if (channel === 'desktop:event' && event?.type === 'runtime' && JSON.stringify(event.runtime).includes('STREAM_APPEND')) {
++        if (process.env.PI_POLISH_DELIVERY_FAULT === 'drop') return;
++        if (process.env.PI_POLISH_DELIVERY_FAULT === 'wrong') {
++          event = JSON.parse(JSON.stringify(event).replaceAll('STREAM_APPEND', 'CORRUPT_UPDATE'));
++        }
++      }
++      return originalSend(channel, event, ...rest);
++    };
+     globalThis.polishActions = [];
+     ipcMain.removeHandler('desktop:invoke');
+     ipcMain.handle('desktop:invoke', async (event, method, args) => {
+@@ -232,6 +243,8 @@
+   await publish({ status: 'running' });
+   await page.locator('.thinking summary').last().click();
+   await page.waitForFunction(() => document.querySelectorAll('.thinking[open]').length === 1);
++  const cdp = await page.context().newCDPSession(page);
++  await cdp.send('Emulation.setCPUThrottlingRate', { rate: process.env.PI_POLISH_DELIVERY_FAULT === 'slow' ? 8 : 1 });
+   const appended = structuredClone(runtime.messages);
+   appended[appended.length - 1].content[0].thinking += '\nSTREAM_APPEND';
+   await publish({ messages: appended });
+@@ -239,9 +252,11 @@
+   await page.waitForFunction(
+     (expected) => [...document.querySelectorAll('.thinking pre')].at(-1)?.textContent === expected,
+     appended.at(-1).content[0].thinking,
++    { timeout: process.env.PI_POLISH_DELIVERY_FAULT === 'slow' ? 15000 : 1000 },
+   );
+   assert.equal(await page.locator('.thinking').count(), 2);
+   assert.ok((await page.locator('.thinking pre').last().textContent()).includes('STREAM_APPEND'));
++  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+   await publish({ status: 'completed' });
+   await page.waitForFunction(() => document.querySelectorAll('.thinking[open]').length === 0);
+   const longTurn = [

@@ -1,0 +1,21 @@
+PASS confirmed cleanup rechecks an arriving draft and preserves every protected record
+PASS concurrent requests reuse one placeholder per scope and preserve autosaves and all protected metadata
+PASS real IPC reuses untouched placeholder, protects draft, and keeps Pi disconnected
+PASS the next assistant thinking search match reopens a manually collapsed turn
+PASS one thinking region per turn, ordered content, collapsed history, batch collapse and search
+TIMING_PROOF {"immediate":{"at":1225.6000000000931,"count":2,"text":"THIRD 独立轮次","received":[{"at":904,"type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":false,"domMarker":false},{"at":1225.1000000000931,"type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":true,"domMarker":false}]},"settled":{"at":1502.9000000001397,"text":"THIRD 独立轮次\nSTREAM_APPEND","received":[{"at":904,"type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":false,"domMarker":false},{"at":1225.1000000000931,"type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":true,"domMarker":false},{"at":1428.6000000000931,"type":"DOM_COMMIT","marker":true}]},"sends":[{"source":"production","type":"runtimePatch","status":"idle","marker":false},{"source":"production","type":"runtimePatch","status":"idle","marker":false},{"source":"production","type":"runtimePatch","status":"idle","marker":false},{"source":"production","type":"runtimePatch","status":"idle","marker":false},{"source":"fixture","type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":false},{"source":"fixture","type":"runtime","id":"4288d4d3-af77-4db4-876f-888b3cd56011","status":"running","marker":true}]}
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: false == true
+    at file:///workspace/pi-desktop-gui/scripts/.polish-timing.tmp.mjs:276:10 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v24.19.0
