@@ -1,0 +1,148 @@
+--- a/scripts/test-chat-ui.mjs
++++ b/scripts/test-chat-ui.mjs
+@@ -126,9 +126,10 @@
+         !['starting', 'running', 'waiting', 'retrying', 'compacting', 'stopping'].includes(runtime?.status))),
+   );
+ }
++let boundaryProbeActive = false;
+ const waitForView = (expected) => {
+   lastViewExpectation = expected;
+-  return page.waitForFunction(chatViewReady, expected, { timeout: 30000 });
++  return page.waitForFunction(chatViewReady, expected, { timeout: boundaryProbeActive ? 1000 : 30000 });
+ };
+ const newStandalone = async (open) => {
+   const previousId = await page.evaluate(() => window.chatUiState.selectedSessionId);
+@@ -137,6 +138,30 @@
+   return page.evaluate(() => window.chatUiState.selectedSessionId);
+ };
+ const waitForSelection = (expected) => page.waitForFunction(chatSelectionReady, expected, { timeout: 30000 });
++const boundarySnapshot = () => page.evaluate(() => {
++  const pill = document.querySelector('.model-pill');
++  let fiber = pill?.[Object.keys(pill).find(k => k.startsWith('__reactFiber$'))];
++  if (fiber) {
++    let root = fiber; while (root.return) root = root.return;
++    if (root.stateNode?.current !== root && fiber.alternate) fiber = fiber.alternate;
++  }
++  let composer, picker;
++  for (let f = fiber; f; f = f.return) {
++    const p = f.memoizedProps;
++    if (p && typeof p.canConnect === 'boolean' && p.runtime) picker = p;
++    if (p && typeof p.pending === 'boolean' && 'sessionEnabled' in p && p.selected) composer = p;
++  }
++  const smallRuntime = r => r && ({ sessionId:r.sessionId, connected:r.connected, status:r.status, model:r.model?.id, models:r.models?.length });
++  return { at:Date.now(), stateId:window.chatUiState?.selectedSessionId, stateProject:window.chatUiState?.selectedProjectId,
++    domId:document.querySelector('.session-row > button[aria-current="page"]')?.parentElement.dataset.sessionId,
++    selected:composer?.selected && {id:composer.selected.id,projectId:composer.selected.projectId},
++    pending:composer?.pending, sessionEnabled:composer?.sessionEnabled,
++    runtime:smallRuntime(composer?.runtime), picker:picker && { open:picker.open, canConnect:picker.canConnect, locked:picker.locked, runtime:smallRuntime(picker.runtime) },
++    pill:pill?.textContent, pickerText:document.querySelector('.model-picker')?.textContent,
++    trust:Boolean(document.querySelector('.trust-banner')), sendSpin:Boolean(document.querySelector('[aria-label="发送任务"] .spin')) };
++});
++
++
+ const expectSelectedModel = async (model, id) => {
+   assert.ok(id, 'Model checks require an explicit target session');
+   lastModelCheck = { id, modelId: model.id, stage: 'before view readiness' };
+@@ -475,8 +500,101 @@
+   await waitForView({ id: projectEmptyId, scope: 'project', projectId });
+   console.log('PASS IME session search and deletion after the session file is missing');
+ 
+-  const continuationId = await newStandalone(() => page.getByRole('button', { name: /^新建对话/ }).click());
++  boundaryProbeActive = true;
++  await app.evaluate(({ipcMain,BrowserWindow}, oldId) => {
++    globalThis.chatGuardTrace=[];
++    globalThis.chatGuardReady=new Promise(resolve => { globalThis.chatGuardEntered=resolve; });
++    const handler=ipcMain._invokeHandlers.get('desktop:invoke');
++    const wc=BrowserWindow.getAllWindows()[0].webContents;
++    const send=wc.send.bind(wc);
++    wc.send=(channel,event,...rest) => {
++      if (globalThis.chatGuardSuppress && channel==='desktop:event' && event.type==='state') {
++        globalThis.chatGuardState=event; return;
++      }
++      return send(channel,event,...rest);
++    };
++    ipcMain.removeHandler('desktop:invoke');
++    ipcMain.handle('desktop:invoke',async(event,method,args) => {
++      if (['newSession','selectSession','connect'].includes(method)) globalThis.chatGuardTrace.push({kind:'call',at:Date.now(),method,args});
++      if (method==='newSession' && !globalThis.chatGuardUsed) {
++        globalThis.chatGuardUsed=true;
++        globalThis.chatGuardEntered();
++        await new Promise(resolve => { globalThis.releaseChatGuard=resolve; });
++        if (process.env.CHAT_GUARD_PROBE==='wrong-target') globalThis.chatGuardSuppress=true;
++        const value=await handler(event,method,args);
++        if (process.env.CHAT_GUARD_PROBE==='wrong-target') {
++          await handler(event,'selectSession',[oldId]);
++          globalThis.chatGuardSuppress=false;
++          send('desktop:event',globalThis.chatGuardState);
++        }
++        globalThis.chatGuardTrace.push({kind:'return',at:Date.now(),method,id:value.id});
++        return value;
++      }
++      const value=await handler(event,method,args);
++      if (method==='selectSession' && args[0]===globalThis.chatGuardSelectId) {
++        globalThis.chatGuardSelectEntered();
++        await new Promise(resolve => { globalThis.releaseChatGuardSelect=resolve; });
++      }
++      if (['newSession','selectSession','connect'].includes(method)) globalThis.chatGuardTrace.push({kind:'return',at:Date.now(),method});
++      return value;
++    });
++  }, projectEmptyId);
++  const creating = newStandalone(() => page.getByRole('button', {name:/^新建对话/}).click());
++  // Observe this Promise immediately, including in negative controls.
++  const created = creating.then(id => ({id}),error => ({error:error.message}));
++  await app.evaluate(() => globalThis.chatGuardReady);
++  const heldNew = await boundarySnapshot();
++  assert.equal(heldNew.stateId, projectEmptyId);
++  assert.equal(heldNew.picker.open,false);
++  assert.equal(await page.evaluate(chatViewReady,{differentFrom:projectEmptyId,scope:'standalone',draft:'',connectable:true}),false);
++  assert.equal((await app.evaluate(()=>globalThis.chatGuardTrace)).filter(e=>e.method==='connect').length,0);
++  await app.evaluate(()=>globalThis.releaseChatGuard());
++  const outcome = await created;
++  if (process.env.CHAT_GUARD_PROBE==='wrong-target') {
++    assert.match(outcome.error,/Timeout/);
++    const proof={heldNew,outcome,after:await boundarySnapshot(),trace:await app.evaluate(()=>globalThis.chatGuardTrace)};
++    await fs.writeFile('/tmp/pi-chat-boundary-proof/guard-wrong-target.json',JSON.stringify(proof,null,2));
++    assert.equal(proof.trace.filter(e=>e.method==='connect').length,0);
++    console.log('EXPECTED_NEGATIVE wrong target rejected before model click',JSON.stringify(proof));
++    throw new Error('EXPECTED_NEGATIVE: wrong target');
++  }
++  assert.ok(outcome.id,outcome.error);
++  const continuationId = outcome.id;
+   await expectSelectedModel(baseModel, continuationId);
++  const afterNew = await boundarySnapshot();
++  await app.evaluate((_electron,id)=>{
++    globalThis.chatGuardSelectId=id;
++    globalThis.chatGuardSelectReady=new Promise(resolve=>{globalThis.chatGuardSelectEntered=resolve;});
++  },first.id);
++  await page.locator(`.session-row[data-session-id="${first.id}"] > button`).first().click();
++  await app.evaluate(()=>globalThis.chatGuardSelectReady);
++  await page.waitForFunction(id => window.chatUiState.selectedSessionId===id && !!document.querySelector('[aria-label="发送任务"] .spin'),first.id);
++  const checking = expectSelectedModel(baseModel,first.id).then(()=>({passed:true}),error=>({error:error.message}));
++  const heldSelect=await boundarySnapshot();
++  assert.equal(heldSelect.pending,true);
++  assert.equal(heldSelect.picker.open,false);
++  assert.equal(await page.evaluate(chatViewReady,{id:first.id,scope:'standalone',connectable:true}),false);
++  const traceBefore=await app.evaluate(()=>globalThis.chatGuardTrace);
++  assert.equal(traceBefore.filter(e=>e.method==='connect'&&e.args?.[0]===first.id).length,0);
++  if (process.env.CHAT_GUARD_PROBE==='pending') {
++    const outcome=await checking;
++    assert.match(outcome.error,/Timeout/);
++    const proof={heldNew,afterNew,heldSelect,outcome,after:await boundarySnapshot(),trace:await app.evaluate(()=>globalThis.chatGuardTrace)};
++    await fs.writeFile('/tmp/pi-chat-boundary-proof/guard-pending.json',JSON.stringify(proof,null,2));
++    console.log('EXPECTED_NEGATIVE pending target rejected before model click',JSON.stringify(proof));
++    await app.evaluate(()=>globalThis.releaseChatGuardSelect());
++    throw new Error('EXPECTED_NEGATIVE: pending target');
++  }
++  await app.evaluate(()=>globalThis.releaseChatGuardSelect());
++  const checked=await checking;
++  assert.equal(checked.passed,true,checked.error);
++  const afterSelect=await boundarySnapshot();
++  const proof={heldNew,afterNew,heldSelect,afterSelect,trace:await app.evaluate(()=>globalThis.chatGuardTrace)};
++  await fs.writeFile('/tmp/pi-chat-boundary-proof/guard-positive.json',JSON.stringify(proof,null,2));
++  console.log('PASS controlled new/select gates wait for identity and pending clearance',JSON.stringify(proof));
++  await page.locator(`.session-row[data-session-id="${continuationId}"] > button`).first().click();
++  await waitForView({id:continuationId,scope:'standalone',connectable:true});
++  boundaryProbeActive=false;
+   await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW 新会话不能中断当前回复');
+   await page.getByRole('button', { name: '发送任务', exact: true }).click();
+   await page.getByText('开始流式回复。', { exact: true }).waitFor();

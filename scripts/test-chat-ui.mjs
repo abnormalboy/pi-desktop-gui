@@ -27,7 +27,7 @@ const output = path.resolve('test-results');
 const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
 await fs.mkdir(output, { recursive: true });
 const errors = [];
-let app, page, testError;
+let app, page, testError, lastViewExpectation, lastModelCheck;
 const launch = async () => {
   app = await electron.launch({
     executablePath: process.env.PI_DESKTOP_EXE,
@@ -45,6 +45,7 @@ const launch = async () => {
     window.chatUiRuntimes = new Map();
     window.desktop.onEvent((event) => {
       if (event.type === 'state') window.chatUiState = event.state;
+      if (event.type === 'storage') window.chatUiStorage = event.storage;
       if (event.type === 'runtime' && event.runtime.sessionId)
         window.chatUiRuntimes.set(event.runtime.sessionId, event.runtime);
       if (event.type === 'runtimePatch' && event.patch.sessionId)
@@ -52,8 +53,9 @@ const launch = async () => {
       if (event.type === 'runtimeRemoved') window.chatUiRuntimes.delete(event.sessionId);
     });
     // Bootstrap once after subscribing, rather than repeatedly resyncing during readiness waits.
-    const { state, runtime } = await window.desktop.invoke('bootstrap');
+    const { state, runtime, storage } = await window.desktop.invoke('bootstrap');
     window.chatUiState = state;
+    window.chatUiStorage = storage;
     if (runtime.sessionId) window.chatUiRuntimes.set(runtime.sessionId, runtime);
   });
 };
@@ -96,19 +98,64 @@ function allChatRuntimesSettled() {
       !runtime.dialogs?.length,
   );
 }
+// Selection must settle before a model click; a model name is only a postcondition.
+function chatViewReady({ id, differentFrom, scope, projectId, draft, connectable = false }) {
+  const state = window.chatUiState;
+  const selected = state?.sessions.find((session) => session.id === state.selectedSessionId);
+  if (!selected || (id && selected.id !== id) || selected.id === differentFrom) return false;
+  if (scope === 'standalone' && selected.projectId) return false;
+  if (scope === 'project' && !selected.projectId) return false;
+  if (projectId && selected.projectId !== projectId) return false;
+  const project = state.projects.find((project) => project.id === selected.projectId);
+  const runtime = window.chatUiRuntimes.get(selected.id);
+  const send = document.querySelector('button[aria-label="发送任务"]');
+  return Boolean(
+    state.selectedProjectId === selected.projectId &&
+    document
+      .querySelector(`.session-row[data-session-id="${selected.id}"] > button`)
+      ?.getAttribute('aria-current') === 'page' &&
+    document.querySelector('h1')?.textContent === selected.title &&
+    send &&
+    !send.querySelector('.spin') &&
+    (draft === undefined || document.querySelector('textarea[aria-label="任务输入"]')?.value === draft) &&
+    (!connectable ||
+      (window.chatUiStorage?.writable &&
+        (!selected.projectId || project?.trusted) &&
+        (!runtime?.crash || runtime.crash.cleanup === 'confirmed') &&
+        !runtime?.configurationPending &&
+        !['starting', 'running', 'waiting', 'retrying', 'compacting', 'stopping'].includes(runtime?.status))),
+  );
+}
+const waitForView = (expected) => {
+  lastViewExpectation = expected;
+  return page.waitForFunction(chatViewReady, expected, { timeout: 30000 });
+};
+const newStandalone = async (open) => {
+  const previousId = await page.evaluate(() => window.chatUiState.selectedSessionId);
+  await open();
+  await waitForView({ differentFrom: previousId, scope: 'standalone', draft: '', connectable: true });
+  return page.evaluate(() => window.chatUiState.selectedSessionId);
+};
 const waitForSelection = (expected) => page.waitForFunction(chatSelectionReady, expected, { timeout: 30000 });
-const expectSelectedModel = async (model) => {
+const expectSelectedModel = async (model, id) => {
+  assert.ok(id, 'Model checks require an explicit target session');
+  lastModelCheck = { id, modelId: model.id, stage: 'before view readiness' };
+  await waitForView({ id, scope: 'standalone', connectable: true });
+  lastModelCheck.stage = 'before model click';
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  lastModelCheck.stage = 'waiting for model response';
   await page.waitForFunction(
     (name) => document.querySelector('.model-pill > span')?.textContent === name,
     model.name,
     { timeout: 25000 },
   );
-  await waitForSelection({ modelId: model.id });
+  lastModelCheck.stage = 'connected selection';
+  await waitForSelection({ id, modelId: model.id });
   const { state, runtime } = await page.evaluate(() => ({
     state: window.chatUiState,
     runtime: window.chatUiRuntimes.get(window.chatUiState.selectedSessionId),
   }));
+  assert.equal(state.selectedSessionId, id);
   assert.equal(runtime.connected, true);
   assert.equal(runtime.sessionId, state.selectedSessionId);
   assert.equal(runtime.model.id, model.id);
@@ -117,6 +164,7 @@ const expectSelectedModel = async (model) => {
   assert.ok((await current.textContent()).includes(model.name));
   await page.keyboard.press('Escape');
   await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
+  lastModelCheck.stage = 'complete';
 };
 const within = async (operation, ms, label) => {
   let timer;
@@ -265,12 +313,12 @@ try {
   const piSettings = JSON.parse(await fs.readFile(piSettingsFile, 'utf8'));
   await fs.writeFile(piSettingsFile, JSON.stringify({ ...piSettings, defaultModel: lastModel.id }));
   const requestsBeforeNewChat = provider.requests.length;
-  await page.keyboard.press(`${modifier}+n`);
+  const secondId = await newStandalone(() => page.keyboard.press(`${modifier}+n`));
   await page.waitForFunction(
     () => document.querySelectorAll('.standalone-sessions .session-row').length === 2,
   );
   assert.equal(await input.inputValue(), '');
-  await expectSelectedModel(lastModel);
+  await expectSelectedModel(lastModel, secondId);
   assert.equal(
     await page.locator('.readiness').count(),
     0,
@@ -293,6 +341,7 @@ try {
   const firstRow = page.locator(`.standalone-sessions .session-row[data-session-id="${first.id}"]`);
   await firstRow.getByRole('button', { name: firstPrompt, exact: true }).waitFor();
   await firstRow.locator(':scope > button').first().click();
+  await waitForView({ id: first.id, scope: 'standalone', draft: '独立对话未发送草稿' });
   await waitForSaved((state) => state.selectedSessionId === first.id);
   await page.waitForFunction(() => document.querySelector('textarea')?.value === '独立对话未发送草稿');
   assert.equal(await page.locator('.message').filter({ hasText: '第二条独立对话' }).count(), 0);
@@ -326,6 +375,7 @@ try {
     .getByRole('option', { name: /第二条独立对话/ })
     .click();
   await page.getByRole('heading', { level: 1, name: '第二条独立对话' }).waitFor();
+  await waitForView({ id: secondId, scope: 'standalone' });
   // Restart clears the registry cache. Explicit model loading must resolve Pi's actual
   // default without a desktop preference or a warm connection.
   await fs.writeFile(piSettingsFile, JSON.stringify({ ...piSettings, defaultModel: baseModel.id }));
@@ -341,14 +391,29 @@ try {
     () => window.chatUiRuntimes.get(window.chatUiState.selectedSessionId)?.connected ?? false,
   );
   assert.equal(untrustedConnected, false, 'an untrusted project must not start Pi automatically');
-  await page.getByRole('button', { name: /^新建对话/ }).click();
+  // Browsing a locked picker must not turn an untrusted project into a connection.
+  await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  const untrustedPicker = page.getByRole('dialog', { name: '模型与推理级别' });
+  await untrustedPicker.getByText('尚未连接 Pi，连接后可读取模型。', { exact: true }).waitFor();
+  assert.equal(
+    await untrustedPicker.getByRole('button', { name: '重新连接 Pi', exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(await page.locator('.error-banner').count(), 0);
+  assert.equal(await page.locator('.trust-banner').count(), 1);
+  await page.keyboard.press('Escape');
+  await untrustedPicker.waitFor({ state: 'detached' });
+
+  const standaloneFromProjectId = await newStandalone(() =>
+    page.getByRole('button', { name: /^新建对话/ }).click(),
+  );
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   assert.equal(await page.locator('.trust-banner').count(), 0);
   const newStandaloneOutput = page.getByRole('button', { name: '查看会话输出', exact: true });
   assert.equal(await newStandaloneOutput.isVisible(), true);
   assert.equal(await newStandaloneOutput.isEnabled(), true);
   assert.equal(await page.getByRole('button', { name: '查看工作区变更', exact: true }).count(), 0);
-  await expectSelectedModel(baseModel);
+  await expectSelectedModel(baseModel, standaloneFromProjectId);
   assert.equal(await page.locator('.readiness').count(), 0);
   await page.getByRole('textbox', { name: '任务输入' }).fill('从项目中直接新建独立对话');
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isEnabled(), true);
@@ -363,10 +428,21 @@ try {
   );
   if ((await page.locator('.project-row').getAttribute('aria-expanded')) !== 'true')
     await page.locator('.project-row').click();
+  const projectSessionId = await page
+    .locator('.project-group .session-row')
+    .first()
+    .getAttribute('data-session-id');
   await page.locator('.project-group .session-row > button').first().click();
+  const projectId = await page.evaluate(
+    (id) => window.chatUiState.sessions.find((session) => session.id === id).projectId,
+    projectSessionId,
+  );
+  await waitForView({ id: projectSessionId, scope: 'project', projectId });
   await page.locator('.trust-banner').waitFor();
   assert.equal(await page.getByRole('button', { name: '发送任务', exact: true }).isDisabled(), true);
   await page.getByRole('button', { name: '在 project 中新建会话', exact: true }).click();
+  await waitForView({ differentFrom: projectSessionId, scope: 'project', projectId, draft: '' });
+  const projectEmptyId = await page.evaluate(() => window.chatUiState.selectedSessionId);
   await page.waitForFunction(() => document.querySelectorAll('.project-group .session-row').length === 2);
   assert.equal(await page.locator('.project-group .session-row').count(), 2);
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 3);
@@ -396,20 +472,21 @@ try {
     .getByRole('button', { name: `${missingFileSession.title} 会话操作`, exact: true })
     .waitFor({ state: 'detached' });
   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 2);
+  await waitForView({ id: projectEmptyId, scope: 'project', projectId });
   console.log('PASS IME session search and deletion after the session file is missing');
 
-  await page.getByRole('button', { name: /^新建对话/ }).click();
-  await expectSelectedModel(baseModel);
+  const continuationId = await newStandalone(() => page.getByRole('button', { name: /^新建对话/ }).click());
+  await expectSelectedModel(baseModel, continuationId);
   await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW 新会话不能中断当前回复');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.getByText('开始流式回复。', { exact: true }).waitFor();
   const active = await page.evaluate(() => window.chatUiRuntimes.get(window.chatUiState.selectedSessionId));
   assert.equal(provider.heldSlowResponseCount, 1, 'The response gate must be held before creating B');
   const requestsDuringReply = provider.requests.length;
-  await page.getByRole('button', { name: /^新建对话/ }).click();
+  const parallelId = await newStandalone(() => page.getByRole('button', { name: /^新建对话/ }).click());
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
   // Explicit model loading connects the new chat while A keeps streaming.
-  await expectSelectedModel(baseModel);
+  await expectSelectedModel(baseModel, parallelId);
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   assert.equal(await page.getByRole('option').first().isEnabled(), true);
   await page.keyboard.press('Escape');
@@ -490,6 +567,51 @@ try {
   console.error(error);
   if (page && !page.isClosed())
     await page.screenshot({ path: path.join(output, 'chat-ui-failure.png'), timeout: 5000 }).catch(() => {});
+  const state = await page
+    ?.evaluate(() => {
+      const id = window.chatUiState?.selectedSessionId;
+      const selected = window.chatUiState?.sessions.find((session) => session.id === id);
+      const runtime = window.chatUiRuntimes?.get(id);
+      const retry = [...document.querySelectorAll('.model-picker button')].find(
+        (button) => button.textContent === '重新连接 Pi',
+      );
+      return {
+        selectedId: id,
+        projectId: selected?.projectId,
+        projectTrusted: window.chatUiState?.projects.find((project) => project.id === selected?.projectId)
+          ?.trusted,
+        domSelectedId: document.querySelector('.session-row > button[aria-current="page"]')?.parentElement
+          .dataset.sessionId,
+        pendingIndicator: Boolean(document.querySelector('[aria-label="发送任务"] .spin')),
+        runtime: runtime && {
+          sessionId: runtime.sessionId,
+          connected: runtime.connected,
+          status: runtime.status,
+          modelId: runtime.model?.id,
+          configurationPending: runtime.configurationPending,
+        },
+        modelLabel: document.querySelector('.model-pill > span')?.textContent,
+        modelPickerOpen: Boolean(document.querySelector('.model-picker')),
+        reconnectDisabled: retry?.disabled,
+        trustBanner: Boolean(document.querySelector('.trust-banner')),
+      };
+    })
+    .catch(() => ({ unavailable: true }));
+  await fs
+    .writeFile(
+      path.join(output, 'chat-ui-failure-state.json'),
+      JSON.stringify(
+        {
+          lastViewExpectation,
+          lastModelCheck,
+          display: state,
+          rendererErrors: errors,
+        },
+        null,
+        2,
+      ),
+    )
+    .catch(() => {});
   console.error('Renderer errors:', errors);
   throw error;
 } finally {

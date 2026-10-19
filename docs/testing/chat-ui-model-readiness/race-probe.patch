@@ -1,0 +1,83 @@
+--- a/scripts/test-chat-ui.mjs
++++ b/scripts/test-chat-ui.mjs
+@@ -97,6 +97,30 @@
+   );
+ }
+ const waitForSelection = (expected) => page.waitForFunction(chatSelectionReady, expected, { timeout: 30000 });
++
++const boundarySnapshot = () => page.evaluate(() => {
++  const pill = document.querySelector('.model-pill');
++  let fiber = pill?.[Object.keys(pill).find(k => k.startsWith('__reactFiber$'))];
++  if (fiber) {
++    let root = fiber; while (root.return) root = root.return;
++    if (root.stateNode?.current !== root && fiber.alternate) fiber = fiber.alternate;
++  }
++  let composer, picker;
++  for (let f = fiber; f; f = f.return) {
++    const p = f.memoizedProps;
++    if (p && typeof p.canConnect === 'boolean' && p.runtime) picker = p;
++    if (p && typeof p.pending === 'boolean' && 'sessionEnabled' in p && p.selected) composer = p;
++  }
++  const smallRuntime = r => r && ({ sessionId:r.sessionId, connected:r.connected, status:r.status, model:r.model?.id, models:r.models?.length });
++  return { at:Date.now(), stateId:window.chatUiState?.selectedSessionId, stateProject:window.chatUiState?.selectedProjectId,
++    domId:document.querySelector('.session-row > button[aria-current="page"]')?.parentElement.dataset.sessionId,
++    selected:composer?.selected && {id:composer.selected.id,projectId:composer.selected.projectId},
++    pending:composer?.pending, sessionEnabled:composer?.sessionEnabled,
++    runtime:smallRuntime(composer?.runtime), picker:picker && { open:picker.open, canConnect:picker.canConnect, locked:picker.locked, runtime:smallRuntime(picker.runtime) },
++    pill:pill?.textContent, pickerText:document.querySelector('.model-picker')?.textContent,
++    trust:Boolean(document.querySelector('.trust-banner')), sendSpin:Boolean(document.querySelector('[aria-label="发送任务"] .spin')) };
++});
++
+ const expectSelectedModel = async (model) => {
+   await page.getByRole('button', { name: '选择模型', exact: true }).click();
+   await page.waitForFunction(
+@@ -398,8 +422,48 @@
+   assert.equal(await page.locator('.standalone-sessions .session-row').count(), 2);
+   console.log('PASS IME session search and deletion after the session file is missing');
+ 
++  await app.evaluate(({ipcMain}) => {
++    globalThis.chatBoundaryTrace = [];
++    const handler=ipcMain._invokeHandlers.get('desktop:invoke');
++    ipcMain.removeHandler('desktop:invoke');
++    ipcMain.handle('desktop:invoke',async(event,method,args) => {
++      if (['newSession','selectSession','connect','readHistory'].includes(method)) globalThis.chatBoundaryTrace.push({ at:Date.now(), kind:'call', method,args });
++      if (method==='newSession' && !globalThis.chatBoundaryHeld) {
++        globalThis.chatBoundaryHeld=true;
++        await new Promise(resolve => {globalThis.releaseChatBoundary=resolve;});
++      }
++      const value=await handler(event,method,args);
++      if (['newSession','selectSession','connect','readHistory'].includes(method)) globalThis.chatBoundaryTrace.push({ at:Date.now(), kind:'return', method, id:value?.id });
++      return value;
++    });
++  });
++  const before = await boundarySnapshot();
+   await page.getByRole('button', { name: /^新建对话/ }).click();
+-  await expectSelectedModel(baseModel);
++  await page.waitForFunction(() => !document.querySelector('.model-picker'));
++  const held = await boundarySnapshot();
++  await page.getByRole('button', { name:'选择模型',exact:true }).click();
++  const earlyClick = await boundarySnapshot();
++  await app.evaluate(() => globalThis.releaseChatBoundary());
++  await page.waitForFunction(old => window.chatUiState.selectedSessionId!==old &&
++    !document.querySelector('.trust-banner') && !document.querySelector('[aria-label="发送任务"] .spin'), before.stateId);
++  const settled = await boundarySnapshot();
++  let missed;
++  try { await page.waitForFunction(name => document.querySelector('.model-pill > span')?.textContent===name,baseModel.name,{timeout:1000}); }
++  catch(error) { missed=error.message; }
++  const afterBound = await boundarySnapshot();
++  const trace = await app.evaluate(() => globalThis.chatBoundaryTrace);
++  const proof={before,held,earlyClick,settled,afterBound,trace,missed};
++  await fs.writeFile('/tmp/pi-chat-boundary-proof/new-session-race.json',JSON.stringify(proof,null,2));
++  await page.screenshot({path:'/tmp/pi-chat-boundary-proof/new-session-race.png'});
++  console.log('CHAT_BOUNDARY_PROOF',JSON.stringify(proof));
++  // A second explicit user action establishes whether the actual connection itself works.
++  await page.getByRole('button',{name:'重新连接 Pi',exact:true}).click();
++  await page.waitForFunction(name => document.querySelector('.model-pill > span')?.textContent===name,baseModel.name,{timeout:25000});
++  await waitForSelection({modelId:baseModel.id});
++  await fs.writeFile('/tmp/pi-chat-boundary-proof/new-session-recovery.json',JSON.stringify({snapshot:await boundarySnapshot(),trace:await app.evaluate(()=>globalThis.chatBoundaryTrace)},null,2));
++  await page.keyboard.press('Escape');
++  await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({state:'detached'});
++  console.log('PASS explicit reconnect after the missed opening connects the correct new session');
+   await page.getByRole('textbox', { name: '任务输入' }).fill('E2E_SLOW 新会话不能中断当前回复');
+   await page.getByRole('button', { name: '发送任务', exact: true }).click();
+   await page.getByText('开始流式回复。', { exact: true }).waitFor();

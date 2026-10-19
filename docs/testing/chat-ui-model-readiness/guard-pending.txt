@@ -1,0 +1,17 @@
+PASS model picker connection failure/retry, IME confirmation and reopen scroll
+PASS opening the model picker reads the actual Pi default without repeated setup or a model request
+PASS fresh startup, model selection/probe, send, Ctrl/Cmd+N, separate histories and restart
+PASS standalone search, global new chat from project, project creation and trust retained
+PASS IME session search and deletion after the session file is missing
+EXPECTED_NEGATIVE pending target rejected before model click {"heldNew":{"at":1792408289057,"stateId":"3ee83db1-c1fd-497d-83b8-c31e2bf3ad09","stateProject":"590f34fe-d782-42b3-8e42-92ee5c913250","domId":"3ee83db1-c1fd-497d-83b8-c31e2bf3ad09","selected":{"id":"3ee83db1-c1fd-497d-83b8-c31e2bf3ad09","projectId":"590f34fe-d782-42b3-8e42-92ee5c913250"},"pending":false,"sessionEnabled":false,"runtime":{"connected":false,"status":"idle","models":0},"picker":{"open":false,"canConnect":false,"locked":true,"runtime":{"connected":false,"status":"idle","models":0}},"pill":"选择模型","trust":true,"sendSpin":false},"afterNew":{"at":1792408291179,"stateId":"7751e07a-fd8a-47a7-a755-b98b7e6d042e","domId":"7751e07a-fd8a-47a7-a755-b98b7e6d042e","selected":{"id":"7751e07a-fd8a-47a7-a755-b98b7e6d042e"},"pending":false,"sessionEnabled":true,"runtime":{"sessionId":"7751e07a-fd8a-47a7-a755-b98b7e6d042e","connected":true,"status":"idle","model":"local-e2e","models":25},"picker":{"open":false,"canConnect":true,"locked":false,"runtime":{"sessionId":"7751e07a-fd8a-47a7-a755-b98b7e6d042e","connected":true,"status":"idle","model":"local-e2e","models":25}},"pill":"本地验收接口","trust":false,"sendSpin":false},"heldSelect":{"at":1792408291298,"stateId":"0a43dcc1-a33d-4fe8-87b6-6226fd613871","domId":"0a43dcc1-a33d-4fe8-87b6-6226fd613871","selected":{"id":"0a43dcc1-a33d-4fe8-87b6-6226fd613871"},"pending":true,"sessionEnabled":true,"runtime":{"connected":false,"status":"idle","models":0},"picker":{"open":false,"canConnect":false,"locked":true,"runtime":{"connected":false,"status":"idle","models":0}},"pill":"local-e2e","trust":false,"sendSpin":true},"outcome":{"error":"page.waitForFunction: Timeout 1000ms exceeded."},"after":{"at":1792408292302,"stateId":"0a43dcc1-a33d-4fe8-87b6-6226fd613871","domId":"0a43dcc1-a33d-4fe8-87b6-6226fd613871","selected":{"id":"0a43dcc1-a33d-4fe8-87b6-6226fd613871"},"pending":true,"sessionEnabled":true,"runtime":{"connected":false,"status":"idle","models":0},"picker":{"open":false,"canConnect":false,"locked":true,"runtime":{"connected":false,"status":"idle","models":0}},"pill":"local-e2e","trust":false,"sendSpin":true},"trace":[{"kind":"call","at":1792408289052,"method":"newSession","args":[null]},{"kind":"return","at":1792408289072,"method":"newSession","id":"7751e07a-fd8a-47a7-a755-b98b7e6d042e"},{"kind":"call","at":1792408289141,"method":"connect","args":["7751e07a-fd8a-47a7-a755-b98b7e6d042e"]},{"kind":"return","at":1792408291053,"method":"connect"},{"kind":"call","at":1792408291248,"method":"selectSession","args":["0a43dcc1-a33d-4fe8-87b6-6226fd613871"]}]}
+Error: EXPECTED_NEGATIVE: pending target
+    at file:///workspace/pi-desktop-gui/scripts/.chat-guard-probe.tmp.mjs:564:11
+Renderer errors: []
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+Error: EXPECTED_NEGATIVE: pending target
+    at file:///workspace/pi-desktop-gui/scripts/.chat-guard-probe.tmp.mjs:564:11
+
+Node.js v24.19.0

@@ -1,0 +1,77 @@
+{
+  "snapshot": {
+    "at": 1792407827987,
+    "stateId": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76",
+    "domId": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76",
+    "selected": {
+      "id": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76"
+    },
+    "pending": false,
+    "sessionEnabled": true,
+    "runtime": {
+      "sessionId": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76",
+      "connected": true,
+      "status": "idle",
+      "model": "local-e2e",
+      "models": 25
+    },
+    "picker": {
+      "open": true,
+      "canConnect": true,
+      "locked": false,
+      "runtime": {
+        "sessionId": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76",
+        "connected": true,
+        "status": "idle",
+        "model": "local-e2e",
+        "models": 25
+      }
+    },
+    "pill": "本地验收接口",
+    "pickerText": "本地验收接口local-e2e图片33K滚动测试模型 0local-e2e-0图片33K滚动测试模型 1local-e2e-1图片33K滚动测试模型 2local-e2e-2图片33K滚动测试模型 3local-e2e-3图片33K滚动测试模型 4local-e2e-4图片33K滚动测试模型 5local-e2e-5图片33K滚动测试模型 6local-e2e-6图片33K滚动测试模型 7local-e2e-7图片33K滚动测试模型 8local-e2e-8图片33K滚动测试模型 9local-e2e-9图片33K滚动测试模型 10local-e2e-10图片33K滚动测试模型 11local-e2e-11图片33K滚动测试模型 12local-e2e-12图片33K滚动测试模型 13local-e2e-13图片33K滚动测试模型 14local-e2e-14图片33K滚动测试模型 15local-e2e-15图片33K滚动测试模型 16local-e2e-16图片33K滚动测试模型 17local-e2e-17图片33K滚动测试模型 18local-e2e-18图片33K滚动测试模型 19local-e2e-19图片33K滚动测试模型 20local-e2e-20图片33K滚动测试模型 21local-e2e-21图片33K滚动测试模型 22local-e2e-22图片33K滚动测试模型 23local-e2e-23图片33K推理级别off运行中修改将在下次发送新任务时生效；补充要求仍使用本轮设置连接设置",
+    "trust": false,
+    "sendSpin": false
+  },
+  "trace": [
+    {
+      "at": 1792407824479,
+      "kind": "call",
+      "method": "newSession",
+      "args": [
+        null
+      ]
+    },
+    {
+      "at": 1792407824559,
+      "kind": "return",
+      "method": "newSession",
+      "id": "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76"
+    },
+    {
+      "at": 1792407824567,
+      "kind": "call",
+      "method": "readHistory",
+      "args": [
+        "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76"
+      ]
+    },
+    {
+      "at": 1792407824567,
+      "kind": "return",
+      "method": "readHistory"
+    },
+    {
+      "at": 1792407825738,
+      "kind": "call",
+      "method": "connect",
+      "args": [
+        "04da8eaa-f8d2-4f38-a5d5-f43c5a61bd76"
+      ]
+    },
+    {
+      "at": 1792407827944,
+      "kind": "return",
+      "method": "connect"
+    }
+  ]
+}

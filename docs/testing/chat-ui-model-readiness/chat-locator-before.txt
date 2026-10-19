@@ -1,0 +1,18 @@
+PASS model picker connection failure/retry, IME confirmation and reopen scroll
+PASS opening the model picker reads the actual Pi default without repeated setup or a model request
+PASS fresh startup, model selection/probe, send, Ctrl/Cmd+N, separate histories and restart
+locator.waitFor: Target page, context or browser has been closed
+    at /workspace/pi-desktop-gui/scripts/test-chat-ui.mjs:388:64 {
+  log: []
+}
+Renderer errors: []
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+locator.waitFor: Target page, context or browser has been closed
+    at /workspace/pi-desktop-gui/scripts/test-chat-ui.mjs:388:64 {
+  log: []
+}
+
+Node.js v24.19.0

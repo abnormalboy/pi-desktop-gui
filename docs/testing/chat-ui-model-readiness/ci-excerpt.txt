@@ -1,0 +1,21 @@
+PASS IME session search and deletion after the session file is missing
+2026-10-19T10:57:33.6645225Z page.waitForFunction: Timeout 25000ms exceeded.
+2026-10-19T10:57:33.6645870Z     at expectSelectedModel (/home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-chat-ui.mjs:102:14)
+2026-10-19T10:57:33.6646521Z     at async file:///home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-chat-ui.mjs:402:3 {
+2026-10-19T10:57:33.6646917Z   log: [],
+2026-10-19T10:57:33.6647105Z   name: 'TimeoutError'
+2026-10-19T10:57:33.6647309Z }
+2026-10-19T10:57:33.7045631Z Renderer errors: []
+2026-10-19T10:57:33.7570813Z node:internal/modules/run_main:123
+2026-10-19T10:57:33.7571169Z     triggerUncaughtException(
+2026-10-19T10:57:33.7571381Z     ^
+2026-10-19T10:57:33.7571474Z 
+2026-10-19T10:57:33.7571635Z page.waitForFunction: Timeout 25000ms exceeded.
+2026-10-19T10:57:33.7572155Z     at expectSelectedModel (/home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-chat-ui.mjs:102:14)
+2026-10-19T10:57:33.7572864Z     at async file:///home/runner/work/pi-desktop-gui/pi-desktop-gui/scripts/test-chat-ui.mjs:402:3 {
+2026-10-19T10:57:33.7573289Z   log: [],
+2026-10-19T10:57:33.7573476Z   name: 'TimeoutError'
+2026-10-19T10:57:33.7573689Z }
+2026-10-19T10:57:33.7573987Z 
+2026-10-19T10:57:33.7574063Z Node.js v22.22.0
+2026-10-19T10:57:33.7805802Z 
