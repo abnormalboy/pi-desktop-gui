@@ -149,13 +149,19 @@ try {
   await page.evaluate((id) => window.desktop.invoke('selectSession', id), secondSession.id);
   await page.evaluate(() => globalThis.originalCommand);
   await page.keyboard.press('Alt+3');
-  await inspector.locator('.output-scroll').getByText('123456', { exact: true }).waitFor();
+  assert.equal(await inspector.locator('.output-scroll').getByText('123456', { exact: true }).count(), 0);
   assert.equal(
     await inspector.getByRole('button', { name: '本地重跑（不发给模型）', exact: true }).count(),
     0,
   );
   assert.equal(await inspector.getByRole('button', { name: '重跑并发给 Pi', exact: true }).count(), 0);
-  console.log('PASS viewing a different project cannot rerun the previous session command in its directory');
+  await page.evaluate((id) => window.desktop.invoke('selectSession', id), fixture.sessionId);
+  await inspector.locator('.output-scroll').getByText('123456', { exact: true }).waitFor();
+  await inspector.getByRole('button', { name: '本地重跑（不发给模型）', exact: true }).waitFor();
+  await inspector.getByRole('button', { name: '重跑并发给 Pi', exact: true }).waitFor();
+  console.log(
+    'PASS background command output and rerun actions stay with their source session across project switches',
+  );
   assert.deepEqual(errors, []);
   await page.screenshot({ path: path.join(output, 'workspace-v014.png'), animations: 'disabled' });
   console.log(
