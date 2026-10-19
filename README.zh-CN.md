@@ -167,6 +167,8 @@ Git 项目中的文件内容（包括二进制文件、原始换行符和 POSIX 
 <summary><b>Windows 安装版和便携版可以互相切换吗？</b></summary>
 
 可以。两者使用同一个数据目录，会话、草稿和设置都会保留。v0.7.0 及更早版本需要先手动安装一次当前版本，之后才能使用应用内更新。
+
+Windows 打包（包括 `win-unpacked` 目录）会按 `package.json` → `build.publish` 中的仓库自动生成更新配置，无需手动填写。旧包如果提示缺少自动更新配置，请下载并运行当前版本的 Windows `-setup.exe` 安装包。
 </details>
 
 ## 参与贡献

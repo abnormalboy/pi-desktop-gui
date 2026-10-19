@@ -5,7 +5,50 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import yaml from 'js-yaml';
+import { Platform } from 'electron-builder';
+import electronUpdater from 'electron-updater';
+import writeWindowsUpdateConfig from '../scripts/after-pack.mjs';
 import { verifyUpdateMetadata } from '../scripts/verify-update-metadata.mjs';
+
+test('Windows directory packages include the repository and native download cache configuration', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-packaged-update-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const project = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const resources = path.join(dir, 'resources');
+  await fs.mkdir(resources);
+  const appInfo = { channel: null, updaterCacheDirName: 'pi-desktop-gui-updater' };
+  await writeWindowsUpdateConfig({
+    electronPlatformName: 'win32',
+    appOutDir: dir,
+    arch: 1,
+    packager: {
+      platform: Platform.WINDOWS,
+      config: project.build,
+      platformSpecificBuildOptions: project.build.win,
+      appInfo,
+      info: { config: project.build, appInfo },
+      expandMacro: (value) => value,
+      getResourcesDir: () => resources,
+    },
+  });
+  const native = new electronUpdater.NsisUpdater(null, {
+    version: project.version,
+    name: project.name,
+    isPackaged: true,
+    appUpdateConfigPath: path.join(resources, 'app-update.yml'),
+    userDataPath: dir,
+    baseCachePath: dir,
+  });
+  native.logger = null;
+  const config = await native.configOnDisk.value;
+  assert.equal(config.provider, 'github');
+  assert.equal(config.owner, 'yeyuProject');
+  assert.equal(config.repo, 'pi-desktop-gui');
+  assert.equal(
+    (await native.getOrCreateDownloadHelper()).cacheDir,
+    path.join(dir, appInfo.updaterCacheDirName),
+  );
+});
 
 test('release validation rejects wrong versions, damaged assets, missing blockmaps and wrong targets', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-update-manifest-'));

@@ -35,6 +35,8 @@ export function updateInstallation(
 }
 export function updateError(error: unknown) {
   const detail = error instanceof Error ? error.message : String(error);
+  if (/ENOENT/i.test(detail) && /app-update\.yml/i.test(detail))
+    return '当前程序缺少自动更新配置，请前往版本页面下载完整安装包。';
   if (/sha512|checksum|hash mismatch|sha-512/i.test(detail))
     return '下载文件校验失败，已取消安装。请重试下载。';
   if (/ENOSPC|EACCES|EPERM/i.test(detail)) return '无法保存或安装更新，请检查磁盘空间和目录权限后重试。';

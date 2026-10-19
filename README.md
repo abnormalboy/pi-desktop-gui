@@ -170,6 +170,8 @@ Conversations are Pi's own JSONL session files. The desktop keeps its index (pro
 <summary><b>Can I switch between the Windows installer and portable version?</b></summary>
 
 Yes. Both use the same data folder, so sessions, drafts and settings carry over. Versions 0.7.0 and earlier need a one-time manual install of the current release before in-app updates work.
+
+Windows builds, including `win-unpacked`, generate update configuration from the repository in `package.json` → `build.publish`; no manual setup is needed. If an older build reports missing update configuration, download and run the current Windows `-setup.exe` installer.
 </details>
 
 ## Contributing

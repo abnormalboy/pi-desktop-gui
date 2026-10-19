@@ -36,6 +36,7 @@
   "build": {
     "appId": "io.yeyuproject.pi-desktop",
     "productName": "Pi Desktop",
+    "afterPack": "scripts/after-pack.mjs",
     "directories": {
       "output": "release"
     },

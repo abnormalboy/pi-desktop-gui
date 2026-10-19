@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import electronUpdater from 'electron-updater';
 import {
   UpdateService,
   updateInstallation,
+  updateError,
   fetchLatestRelease,
   type UpdateDriver,
   type UpdateDriverEvent,
   type UpdateOptions,
 } from '../electron/updater';
+import { nativeUpdateDriver } from '../electron/update-driver';
 import { compareAppVersions, stableVersion, releaseUrl } from '../shared/app-update';
 import { AgentService } from '../electron/agent';
 
@@ -142,6 +148,37 @@ test('checking is quiet on failure, deduplicates requests and can be retried', a
   assert.equal(offline.state.state, 'error');
   assert.match(offline.state.error!, /检查网络/);
 });
+test('missing native update configuration reports an incomplete package before networking', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-update-config-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const native = new electronUpdater.NsisUpdater(null, {
+    version: '0.9.0',
+    name: 'pi-update-config-test',
+    isPackaged: true,
+    appUpdateConfigPath: path.join(dir, 'app-update.yml'),
+    userDataPath: dir,
+    baseCachePath: dir,
+    whenReady: async () => {},
+    relaunch: () => assert.fail('must not relaunch'),
+    quit: () => assert.fail('must not quit'),
+    onQuit: () => assert.fail('must not register installation'),
+  });
+  native.logger = null;
+  const driver = nativeUpdateDriver(native);
+  let originalError: Error | undefined;
+  driver.subscribe((event) => {
+    if (event.type === 'error') originalError = event.error;
+  });
+  const service = new UpdateService({ ...options(), installation: 'nsis', driver });
+  t.after(() => service.dispose());
+  await service.check();
+  assert.match(originalError!.message, /ENOENT.*app-update\.yml/);
+  assert.equal(service.state.state, 'error');
+  assert.equal(service.state.error, '当前程序缺少自动更新配置，请前往版本页面下载完整安装包。');
+  assert.doesNotMatch(service.state.error!, /检查网络/);
+  assert.match(updateError(new Error('ENOENT: missing another file')), /检查网络/);
+});
+
 test('manual download, preference changes and progress reach independent update state', async (t) => {
   const driver = new Driver(),
     service = new UpdateService(options(driver));
