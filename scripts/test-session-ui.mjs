@@ -463,10 +463,25 @@ try {
       await page.locator('.stop-button, .elapsed, select[aria-label="运行中发送方式"]').count(),
       0,
     );
-    // Only opening the model picker should connect and load project resources.
+    // Model discovery reads a disposable history copy and leaves the chat disconnected.
+    const historyBeforeModelLookup = await fs.readFile(session.file, 'utf8');
     await page.getByRole('button', { name: '选择模型', exact: true }).click();
-    await selectionSettled(session);
+    await page.waitForFunction((id) => {
+      const runtime = window.sessionUiRuntimes.get(id);
+      return Boolean(runtime?.modelsLoaded && !runtime.modelsLoading && !runtime.connected);
+    }, session.id);
+    await selectionSettled(session, false);
+    assert.equal((await diagnostic()).sessionSwitch, undefined);
+    assert.equal(
+      await page.evaluate((id) => window.sessionUiRuntimes.get(id).commands.length, session.id),
+      0,
+    );
+    assert.equal(await fs.readFile(session.file, 'utf8'), historyBeforeModelLookup);
     await page.keyboard.press('Escape');
+    await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
+    // Only an explicit connection loads chat capabilities and owns a persistent Pi process.
+    await page.locator('.run-meta').getByRole('button', { name: '重新连接', exact: true }).click();
+    await selectionSettled(session);
     const { state, runtime } = await page.evaluate(
       (id) => ({
         state: window.sessionUiState,
@@ -528,7 +543,7 @@ try {
     JSON.stringify(crossDirectory),
   );
   console.log(
-    'PASS cold browsing starts no Pi process; explicit model loading and hot return visits preserve cwd, drafts and activity',
+    'PASS cold browsing starts no Pi process; model lookup leaves chats disconnected; explicit connections and hot returns preserve cwd, drafts and activity',
   );
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
   console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
