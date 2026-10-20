@@ -8,6 +8,11 @@ const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'image-input-ui');
 const output = path.resolve('output/playwright', `image-input-${process.platform}`);
 await fs.mkdir(output, { recursive: true });
+await Promise.all(
+  ['result.json', 'failure.json', 'failure.png'].map((name) =>
+    fs.rm(path.join(output, name), { force: true }),
+  ),
+);
 const large = path.join(f.projectDir, '大于256K.PNG');
 const unknown = path.join(f.projectDir, 'image-payload');
 const text = path.join(f.projectDir, '输入 文件.txt');
@@ -15,7 +20,24 @@ await fs.copyFile('build/icon-source-v2.png', large);
 await fs.copyFile(large, unknown);
 await fs.writeFile(path.join(f.projectDir, '.env'), 'PRIVATE_TEST_FILE');
 let app, page;
+let stage = 'launch',
+  failure,
+  cleanupFailure,
+  result;
 const errors = [];
+const within = async (operation, ms, label) => {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 const executable =
   process.env.PI_DESKTOP_EXE ||
   (process.argv.includes('--packaged')
@@ -79,6 +101,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   const input = page.getByRole('textbox', { name: '任务输入' });
   await input.waitFor();
+  stage = 'drop and paste images';
   await input.fill('保留原草稿');
   await transfer([large, text], '');
   await imageCount(1);
@@ -94,6 +117,7 @@ try {
     'PASS large images with empty/generic MIME or no extension attach from drop and paste; mixed text remains a reference',
   );
 
+  stage = 'project image reference';
   await input.fill('@大于256K');
   await page.getByRole('option', { name: /^大于256K\s*\.PNG$/ }).click();
   await imageCount(4);
@@ -101,6 +125,7 @@ try {
   assert.deepEqual((await saved()).attachments, ['输入 文件.txt']);
   console.log('PASS project image references become image attachments and avoid text-size limits');
 
+  stage = 'native image picker and invalid images';
   await app.evaluate(({ dialog }, file) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
   }, unknown);
@@ -133,6 +158,7 @@ try {
   await page.getByRole('button', { name: '关闭错误提示', exact: true }).click();
   await page.screenshot({ path: path.join(output, 'attached.png'), animations: 'disabled' });
 
+  stage = 'held image picker';
   const pendingDialog = app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = () =>
       new Promise((resolve) => {
@@ -141,6 +167,9 @@ try {
   });
   await pendingDialog;
   await page.getByRole('button', { name: '添加图片', exact: true }).click();
+  await wait(() => app.evaluate(() => typeof globalThis.finishImagePicker === 'function'));
+  if (process.argv.includes('--inject-pending-picker-failure'))
+    throw new Error('Injected failure while the test image picker is pending');
   await input.fill('选择期间修改后的草稿');
   await page.getByRole('button', { name: '移除图片 image-payload', exact: true }).first().click();
   await imageCount(4);
@@ -153,6 +182,7 @@ try {
   assert.equal((await saved()).draft, '选择期间修改后的草稿');
   console.log('PASS delayed image selection preserves new draft text and intervening removals');
 
+  stage = 'real Pi image delivery';
   await input.fill('IMAGE_INPUT_E2E');
   await page.getByRole('button', { name: '发送任务', exact: true }).click();
   await page.locator('.run-meta .completed').waitFor();
@@ -161,41 +191,82 @@ try {
   assert.equal(images.length, 5);
   assert.ok(images.every((image) => image.image_url.url.startsWith('data:image/png;base64,')));
   assert.deepEqual(errors, []);
-  await fs.writeFile(
-    path.join(output, 'result.json'),
-    JSON.stringify(
-      {
-        passed: true,
-        packaged: Boolean(executable),
-        imageBytes: (await fs.stat(large)).size,
-        checks: [
-          'drop empty MIME',
-          'drop unknown extension',
-          'paste empty MIME',
-          'mixed text and image',
-          'project reference',
-          'native picker',
-          'draft race',
-          'real Pi image delivery',
-        ],
-        rendererErrors: errors,
-      },
-      null,
-      2,
-    ),
-  );
+  result = {
+    passed: true,
+    packaged: Boolean(executable),
+    imageBytes: (await fs.stat(large)).size,
+    checks: [
+      'drop empty MIME',
+      'drop unknown extension',
+      'paste empty MIME',
+      'mixed text and image',
+      'project reference',
+      'native picker',
+      'draft race',
+      'real Pi image delivery',
+    ],
+    rendererErrors: errors,
+  };
   console.log('PASS actual Pi receives all images as PNG image blocks through the local provider');
 } catch (error) {
-  await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
-  throw error;
+  failure = error;
+  // Print before diagnostic/close awaits so cleanup cannot hide the original assertion.
+  console.error(`Image input failed during ${stage}:`, error);
+  const evidence = { stage, error: String(error), rendererErrors: errors };
+  if (page && !page.isClosed()) {
+    evidence.visibleDialogs = await within(
+      page.getByRole('dialog').allTextContents(),
+      3000,
+      'Reading image failure dialogs',
+    ).catch((error) => [String(error)]);
+    await within(
+      page.screenshot({ path: path.join(output, 'failure.png'), timeout: 5000 }),
+      6000,
+      'Image failure screenshot',
+    ).catch((error) => console.error(error.message));
+  }
+  await fs
+    .writeFile(path.join(output, 'failure.json'), JSON.stringify(evidence, null, 2))
+    .catch((error) => console.error('Could not write image failure evidence:', error));
 } finally {
-  // These fixtures do not test quit confirmations; also clean up a failed assertion during startup.
-  await page
-    ?.evaluate(async () => {
-      const { state } = await window.desktop.invoke('bootstrap');
-      await window.desktop.invoke('stop', state.selectedSessionId);
-    })
-    .catch(() => {});
-  await app?.close().catch(() => {});
-  await provider.close();
+  try {
+    if (app) {
+      // Release only the picker owned by this fixture before draining accepted operations.
+      const released = await within(
+        app.evaluate(() => {
+          if (typeof globalThis.finishImagePicker !== 'function') return false;
+          globalThis.finishImagePicker({ canceled: true, filePaths: [] });
+          delete globalThis.finishImagePicker;
+          return true;
+        }),
+        3000,
+        'Releasing the test image picker',
+      );
+      if (released) console.log('CLEANUP released the test image picker');
+      if (page && !page.isClosed())
+        await within(
+          page.evaluate(async () => {
+            const { state } = await window.desktop.invoke('bootstrap');
+            await window.desktop.invoke('stop', state.selectedSessionId);
+          }),
+          5000,
+          'Stopping the image test session',
+        );
+      await within(app.close(), 15000, 'Closing the image test app');
+    }
+  } catch (error) {
+    cleanupFailure = error;
+    console.error('Image test cleanup failed:', error);
+    // Cleanup only, never a passing fallback for an assertion or a failed close.
+    try {
+      app?.process().kill('SIGKILL');
+    } catch {}
+  }
+  await within(provider.close(), 5000, 'Closing the image test provider').catch((error) => {
+    cleanupFailure ??= error;
+    console.error('Image provider cleanup failed:', error);
+  });
 }
+if (failure) throw failure;
+if (cleanupFailure) throw cleanupFailure;
+await fs.writeFile(path.join(output, 'result.json'), JSON.stringify(result, null, 2));

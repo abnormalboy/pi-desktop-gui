@@ -1537,6 +1537,11 @@ async function createWindow() {
           }
         }
         quitting = true;
+        clearTimeout(windowTimer);
+        windowTimer = undefined;
+        // Capture the close-time bounds before persistence/disposal can yield to
+        // late native resize events; still await this write before destroying.
+        const finalWindowWrite = writeWindowState();
         // First await only the already-enqueued filesystem writes. If they fail,
         // the user can stay before any session service has been disposed.
         let discardUnsaved = false;
@@ -1559,9 +1564,7 @@ async function createWindow() {
           if (!discardUnsaved && !(await confirmUnsavedQuit(error, true))) return;
         }
         workspaceWatcher?.dispose();
-        clearTimeout(windowTimer);
-        windowTimer = undefined;
-        await writeWindowState();
+        await finalWindowWrite;
         updates.prepareForQuit(!sessionEnding && (store.storage.writable || !!store.storage.newerFormat));
         updates.dispose();
         window?.destroy();

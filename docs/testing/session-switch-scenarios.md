@@ -75,3 +75,16 @@ The process-exit scenario explicitly terminates A and verifies confirmed cleanup
 - Real Electron scenario timing is **not run locally**: this executor has no DISPLAY, Xvfb or supported display server. The installed Electron binary does not remove that blocker. Native or saved-environment UI acceptance remains required; no new five-scenario latency numbers are claimed here.
 
 Historical v0.14.21 macOS observations such as approximately 26.6 ms DOM / 34.6 ms next-rAF / 700.3 ms selection completion describe distinct milestones. They are not new samples from this change and do not show that all readiness completed at the first fast content observation.
+
+### First packaged macOS samples
+
+The macOS job for [8e896e1, run 39368032913](https://github.com/yeyuProject/pi-desktop-gui/actions/runs/39368032913/job/118449251380) passed all five scenario groups and their ownership/correctness checks. The downloaded `acceptance-macos-latest` artifact matched GitHub's SHA-256 digest `d218e2c98171856043b2ceeddfac11892d595603c824ab6580341e37cb1ccf62`.
+
+- Same-project hot target DOM: 16.6–46.2 ms; maximum next-rAF: 49.6 ms.
+- Four hot cross-directory target DOM observations: 19.6–45.0 ms. Their runtime was already ready at activation.
+- Three cold cross-directory target DOM observations: 43.0, 113.6 and 62.9 ms. Separate catalog phases took 626.9, 511.2 and 455.9 ms; explicit connection readiness took 1502.6, 1228.4 and 1295.8 ms.
+- The 500-message history's cold DOM observation was 167.5 ms (next-rAF 190.4 ms), its hot DOM return 99.6 ms, and its separate explicit connection 1356.5 ms.
+- Rapid A→B→A retained the first two activations as superseded. Final A had target DOM at 6.2 ms and all selection gates settled at 30.7 ms.
+- First-open target DOM was observed at 1337.5 ms from renderer navigation and next-rAF at 1578.1 ms. The observer attached at 602.2 ms, with a test resync from 608.5 to 1225.3 ms: these first-open values are upper bounds, not exact first-paint latency. The separate Node-clock first-window value was 1985.0 ms.
+
+These are samples from the first candidate, not a final-release benchmark or proof that cold readiness is fast. In particular, actual cold runtime startup remained above one second. Historical intermittent spikes, automatic eviction and resource reload remain unresolved or unmeasured as described above.

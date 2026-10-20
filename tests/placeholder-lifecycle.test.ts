@@ -494,6 +494,7 @@ function closeBoundary(
   onQuit: () => void,
   showAppDialog = async (_options: unknown, _fallback: boolean) => ({ response: 0 }),
   waitForOperations = async () => {},
+  writeWindowState = async () => {},
 ) {
   const call = one(
     (node) =>
@@ -517,7 +518,7 @@ function closeBoundary(
       sessionEnding: false,
       workspaceWatcher: undefined,
       configurationWrites: Promise.resolve(),
-      writeWindowState: async () => {},
+      writeWindowState,
       showAppDialog,
       waitForOperations,
     },
@@ -549,6 +550,53 @@ test('actual main close path waits for first draft persistence when no AgentServ
     assert.equal(restarted.session(blank.id).draft, 'first draft, no agent');
   } finally {
     gate.release.resolve();
+    await saving.catch(() => {});
+  }
+});
+
+test('close captures window bounds before persistence waits and awaits the captured write', async (t) => {
+  const f = await fixture(t);
+  const blank = await f.newSession();
+  const gate = holdWriter(t, f.store);
+  const saving = f.handlers.saveDraft(blank.id, 'keep draft while closing', []);
+  await gate.entered.promise;
+  let width = 1420;
+  const capturedWidths: number[] = [];
+  const windowWritten = deferred();
+  const quitCalled = deferred();
+  let quit = false;
+  const close = closeBoundary(
+    f.store,
+    f.agents,
+    () => {
+      quit = true;
+      quitCalled.resolve();
+    },
+    undefined,
+    undefined,
+    () => {
+      capturedWidths.push(width);
+      return windowWritten.promise;
+    },
+  );
+  try {
+    close({ preventDefault: () => {} });
+    width = 1440; // A native resize delivered after close must not replace its snapshot.
+    assert.deepEqual(capturedWidths, [1420]);
+    assert.equal(quit, false);
+    gate.release.resolve();
+    await saving;
+    await nextTurn();
+    assert.equal(quit, false, 'close also waits for the already-captured window write');
+    assert.deepEqual(capturedWidths, [1420], 'shutdown must not recapture the later bounds');
+    windowWritten.resolve();
+    await quitCalled.promise;
+    const restarted = new Store(f.store.dir);
+    await restarted.load();
+    assert.equal(restarted.session(blank.id).draft, 'keep draft while closing');
+  } finally {
+    gate.release.resolve();
+    windowWritten.resolve();
     await saving.catch(() => {});
   }
 });
