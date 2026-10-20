@@ -10,7 +10,7 @@ export function ModelPicker({
   locked,
   thinkingLocked,
   canConnect,
-  connect,
+  loadModels,
   pick,
   setThinking,
   manage,
@@ -23,7 +23,7 @@ export function ModelPicker({
   locked: boolean;
   thinkingLocked: boolean;
   canConnect: boolean;
-  connect: () => void;
+  loadModels: () => void;
   pick: (key: string) => void;
   setThinking: (level: string) => void;
   manage: (target: 'providers' | 'settings') => void;
@@ -62,7 +62,7 @@ export function ModelPicker({
   useEffect(() => {
     if (!visible) return;
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [visible, index]);
+  }, [visible, index, locked]);
   const selection = runtime.nextTask ?? {
     model: runtime.model,
     thinking: runtime.thinking,
@@ -91,7 +91,7 @@ export function ModelPicker({
             ),
           );
           setOpen(!open);
-          if (!open && canConnect && !runtime.connected) connect();
+          if (!open && canConnect && !runtime.connected) loadModels();
         }}
         title={disabledReason || '选择模型'}
         aria-label="选择模型"
@@ -131,18 +131,16 @@ export function ModelPicker({
           <div className="model-list" role="listbox" aria-label="可用模型" ref={list}>
             {!runtime.models.length ? (
               <div className="model-empty">
-                {runtime.status === 'starting' ? (
+                {runtime.modelsLoading || runtime.status === 'starting' ? (
                   <>
                     <LoaderCircle size={16} className="spin" />
-                    正在连接 Pi 读取模型…
+                    正在读取模型…
                   </>
-                ) : !runtime.connected ? (
+                ) : !runtime.modelsLoaded ? (
                   <>
-                    <p>
-                      {runtime.error ? `连接 Pi 失败：${runtime.error}` : '尚未连接 Pi，连接后可读取模型。'}
-                    </p>
-                    <button disabled={!canConnect} onClick={connect}>
-                      重新连接 Pi
+                    <p>{runtime.error ? `读取模型失败：${runtime.error}` : '尚未读取模型列表。'}</p>
+                    <button disabled={!canConnect} onClick={loadModels}>
+                      重新读取模型
                     </button>
                   </>
                 ) : (

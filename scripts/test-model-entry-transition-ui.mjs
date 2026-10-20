@@ -18,7 +18,7 @@ const errors = [],
   protocolEvidence = [];
 const selected = () => page.evaluate(() => window.entryState.selectedSessionId);
 const calls = () => app.evaluate(() => globalThis.entryProbe.calls);
-const connectCalls = async () => (await calls()).filter((call) => call.method === 'connect');
+const modelReadCalls = async () => (await calls()).filter((call) => call.method === 'readModels');
 const gate = (token, method, phase = 'after', id) =>
   app.evaluate(
     (_electron, config) => {
@@ -61,7 +61,7 @@ const capture = async (label) => {
       runtime: window.entryRuntimes.get(id),
     };
   });
-  evidence.push({ label, ...state, connectCalls: await connectCalls() });
+  evidence.push({ label, ...state, modelReadCalls: await modelReadCalls() });
 };
 try {
   app = await electron.launch({
@@ -181,18 +181,32 @@ try {
     await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
     await expect(page.getByRole('dialog', { name: '模型与推理级别' })).toHaveCount(0);
   };
-  const connect = async (id) => {
+  const readModels = async (id) => {
     await expect(button).toBeEnabled();
     await button.click();
     await page.waitForFunction(
       (id) =>
-        window.entryRuntimes.get(id)?.connected && window.entryRuntimes.get(id)?.model?.id === 'local-e2e',
+        Boolean(
+          window.entryRuntimes.get(id)?.modelsLoaded &&
+          !window.entryRuntimes.get(id)?.modelsLoading &&
+          !window.entryRuntimes.get(id)?.connected &&
+          window.entryRuntimes.get(id)?.model?.id === 'local-e2e' &&
+          !document.querySelector('button[aria-label="发送任务"] .spin'),
+        ),
       id,
     );
     await page.locator('.model-list [aria-current="true"]').waitFor();
     assert.equal(await selected(), id);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: '模型与推理级别' })).toHaveCount(0);
+    // Looking up models leaves a blank chat reusable. A real draft makes the
+    // next New Chat action exercise navigation to a different chat.
+    const draft = `Navigation fixture ${id}`;
+    await page.getByRole('textbox', { name: '任务输入' }).fill(draft);
+    await page.waitForFunction(
+      ({ id, draft }) => window.entryState.sessions.find((session) => session.id === id)?.draft === draft,
+      { id, draft },
+    );
   };
   const select = (id) => page.locator(`[data-session-id="${id}"] > button`).first().click();
   const nativeNewChat = () =>
@@ -206,7 +220,7 @@ try {
   await expect(button).toBeDisabled();
   await expect(button).toHaveAttribute('title', '请先启用项目');
   await clickDisabled();
-  assert.deepEqual(await connectCalls(), []);
+  assert.deepEqual(await modelReadCalls(), []);
 
   await gate('new-before', 'newSession', 'before');
   await newChat();
@@ -214,16 +228,16 @@ try {
   await expect(button).toHaveText('会话切换中…');
   await clickDisabled();
   assert.equal(await selected(), f.sessionId);
-  assert.deepEqual(await connectCalls(), []);
+  assert.deepEqual(await modelReadCalls(), []);
   await capture('old untrusted target: early mouse click is disabled');
   await release('new-before');
   await page.waitForFunction((old) => window.entryState.selectedSessionId !== old, f.sessionId);
   const a = await selected();
   await expect(button).toBeEnabled();
-  assert.deepEqual(await connectCalls(), [], 'no deferred intent may connect after selection');
-  await connect(a);
+  assert.deepEqual(await modelReadCalls(), [], 'no deferred intent may connect after selection');
+  await readModels(a);
   assert.deepEqual(
-    (await connectCalls()).map((call) => call.id),
+    (await modelReadCalls()).map((call) => call.id),
     [a],
   );
   console.log(
@@ -237,8 +251,12 @@ try {
     window.entryOldClick = element[key]?.onClick;
     if (typeof window.entryOldClick !== 'function') throw new Error('Missing real picker click callback');
   });
+  await gate('reload-a', 'readModels', 'after', a);
   await button.click();
+  await entered('reload-a');
+  await release('reload-a');
   await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('button[aria-label="发送任务"] .spin'));
   await gate('new-after', 'newSession');
   await newChat();
   await entered('new-after');
@@ -248,14 +266,14 @@ try {
   await capture('new target selected but reply held: entry remains disabled');
   await page.screenshot({ path: path.join(output, 'transition-disabled.png') });
   assert.deepEqual(
-    (await connectCalls()).map((call) => call.id),
-    [a],
+    (await modelReadCalls()).map((call) => call.id),
+    [a, a],
   );
   await release('new-after');
   await expect(button).toBeEnabled();
   assert.deepEqual(
-    (await connectCalls()).map((call) => call.id),
-    [a],
+    (await modelReadCalls()).map((call) => call.id),
+    [a, a],
   );
   await page.evaluate(async () => {
     window.entryOldClick();
@@ -264,12 +282,12 @@ try {
   await expect(page.getByRole('dialog', { name: '模型与推理级别' })).toHaveCount(0);
   await expect(button).toHaveAttribute('aria-expanded', 'false');
   assert.deepEqual(
-    (await connectCalls()).map((call) => call.id),
-    [a],
+    (await modelReadCalls()).map((call) => call.id),
+    [a, a],
     'the old click must neither open a picker for B nor connect a previous target',
   );
   await capture('stale A click after B settles cannot open or connect in the new context');
-  await connect(b);
+  await readModels(b);
   console.log(
     'PASS a selected new target stays disabled until IPC completion; the old picker never carries forward',
   );
@@ -282,7 +300,7 @@ try {
   await page.locator('.error-banner').filter({ hasText: 'TEST_NAVIGATION_CANCELLED' }).waitFor();
   await expect(button).toBeEnabled();
   assert.equal(await selected(), b);
-  assert.equal((await connectCalls()).length, 2);
+  assert.equal((await modelReadCalls()).length, 3);
   await page.locator('.error-banner .icon-button').first().click();
 
   await gate('old-select', 'selectSession', 'after', f.sessionId);
@@ -294,7 +312,7 @@ try {
   await release('old-select');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), b);
-  assert.equal((await connectCalls()).length, 2);
+  assert.equal((await modelReadCalls()).length, 3);
   console.log(
     'PASS failed creation releases the lock, and a newer selection supersedes an old held reply without connecting',
   );
@@ -311,7 +329,7 @@ try {
   await release('select-project');
   await expect(button).toHaveText('请先启用项目');
   await clickDisabled();
-  assert.equal((await connectCalls()).length, 2);
+  assert.equal((await modelReadCalls()).length, 3);
   await select(b);
   await expect(button).toBeEnabled();
   console.log('PASS an older completion cannot unlock a newer pending or untrusted target');
@@ -327,7 +345,7 @@ try {
   await release('menu-overrides-selection');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), menuTarget);
-  assert.equal((await connectCalls()).length, 2);
+  assert.equal((await modelReadCalls()).length, 3);
   const input = page.getByRole('textbox', { name: '任务输入' });
   await input.fill('An explicit task could now be sent');
   await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
@@ -358,17 +376,17 @@ try {
   await release('delete-observed-selection');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), fallback);
-  assert.equal((await connectCalls()).length, 2);
+  assert.equal((await modelReadCalls()).length, 3);
   await capture('deleting the observed target selects a usable fallback despite the late response');
   console.log('PASS deleting an observed target keeps the confirmed fallback usable after its late reply');
 
   await nativeNewChat();
   await page.waitForFunction((id) => window.entryState.selectedSessionId !== id, fallback);
   const freshMenuTarget = await selected();
-  await connect(freshMenuTarget);
+  await readModels(freshMenuTarget);
   assert.deepEqual(
-    (await connectCalls()).map((call) => call.id),
-    [a, b, freshMenuTarget],
+    (await modelReadCalls()).map((call) => call.id),
+    [a, a, b, freshMenuTarget],
   );
 
   await gate('older-observed', 'selectSession', 'after', a);
@@ -382,11 +400,11 @@ try {
   await clickDisabled();
   await release('older-observed');
   await clickDisabled();
-  assert.equal((await connectCalls()).length, 3);
+  assert.equal((await modelReadCalls()).length, 4);
   await release('newer-unobserved');
   await expect(button).toBeEnabled();
   assert.equal(await selected(), b);
-  assert.equal((await connectCalls()).length, 3);
+  assert.equal((await modelReadCalls()).length, 4);
   await capture('external navigation and older completion cannot release a newer unobserved request');
   console.log(
     'PASS external navigation does not release a newer unobserved target; its own completion restores it',
@@ -398,7 +416,7 @@ try {
   await release('failed-confirmation', true);
   await page.locator('.error-banner').filter({ hasText: '无法确认当前会话，请重新选择会话' }).waitFor();
   await clickDisabled();
-  assert.equal((await connectCalls()).length, 3);
+  assert.equal((await modelReadCalls()).length, 4);
   await select(b);
   await expect(button).toBeEnabled();
   await expect(page.locator('.error-banner')).toHaveCount(0);
@@ -573,12 +591,17 @@ try {
     [earlierTarget, bc.id],
   );
   assert.notEqual(bc.id, earlierTarget);
-  assert.equal((await connectCalls()).length, 3);
+  assert.equal((await modelReadCalls()).length, 4);
   await capture('normal B/C/B IPC does not restore or lock the returned B target');
   console.log('PASS real B/C/B through normal IPC unlocks current C without following the returned B');
 
   assert.equal(provider.requests.length, 0, 'navigation/model discovery must not send a model prompt');
-  assert.ok(!(await connectCalls()).some((call) => call.id === f.sessionId));
+  assert.deepEqual(
+    (await calls()).filter((call) => call.method === 'connect'),
+    [],
+    'model discovery must never connect a conversation',
+  );
+  assert.ok(!(await modelReadCalls()).some((call) => call.id === f.sessionId));
   assert.deepEqual(errors, []);
   await fs.writeFile(
     path.join(output, 'result.json'),

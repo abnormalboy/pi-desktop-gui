@@ -131,16 +131,16 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.getByRole('textbox', { name: '任务输入' }).waitFor();
   await observeModelSwitchState();
-  // Opening the model picker explicitly connects; browsing alone leaves Pi stopped.
+  // Opening the model picker reads metadata without connecting the conversation.
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   await page.getByRole('option', { name: /本地验收接口/ }).waitFor();
   await page.keyboard.press('Escape');
-  // A visible composer and bootstrap response can precede Pi's model/capability handshake.
+  // Wait for acknowledged metadata before changing the selected model's thinking level.
   await page.waitForFunction(modelSwitchReady, {
     id: f.sessionId,
     title: f.store.session(f.sessionId).title,
     modelId: 'local-e2e',
-    connected: true,
+    connected: false,
     status: 'idle',
     supportsThinking: 'low',
     readyToType: true,
@@ -149,7 +149,7 @@ try {
   await page.waitForFunction(modelSwitchReady, {
     id: f.sessionId,
     modelId: 'local-e2e',
-    connected: true,
+    connected: false,
     status: 'idle',
     thinking: 'low',
   });

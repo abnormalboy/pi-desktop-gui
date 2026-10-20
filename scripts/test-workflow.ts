@@ -17,6 +17,7 @@ models.providers['local-e2e'].models.push({
   id: 'local-e2e-reasoning',
   name: '本地推理模型',
   reasoning: true,
+  thinkingLevelMap: { max: 'max' },
 });
 await fs.writeFile(path.join(f.agentDir, 'models.json'), JSON.stringify(models));
 const s = new AgentService(f.store, new Workspace(f.dataDir));
@@ -78,7 +79,7 @@ try {
     });
   const beforeRejectedSwitch = preferences();
   await assert.rejects(s.setModel(f.sessionId, 'local-e2e', 'missing-model'), /模型当前不可用/);
-  await assert.rejects(s.setThinking(f.sessionId, 'unsupported-level'), /推理级别无效/);
+  await assert.rejects(s.setThinking(f.sessionId, 'unsupported-level'), /不支持这个推理级别/);
   await assert.rejects(s.setThinking(f.sessionId, 'high'), /不支持这个推理级别/);
   assert.deepEqual(preferences(), beforeRejectedSwitch);
   const rpc = (s as any).rpc;
@@ -113,7 +114,8 @@ try {
   assert.equal((s as any).rpc, rpcBefore, 'model switch must not restart Pi');
   assert.equal(s.runtime.model?.id, 'local-e2e-reasoning');
   assert.ok(s.runtime.thinkingLevels.length > 1);
-  const level = s.runtime.thinkingLevels.find((l) => l !== s.runtime.thinking)!;
+  const level = 'max';
+  assert.ok(s.runtime.thinkingLevels.includes(level), 'real Pi must report max for the selected model');
   const beforeRejectedThinking = preferences();
   rpc.request = async (type: string, ...args: any[]) => {
     if (type !== 'set_thinking_level') return request(type, ...args);

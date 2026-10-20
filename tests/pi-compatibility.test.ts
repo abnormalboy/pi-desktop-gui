@@ -149,6 +149,9 @@ test('regular connections and model probes allow unverified Pi but reject an unr
   const commands = await fs.readFile(path.join(dir, 'commands.jsonl'), 'utf8');
   assert.ok(commands.split('\n').some((line) => line && JSON.parse(line).message === 'Reply with only OK.'));
   await fs.writeFile(path.join(dir, 'fixture-version.txt'), 'no version');
+  // This fixture reads its version from data rather than from its executable.
+  // An explicit check refreshes the same cache that a changed CLI file invalidates.
+  await detectEnvironment(store.state.settings);
   await assert.rejects(service.connect(session.id), /未检测到可识别的 Pi 版本/);
   await assert.rejects(service.testConnection(session.id), /未检测到可识别的 Pi 版本/);
   assert.equal(await fs.readFile(path.join(dir, 'commands.jsonl'), 'utf8'), commands);

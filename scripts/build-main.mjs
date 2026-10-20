@@ -5,7 +5,7 @@ await build({
   platform: 'node',
   format: 'esm',
   outfile: 'dist-electron/pi-bridge.mjs',
-  external: ['@earendil-works/pi-coding-agent'],
+  external: ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai/compat'],
 });
 await build({
   entryPoints: ['electron/main.ts'],

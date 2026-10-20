@@ -82,6 +82,7 @@ export type ComposerProps = Pick<
   | 'acceptDrop'
   | 'openSettings'
   | 'connect'
+  | 'readModels'
   | 'setModel'
   | 'setThinking'
   | 'inspectFile'
@@ -149,6 +150,7 @@ export function Composer(props: ComposerProps) {
     acceptDrop,
     openSettings,
     connect,
+    readModels,
     setModel,
     setThinking,
     inspectFile,
@@ -575,7 +577,7 @@ export function Composer(props: ComposerProps) {
               locked={modelLocked}
               thinkingLocked={modelLocked}
               canConnect={sessionEnabled && !running && !pending}
-              connect={() => void connect()}
+              loadModels={() => void readModels()}
               pick={(key) => void setModel(key)}
               setThinking={(level) => void setThinking(level)}
               manage={(target) =>

@@ -217,6 +217,8 @@ export interface Runtime {
   widgets: Record<string, string[]>;
   statuses: Record<string, string>;
   models: Model[];
+  modelsLoaded: boolean;
+  modelsLoading: boolean;
   thinkingLevels: string[];
   model?: Model;
   thinking?: string;
@@ -429,6 +431,7 @@ export interface ApiMap {
   choosePath: { args: ['pi' | 'node' | 'agent' | 'editor']; result: string | null };
   saveSettings: { args: [Partial<Settings>]; result: void };
   connect: { args: [string]; result: void };
+  readModels: { args: [string]; result: void };
   recover: { args: [string, string?]; result: void };
   testConnection: { args: [string]; result: { elapsed: number; text: string } };
   send: { args: [string, string, string[], SendMode, ImageAttachment[]?]; result: void };
@@ -521,6 +524,8 @@ export const emptyRuntime = (): Runtime => ({
   widgets: {},
   statuses: {},
   models: [],
+  modelsLoaded: false,
+  modelsLoading: false,
   thinkingLevels: [],
   connected: false,
   diagnostic: [],

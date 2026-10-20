@@ -59,7 +59,54 @@ export async function resolvePi(
   }
   return { entry, spec: { command: entry, args: [] } };
 }
-export async function detectEnvironment(settings: Settings, developmentRoot?: string): Promise<Environment> {
+type ResolvedPi = Awaited<ReturnType<typeof resolvePi>>;
+type PiInspection = { environment: Environment; resolved?: ResolvedPi; fingerprint: string };
+let inspection: { key: string; result: Promise<PiInspection> } | undefined;
+
+const environmentKey = (settings: Settings, developmentRoot?: string) =>
+  JSON.stringify([
+    settings.piPath,
+    settings.nodePath,
+    agentDirectory(settings),
+    developmentRoot,
+    process.env.PATH,
+    process.env.Path,
+    process.env.PATHEXT,
+    process.env.ProgramFiles,
+  ]);
+
+async function fingerprint(environment: Environment, resolved?: ResolvedPi) {
+  const files = [
+    resolved?.entry,
+    ...(resolved
+      ? [
+          path.dirname(resolved.entry),
+          path.join(path.dirname(resolved.entry), 'cli-runtime.js'),
+          path.resolve(path.dirname(resolved.entry), '..', 'package.json'),
+          path.resolve(path.dirname(resolved.entry), '..', '..', 'package.json'),
+        ]
+      : []),
+    resolved?.node,
+    environment.git,
+    environment.bash,
+    ...['settings.json', 'auth.json', 'models.json'].map((name) => path.join(environment.agentDir, name)),
+  ].filter((file): file is string => Boolean(file));
+  return JSON.stringify(
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const stat = await fs.stat(file);
+          return [file, stat.size, stat.mtimeMs, stat.ctimeMs];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          return [file, 'missing'];
+        }
+      }),
+    ),
+  );
+}
+
+async function inspectEnvironment(settings: Settings, developmentRoot?: string): Promise<PiInspection> {
   const result: Environment = {
     piPath: '',
     supported: false,
@@ -86,8 +133,9 @@ export async function detectEnvironment(settings: Settings, developmentRoot?: st
       result.bash = candidate;
       break;
     }
+  let resolved: ResolvedPi | undefined;
   try {
-    const resolved = await resolvePi(settings, developmentRoot);
+    resolved = await resolvePi(settings, developmentRoot);
     result.piPath = resolved.entry;
     result.nodePath = resolved.node;
     const { stdout } = await exec(resolved.spec.command, [...resolved.spec.args, '--version'], {
@@ -111,11 +159,45 @@ export async function detectEnvironment(settings: Settings, developmentRoot?: st
         ? '未检测到 Git Bash，命令执行可能失败。请安装 Git for Windows 或配置 shellPath。'
         : '未检测到 bash，命令执行可能失败。请安装 bash 或在 Pi 设置中配置 shellPath。',
     );
-  return result;
+  return { environment: result, resolved, fingerprint: await fingerprint(result, resolved) };
+}
+
+function startInspection(settings: Settings, developmentRoot?: string) {
+  const pending = {
+    key: environmentKey(settings, developmentRoot),
+    result: inspectEnvironment(settings, developmentRoot),
+  };
+  inspection = pending;
+  void pending.result.catch(() => {
+    if (inspection === pending) inspection = undefined;
+  });
+  return pending;
+}
+
+/** An explicit environment check always probes again and refreshes the startup cache. */
+export async function detectEnvironment(settings: Settings, developmentRoot?: string): Promise<Environment> {
+  return (await startInspection(settings, developmentRoot).result).environment;
+}
+
+export async function preparePi(settings: Settings, developmentRoot?: string) {
+  const key = environmentKey(settings, developmentRoot);
+  let pending = inspection?.key === key ? inspection : startInspection(settings, developmentRoot);
+  const cached = await pending.result;
+  if (cached.fingerprint !== (await fingerprint(cached.environment, cached.resolved))) {
+    // Another caller may already have replaced this stale inspection while we checked its files.
+    pending =
+      inspection !== pending && inspection?.key === key
+        ? inspection
+        : startInspection(settings, developmentRoot);
+  }
+  const checked = await pending.result;
+  if (!checked.environment.supported || !checked.resolved) {
+    if (inspection === pending) inspection = undefined;
+    throw new Error(checked.environment.errors.join('\n'));
+  }
+  return { environment: checked.environment, resolved: checked.resolved };
 }
 
 export async function requireSupportedPi(settings: Settings, developmentRoot?: string) {
-  const environment = await detectEnvironment(settings, developmentRoot);
-  if (!environment.supported) throw new Error(environment.errors.join('\n'));
-  return environment;
+  return (await preparePi(settings, developmentRoot)).environment;
 }

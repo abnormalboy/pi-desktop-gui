@@ -100,7 +100,7 @@ The Windows installer and Linux AppImage update themselves in the background (ca
 
 Repeated new-chat requests reuse an untouched blank chat in the same project or standalone scope. Drafts, attachments, custom names, and session model or approval choices are preserved; existing empty entries are only cleaned up after confirmation.
 
-Opening or switching chats restores saved history and drafts without starting Pi. Pi connects when you send a task, open the model picker, or explicitly connect; existing connections and background tasks stay with their own chat. The model picker reads Pi's actual models and reasoning levels. Sending uses your saved model preference or Pi's effective defaults, including project settings. Projects still require trust before Pi starts.
+Opening or switching chats restores saved history and drafts without starting Pi. The model picker uses a short-lived Pi process to read the project's actual models and reasoning levels, without loading the desktop bridge or connecting the conversation. Pi connects the conversation when you send a task or explicitly connect; existing connections and background tasks stay with their own chat. Sending uses your saved model preference or Pi's effective defaults, including project settings. Projects still require trust before Pi starts.
 
 While a new chat or session switch is completing, the model entry shows “会话切换中…” (switching chat), stays disabled, and closes the previous picker. Click again once the target chat is ready; earlier clicks are never forwarded to another chat or used to connect automatically. An untrusted project shows “请先启用项目” (enable the project first).
 

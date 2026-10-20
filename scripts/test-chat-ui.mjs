@@ -69,7 +69,7 @@ const waitForSaved = async (predicate) => {
   throw new Error('Conversation state was not saved');
 };
 // These predicates deliberately return booleans, never Promises (Playwright 1.64).
-function chatSelectionReady({ id, draft, modelId }) {
+function chatSelectionReady({ id, draft, modelId, connected = true }) {
   const selectedId = id ?? window.chatUiState?.selectedSessionId;
   const runtime = window.chatUiRuntimes.get(selectedId);
   const input = document.querySelector('textarea[aria-label="任务输入"]');
@@ -80,7 +80,8 @@ function chatSelectionReady({ id, draft, modelId }) {
     document
       .querySelector(`.session-row[data-session-id="${selectedId}"] > button`)
       ?.getAttribute('aria-current') === 'page' &&
-    runtime?.connected &&
+    runtime?.connected === connected &&
+    (connected || (runtime.modelsLoaded && !runtime.modelsLoading)) &&
     ['idle', 'completed', 'stopped'].includes(runtime.status) &&
     !runtime.configurationPending &&
     (!modelId || runtime.model?.id === modelId) &&
@@ -94,6 +95,7 @@ function allChatRuntimesSettled() {
   return [...window.chatUiRuntimes.values()].every(
     (runtime) =>
       !['starting', 'running', 'waiting', 'retrying', 'compacting', 'stopping'].includes(runtime.status) &&
+      !runtime.modelsLoading &&
       !runtime.configurationPending &&
       !runtime.dialogs?.length,
   );
@@ -150,14 +152,14 @@ const expectSelectedModel = async (model, id) => {
     model.name,
     { timeout: 25000 },
   );
-  lastModelCheck.stage = 'connected selection';
-  await waitForSelection({ id, modelId: model.id });
+  lastModelCheck.stage = 'model metadata loaded';
+  await waitForSelection({ id, modelId: model.id, connected: false });
   const { state, runtime } = await page.evaluate(() => ({
     state: window.chatUiState,
     runtime: window.chatUiRuntimes.get(window.chatUiState.selectedSessionId),
   }));
   assert.equal(state.selectedSessionId, id);
-  assert.equal(runtime.connected, true);
+  assert.equal(runtime.connected, false, 'reading models must not connect the conversation');
   assert.equal(runtime.sessionId, state.selectedSessionId);
   assert.equal(runtime.model.id, model.id);
   const current = page.locator('.model-list [aria-current="true"]');
@@ -230,15 +232,16 @@ try {
 
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   const picker = page.getByRole('dialog', { name: '模型与推理级别' });
-  await picker.getByText(/^连接 Pi 失败：/).waitFor();
+  await picker.getByText(/^读取模型失败：/).waitFor();
   assert.equal(await picker.locator('.spin').count(), 0);
   await page.evaluate((value) => window.desktop.invoke('saveSettings', { piPath: value }), piPath);
-  await picker.getByRole('button', { name: '重新连接 Pi', exact: true }).click();
-  await picker.getByText('正在连接 Pi 读取模型…', { exact: true }).waitFor();
+  await picker.getByRole('button', { name: '重新读取模型', exact: true }).click();
+  await picker.getByText('正在读取模型…', { exact: true }).waitFor();
   await page.waitForFunction(
     () =>
-      document.querySelector('.stop-button')?.textContent.trim() === '取消连接' &&
-      document.querySelector('.run-meta')?.textContent.includes('正在连接 Pi') &&
+      !window.chatUiRuntimes.get(window.chatUiState.selectedSessionId)?.connected &&
+      !document.querySelector('.stop-button') &&
+      !document.querySelector('.run-meta')?.textContent.includes('正在连接 Pi') &&
       !document.querySelector('select[aria-label="运行中发送方式"]') &&
       !document.querySelector('.elapsed'),
   );
@@ -246,6 +249,7 @@ try {
     .getByRole('option', { name: /local-e2e/ })
     .first()
     .waitFor({ timeout: 25000 });
+  await waitForSelection({ connected: false });
   const search = picker.getByRole('textbox', { name: '搜索模型' });
   const lastModel = extraModels.at(-1);
   await search.fill(lastModel.id);
@@ -272,17 +276,25 @@ try {
     return selected.top >= bounds.top - 1 && selected.bottom <= bounds.bottom + 1;
   };
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await waitForSelection({ connected: false });
   await page.waitForFunction(currentModelVisible);
   await search.press('Escape');
   await picker.waitFor({ state: 'detached' });
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await waitForSelection({ connected: false });
   await page.waitForFunction(currentModelVisible);
   await search.fill(baseModel.name);
   await search.press('Enter');
   await picker.waitFor({ state: 'detached' });
   await waitForSaved((state) => state.settings.modelId === baseModel.id);
   await page.locator('.run-meta .status.idle').waitFor({ timeout: 25000 });
-  console.log('PASS model picker connection failure/retry, IME confirmation and reopen scroll');
+  console.log('PASS model metadata failure/retry without connecting, IME confirmation and reopen scroll');
+  // Saving a path through IPC skips the settings form's environment refresh.
+  // Use the actual check action before testing the configured provider.
+  await page.getByRole('button', { name: '检查运行环境', exact: true }).click();
+  await page.getByRole('button', { name: '重新检测', exact: true }).click();
+  await page.locator('.readiness').waitFor({ state: 'detached' });
+  await page.getByRole('button', { name: '关闭', exact: true }).last().click();
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
   await picker.getByRole('button', { name: '连接设置', exact: true }).click();
   await page.getByRole('combobox', { name: '选择模型', exact: true }).waitFor({ state: 'visible' });
@@ -480,9 +492,10 @@ try {
   const requestsDuringReply = provider.requests.length;
   const parallelId = await newStandalone(() => page.getByRole('button', { name: /^新建对话/ }).click());
   await page.getByText('有什么想聊的？', { exact: true }).waitFor();
-  // Explicit model loading connects the new chat while A keeps streaming.
+  // Model metadata loads without connecting the new chat while A keeps streaming.
   await expectSelectedModel(baseModel, parallelId);
   await page.getByRole('button', { name: '选择模型', exact: true }).click();
+  await waitForSelection({ id: parallelId, modelId: baseModel.id, connected: false });
   assert.equal(await page.getByRole('option').first().isEnabled(), true);
   await page.keyboard.press('Escape');
   await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
@@ -491,7 +504,7 @@ try {
     runtime: window.chatUiRuntimes.get(window.chatUiState.selectedSessionId),
   }));
   assert.notEqual(independent.selectedId, active.sessionId);
-  assert.equal(independent.runtime.connected, true);
+  assert.equal(independent.runtime.connected, false);
   assert.equal(independent.runtime.model.id, baseModel.id);
   const duringReply = await page.evaluate((id) => window.chatUiRuntimes.get(id), active.sessionId);
   assert.equal(duringReply.status, 'running', 'creating a chat must leave the existing response running');
@@ -505,7 +518,7 @@ try {
   );
   await page.evaluate((id) => window.desktop.invoke('stop', id), active.sessionId);
   await page.waitForFunction((id) => window.chatUiRuntimes.get(id)?.status === 'stopped', active.sessionId);
-  await waitForSelection({ id: independent.selectedId, modelId: baseModel.id });
+  await waitForSelection({ id: independent.selectedId, modelId: baseModel.id, connected: false });
   assert.equal(
     await page.evaluate((id) => window.chatUiRuntimes.get(id)?.status, independent.selectedId),
     'idle',
@@ -531,7 +544,7 @@ try {
         checks: [
           'zero-project startup',
           'model picker and connection probe',
-          'model picker connection failure and retry',
+          'model metadata failure and retry without connecting',
           'model picker IME confirmation',
           'model picker current model visible after reopening',
           'plain @ text',
@@ -541,7 +554,7 @@ try {
           'cold new chat model initialization and checked picker item',
           'model initialization sends no provider request and respects project trust',
           'new chat initializes independently without interrupting a running response',
-          'stopping a background response leaves the selected chat connected',
+          'stopping a background response leaves the selected chat usable without connecting',
           'independent histories',
           'draft/history restart',
           'search',
@@ -568,7 +581,7 @@ try {
       const selected = window.chatUiState?.sessions.find((session) => session.id === id);
       const runtime = window.chatUiRuntimes?.get(id);
       const retry = [...document.querySelectorAll('.model-picker button')].find(
-        (button) => button.textContent === '重新连接 Pi',
+        (button) => button.textContent === '重新读取模型',
       );
       return {
         selectedId: id,

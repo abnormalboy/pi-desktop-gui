@@ -463,10 +463,13 @@ test('a queued authoritative state invalidates old model actions before React co
   const c = p.store.state.selectedSessionId!;
   assert.equal(p.f.current.selected?.id, p.original.id);
   await old.connect();
+  await old.readModels();
   await old.setModel('provider::model');
   await old.setThinking('high');
   const modelCalls = () =>
-    p.trace.filter((entry) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(entry.method!));
+    p.trace.filter((entry) =>
+      ['connect', 'readModels', 'setSessionModel', 'setSessionThinking'].includes(entry.method!),
+    );
   assert.deepEqual(modelCalls(), []);
   p.f.commitState();
   p.f.flush();
@@ -1276,26 +1279,34 @@ test('unchanged selected state and recovered background sessions are not externa
   f.unmount();
 });
 
-test('an old connect callback cannot connect after navigation starts, even before the next render', async () => {
+test('old connection and model catalog callbacks cannot run after navigation starts, even before the next render', async () => {
   const next = deferred<types.Session>();
   const calls: string[] = [];
   const f = harness((method) => {
     calls.push(method);
     return method === 'newSession' ? next.promise : Promise.resolve([]);
   });
-  const oldConnect = f.current.connect;
+  const oldConnect = f.current.connect,
+    oldReadModels = f.current.readModels;
   const changing = f.current.createSession();
   await oldConnect();
+  await oldReadModels();
   assert.ok(!calls.includes('connect'));
+  assert.ok(!calls.includes('readModels'));
   f.flush();
   await f.current.connect();
+  await f.current.readModels();
   assert.ok(!calls.includes('connect'));
+  assert.ok(!calls.includes('readModels'));
   next.resolve(session('B'));
   await changing;
   f.select('B');
   f.flush();
+  await f.current.readModels();
+  await f.settle();
   await f.current.connect();
   await f.settle();
+  assert.equal(calls.filter((call) => call === 'readModels').length, 1);
   assert.equal(calls.filter((call) => call === 'connect').length, 1);
   f.unmount();
 });
@@ -1347,19 +1358,25 @@ test('an external selection change invalidates every old model action without re
   f.select('B');
   // Deliberately do not flush effects, including any selection cleanup.
   await previous.connect();
+  await previous.readModels();
   await previous.setModel('provider::model');
   await previous.setThinking('high');
   assert.deepEqual(
-    calls.filter((call) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(call.method)),
+    calls.filter((call) =>
+      ['connect', 'readModels', 'setSessionModel', 'setSessionThinking'].includes(call.method),
+    ),
     [],
   );
   f.view.storage.writable = false;
   f.select('B');
   await f.current.connect();
+  await f.current.readModels();
   await f.current.setModel('provider::model');
   await f.current.setThinking('high');
   assert.deepEqual(
-    calls.filter((call) => ['connect', 'setSessionModel', 'setSessionThinking'].includes(call.method)),
+    calls.filter((call) =>
+      ['connect', 'readModels', 'setSessionModel', 'setSessionThinking'].includes(call.method),
+    ),
     [],
     'a disabled target must reject model actions as well as connections',
   );

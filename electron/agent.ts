@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { load as loadYaml } from 'js-yaml';
 import { PiRpc } from './rpc';
-import { agentDirectory, requireSupportedPi, resolvePi } from './environment';
+import { agentDirectory, preparePi } from './environment';
 import { Store, readSessionFile } from './store';
 import { Workspace, attachmentPrompt } from './workspace';
 import { CheckpointRecorder, type WorkspaceRequest } from './checkpoint-recorder';
@@ -93,6 +94,7 @@ const sessionActivityEvents = new Set([
 export class AgentService extends EventEmitter {
   runtime: Runtime = emptyRuntime();
   private rpc?: PiRpc;
+  private modelReader?: PiRpc;
   private publishing?: NodeJS.Timeout;
   private operation = Promise.resolve();
   private settingsOperation = Promise.resolve();
@@ -133,6 +135,7 @@ export class AgentService extends EventEmitter {
       busy(this.runtime.status) ||
       this.probing ||
       this.connecting ||
+      this.runtime.modelsLoading ||
       this.unsafeExit ||
       this.runtime.dialogs.length > 0
     );
@@ -625,7 +628,7 @@ export class AgentService extends EventEmitter {
           ? { ...record, title: `允许 ${approval.toolName}？`, approval, expiresAt }
           : { ...record, expiresAt },
       );
-      if (!this.stopRequested) this.status('waiting');
+      if (!this.stopRequested && !this.modelReader) this.status('waiting');
       if (record.timeout)
         this.dialogTimers.set(
           record.id,
@@ -667,7 +670,7 @@ export class AgentService extends EventEmitter {
     )
       throw new Error('请选择有效选项');
     if (denyWithReason) values = { value: values.value!.slice(0, APPROVAL_DENY.length + 1 + 2000) };
-    await this.rpc?.write({ type: 'extension_ui_response', id, ...values });
+    await (this.modelReader ?? this.rpc)?.write({ type: 'extension_ui_response', id, ...values });
     const timer = this.dialogTimers.get(id);
     if (timer) clearTimeout(timer);
     this.dialogTimers.delete(id);
@@ -740,6 +743,119 @@ export class AgentService extends EventEmitter {
       await this.ensureConnected(sessionId);
       await this.applyPendingConfiguration();
     });
+  }
+  readModels(sessionId: string) {
+    return this.exclusive(async () => {
+      if (this.runtime.connected && this.runtime.sessionId === sessionId) return;
+      const session = this.store.session(sessionId);
+      const settings = this.store.state.settings;
+      const wanted =
+        session.model ??
+        (!session.file && settings.provider && settings.modelId
+          ? { provider: settings.provider, id: settings.modelId }
+          : undefined);
+      await this.readModelCatalog(sessionId, wanted, session.thinking, false);
+    });
+  }
+  /** Read Pi's real project/provider metadata without creating a conversation or loading the desktop bridge. */
+  private async readModelCatalog(
+    sessionId: string,
+    model?: Session['model'],
+    thinking?: string,
+    requireModel = true,
+  ) {
+    const epoch = this.stopEpoch;
+    await this.crashCleanup;
+    this.assertCommandsStopped();
+    this.store.assertWritable();
+    if (this.shutdown) throw new Error('应用正在关闭，请稍后重新打开');
+    const session = this.store.session(sessionId);
+    const project = session.projectId ? this.store.project(session.projectId) : undefined;
+    if (project && !project.trusted) throw new Error('请先确认此项目可以由 Pi 读取、修改和执行命令');
+    await this.beforeConnect?.('connect');
+    const cwd = await this.store.sessionDirectory(sessionId);
+    if (this.shutdown || epoch !== this.stopEpoch) throw new Error('读取模型已取消');
+    this.runtime.sessionId = sessionId;
+    this.runtime.cwd = cwd;
+    this.stopRequested = false;
+    this.setError();
+    this.runtime.modelsLoading = true;
+    this.publish(true);
+    const reader = new PiRpc();
+    this.modelReader = reader;
+    reader.on('diagnostic', (message) => this.diagnostic(message));
+    reader.on('event', (event) => {
+      if (
+        event.type === 'extension_ui_request' &&
+        ['select', 'confirm', 'input', 'editor', 'notify'].includes(event.method)
+      )
+        this.extension(event);
+    });
+    let temporarySessionDir: string | undefined;
+    try {
+      // Pi restores branch selections itself. Give it a disposable copy so reading an old
+      // conversation cannot append metadata or change the original session file.
+      if (session.file) {
+        temporarySessionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-desktop-models-'));
+        await fs.copyFile(session.file, path.join(temporarySessionDir, 'session.jsonl'));
+      }
+      const { environment, resolved } = await preparePi(this.store.state.settings, this.developmentRoot);
+      if (this.shutdown || this.stopRequested || epoch !== this.stopEpoch) throw new Error('读取模型已取消');
+      reader.start(
+        resolved.spec,
+        cwd,
+        [
+          '--mode',
+          'rpc',
+          ...(temporarySessionDir
+            ? ['--session', path.join(temporarySessionDir, 'session.jsonl')]
+            : ['--no-session']),
+          '--no-tools',
+          '--no-mcp',
+          '--no-skills',
+          '--no-context-files',
+          '--no-prompt-templates',
+          '--no-themes',
+          ...(project?.trusted ? ['--approve'] : []),
+        ],
+        {
+          PI_CODING_AGENT_DIR: agentDirectory(this.store.state.settings),
+          PI_TELEMETRY: '0',
+          ...piShellEnvironment(environment.bash),
+        },
+      );
+      await reader.request('get_state', {}, 120000);
+      const available = await reader.request('get_available_models');
+      const modelAvailable =
+        !model || available.models.some((item) => item.provider === model.provider && item.id === model.id);
+      if (model && (requireModel || modelAvailable))
+        await reader.request('set_model', { provider: model.provider, modelId: model.id });
+      if (thinking) await reader.request('set_thinking_level', { level: thinking });
+      const [state, levels] = await Promise.all([
+        reader.request('get_state'),
+        reader.request('get_available_thinking_levels'),
+      ]);
+      if (this.shutdown || this.stopRequested || epoch !== this.stopEpoch) throw new Error('读取模型已取消');
+      this.runtime.models = available.models.map(displayModel).filter((item): item is Model => Boolean(item));
+      this.runtime.modelsLoaded = true;
+      this.runtime.model = modelAvailable ? displayModel(state.model) : undefined;
+      this.runtime.thinking = state.thinkingLevel;
+      this.runtime.thinkingLevels = modelAvailable ? levels.levels : [];
+      this.runtime.connected = false;
+    } catch (error) {
+      this.setError(errorText(error));
+      throw error;
+    } finally {
+      try {
+        await reader.close();
+      } finally {
+        this.modelReader = undefined;
+        this.clearDialogs();
+        this.runtime.modelsLoading = false;
+        this.publish(true);
+        if (temporarySessionDir) await fs.rm(temporarySessionDir, { recursive: true, force: true });
+      }
+    }
   }
   assertCommandsStopped() {
     if (this.unsafeExit)
@@ -831,8 +947,7 @@ export class AgentService extends EventEmitter {
     this.connecting = true;
     this.status('starting');
     try {
-      const environment = await requireSupportedPi(this.store.state.settings, this.developmentRoot);
-      const resolved = await resolvePi(this.store.state.settings, this.developmentRoot);
+      const { environment, resolved } = await preparePi(this.store.state.settings, this.developmentRoot);
       if (this.stopRequested) throw new Error('启动已取消');
       const rpc = new PiRpc();
       this.rpc = rpc;
@@ -1243,6 +1358,11 @@ export class AgentService extends EventEmitter {
             thinking: options.thinking,
             thinkingLevels: options.thinkingLevels,
           };
+        } else {
+          await this.exclusive(() =>
+            this.readModelCatalog(id, { provider, id: modelId }, session.thinking ?? this.runtime.thinking),
+          );
+          session.thinking = this.runtime.thinking;
         }
         session.model = { provider, id: modelId };
         if (!busy(this.runtime.status))
@@ -1265,8 +1385,6 @@ export class AgentService extends EventEmitter {
     });
   }
   setThinking(id: string, level: string) {
-    if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(level))
-      return Promise.reject(new Error('推理级别无效，请从模型提供的级别中选择'));
     return this.preference(async () => {
       const session = this.store.session(id);
       const previous = { thinking: session.thinking, nextTask: this.runtime.nextTask };
@@ -1281,6 +1399,9 @@ export class AgentService extends EventEmitter {
               thinking: level,
               thinkingLevels: levels,
             };
+        } else if (this.runtime.sessionId === id && this.runtime.models.length) {
+          if (!this.runtime.thinkingLevels.includes(level)) throw new Error('所选模型不支持这个推理级别');
+          this.runtime.thinking = level;
         }
         session.thinking = level;
         if (!busy(this.runtime.status))
@@ -1478,6 +1599,7 @@ export class AgentService extends EventEmitter {
     this.runtime.models = ((await this.rpc.request('get_available_models')).models ?? [])
       .map(displayModel)
       .filter((model): model is Model => Boolean(model));
+    this.runtime.modelsLoaded = true;
     const options = await this.rpc.bridge('options');
     this.runtime.autoRetry = options.autoRetry;
     this.runtime.approvalMode = options.approvalMode ?? 'auto';
@@ -1746,12 +1868,18 @@ export class AgentService extends EventEmitter {
       await this.rpc!.request('set_session_name', { name });
   }
   async stop() {
-    if (!busy(this.runtime.status)) return;
-    const wasConnecting = this.connecting;
+    if (!busy(this.runtime.status) && !this.modelReader) return;
+    const wasConnecting = this.connecting || Boolean(this.modelReader);
     this.stopEpoch++;
     this.stopRequested = true;
     this.runtime.stopStartedAt = Date.now();
     this.status('stopping');
+    if (this.modelReader) {
+      await this.modelReader.killTree();
+      this.clearDialogs();
+      this.status('stopped');
+      return;
+    }
     if (!this.rpc || this.rpc.closed) {
       this.status('stopped');
       if (!wasConnecting) this.activity();
@@ -1800,6 +1928,7 @@ export class AgentService extends EventEmitter {
     const wasRunning = busy(this.runtime.status) && !this.connecting;
     this.stopEpoch++;
     this.stopRequested = true;
+    await this.modelReader?.killTree();
     await this.rpc?.killTree();
     this.activeWriteTargets.clear();
     if (this.runtime.sessionId)
@@ -1842,8 +1971,7 @@ export class AgentService extends EventEmitter {
     let failure = '';
     let timer: NodeJS.Timeout | undefined;
     try {
-      await requireSupportedPi(settings, this.developmentRoot);
-      const resolved = await resolvePi(settings, this.developmentRoot);
+      const { resolved } = await preparePi(settings, this.developmentRoot);
       const settled = new Promise<void>((resolve, reject) => {
         probe.on('event', (e) => {
           if (e.type === 'message_end' && e.message?.role === 'assistant') {
@@ -1914,6 +2042,7 @@ export class AgentService extends EventEmitter {
     this.stopEpoch++;
     this.stopRequested = true;
     if (this.publishing) clearTimeout(this.publishing);
+    await this.modelReader?.close();
     await this.probe?.close();
     if (busy(this.runtime.status)) {
       await this.stop().catch(() => {});

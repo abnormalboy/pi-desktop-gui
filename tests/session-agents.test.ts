@@ -124,6 +124,57 @@ test('concurrent thinking preferences remain session choices without overwriting
   });
 });
 
+test('thinking choices follow the levels synchronized from Pi, including max and newly supplied levels', async (t) => {
+  const { agents, store, a } = await fixture(t);
+  await fs.writeFile(
+    path.join(store.state.settings.agentDir, 'control.json'),
+    JSON.stringify({ thinkingLevels: { test: ['off', 'max', 'future-level'] } }),
+  );
+  const agent = agents.get(a.id);
+  await agent.connect(a.id);
+  assert.deepEqual(agent.runtime.thinkingLevels, ['off', 'max', 'future-level']);
+  for (const level of ['max', 'future-level']) {
+    await agent.setThinking(a.id, level);
+    assert.equal(agent.runtime.thinking, level);
+    assert.equal(store.session(a.id).thinking, level);
+    assert.equal(store.state.settings.thinking, level);
+  }
+  const preferences = () =>
+    structuredClone({
+      thinking: store.session(a.id).thinking,
+      settings: store.state.settings,
+      runtimeThinking: agent.runtime.thinking,
+      nextTask: agent.runtime.nextTask,
+    });
+  const before = preferences();
+  await assert.rejects(agent.setThinking(a.id, 'low'), /所选模型不支持这个推理级别/);
+  await assert.rejects(agent.setThinking(a.id, 'unsupported-level'), /所选模型不支持这个推理级别/);
+  assert.deepEqual(preferences(), before);
+});
+
+test('pending thinking choices use the next model levels rather than the current model levels', async (t) => {
+  const { agents, store, a } = await fixture(t);
+  await fs.writeFile(
+    path.join(store.state.settings.agentDir, 'control.json'),
+    JSON.stringify({ thinkingLevels: { test: ['off', 'high'], 'test-next': ['off', 'max'] } }),
+  );
+  const agent = agents.get(a.id);
+  await agent.send(a.id, 'hold', [], 'steer');
+  await agent.setModel(a.id, 'fixture', 'test-next');
+  await agent.setThinking(a.id, 'max');
+  assert.equal(agent.runtime.model?.id, 'test');
+  assert.equal(agent.runtime.thinking, 'off');
+  assert.equal(agent.runtime.nextTask?.thinking, 'max');
+  await assert.rejects(agent.setThinking(a.id, 'high'), /所选模型不支持这个推理级别/);
+  assert.equal(agent.runtime.nextTask?.thinking, 'max');
+  assert.equal(store.session(a.id).thinking, 'max');
+  await agent.stop();
+  await agent.send(a.id, 'hold', [], 'steer');
+  assert.equal(agent.runtime.model?.id, 'test-next');
+  assert.equal(agent.runtime.thinking, 'max');
+  assert.equal(agent.runtime.nextTask, undefined);
+});
+
 test('model and thinking changes stay pending through running supplements and apply on a new task', async (t) => {
   const { agents, a } = await fixture(t);
   const agent = agents.get(a.id);

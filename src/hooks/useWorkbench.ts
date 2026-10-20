@@ -492,6 +492,11 @@ export function useWorkbench() {
     await action(() => api.invoke('connect', selected.id));
     void detect();
   }
+  async function readModels() {
+    if (!selected || !currentModelTarget() || pending || ownRunning) return;
+    setError('');
+    await action(() => api.invoke('readModels', selected.id));
+  }
   async function chooseSettingPath(kind: 'pi' | 'node' | 'agent' | 'editor') {
     const p = await attempt(() => api.invoke('choosePath', kind));
     if (p)
@@ -718,6 +723,7 @@ export function useWorkbench() {
     selectSession,
     openSettings,
     connect,
+    readModels,
     toggleTool,
     messageContext,
     error,

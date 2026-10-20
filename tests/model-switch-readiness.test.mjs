@@ -20,7 +20,7 @@ function harness() {
   const runtime = {
     sessionId: 'A',
     status: 'idle',
-    connected: true,
+    connected: startup.connected,
     model: { id: 'local-e2e' },
     thinking: 'low',
     thinkingLevels: ['off', 'low', 'high'],
@@ -72,9 +72,9 @@ for (const [name, arrange] of [
     },
   ],
   [
-    'disconnected runtime',
+    'unexpected connection state',
     ({ runtime }) => {
-      runtime.connected = false;
+      runtime.connected = !startup.connected;
     },
   ],
   [
@@ -169,7 +169,7 @@ for (const [name, arrange] of [
   });
 }
 
-test('startup gate becomes true only after the real connection/model/capability handshake', () => {
+test('startup gate becomes true only after model and capability metadata are acknowledged', () => {
   const h = harness();
   h.runtime.status = 'starting';
   h.runtime.connected = false;
@@ -178,9 +178,9 @@ test('startup gate becomes true only after the real connection/model/capability 
   h.ui.pending = true;
   assert.equal(h.ready(), false);
   h.runtime.status = 'idle';
-  h.runtime.connected = true;
+  h.runtime.connected = startup.connected;
   h.runtime.model = { id: 'local-e2e' };
-  assert.equal(h.ready(), false, 'model and connection alone do not imply low support');
+  assert.equal(h.ready(), false, 'model selection alone does not imply low support');
   h.runtime.thinkingLevels = ['off', 'low', 'high'];
   assert.equal(h.ready(), false, 'renderer startup action must settle too');
   h.ui.pending = false;

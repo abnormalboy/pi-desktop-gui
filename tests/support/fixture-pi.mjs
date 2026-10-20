@@ -50,6 +50,8 @@ const config = () => {
     return {};
   }
 };
+const thinkingLevels = (modelId = selectedModel.id) =>
+  config().thinkingLevels?.[modelId] ?? ['off', 'low', 'high'];
 const io = readline.createInterface({ input: process.stdin });
 io.on('line', (line) => {
   const r = JSON.parse(line);
@@ -76,7 +78,7 @@ io.on('line', (line) => {
       respond(r, { models });
       break;
     case 'get_available_thinking_levels':
-      respond(r, { levels: ['off', 'low', 'high'] });
+      respond(r, { levels: thinkingLevels() });
       break;
     case 'set_thinking_level':
       selectedThinking = r.level;
@@ -141,7 +143,7 @@ io.on('line', (line) => {
             request.method === 'task_options'
               ? {
                   thinking: request.params.thinking,
-                  thinkingLevels: ['off', 'low', 'high'],
+                  thinkingLevels: thinkingLevels(request.params.modelId),
                 }
               : {
                   protocolVersion: 3,

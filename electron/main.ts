@@ -881,6 +881,10 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     await service.get(id).connect(id);
   },
+  readModels: async (id) => {
+    text(id, 100);
+    await service.get(id).readModels(id);
+  },
   recover: async (id, prompt) => {
     text(id, 100);
     if (prompt !== undefined) text(prompt);
@@ -1677,6 +1681,7 @@ else {
             changesEngineSettings ||
             [
               'connect',
+              'readModels',
               'recover',
               'send',
               'selectSession',
@@ -1739,6 +1744,7 @@ else {
             const sessionOperation =
               [
                 'connect',
+                'readModels',
                 'send',
                 'recover',
                 'compact',
