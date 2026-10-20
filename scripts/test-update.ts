@@ -26,7 +26,7 @@ import writeWindowsUpdateFileChecks from './after-sign.mjs';
 // The fixture has its own installer GUID and never installs or removes the user's Pi Desktop.
 if (!['win32', 'linux'].includes(process.platform)) throw new Error('Update roundtrip runs on Windows/Linux');
 const exec = promisify(execFile);
-const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-update-roundtrip-'));
+const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pi-update-roundtrip-')));
 const name = 'pi-desktop-update-fixture-' + randomUUID().slice(0, 8);
 const guid = randomUUID();
 const productName = 'Pi Update Fixture ' + name.slice(-8);
