@@ -39,6 +39,7 @@
     "appId": "io.yeyuproject.pi-desktop",
     "productName": "Pi Desktop",
     "afterPack": "scripts/after-pack.mjs",
+    "afterSign": "scripts/after-sign.mjs",
     "directories": {
       "output": "release"
     },
@@ -67,9 +68,11 @@
       "artifactName": "Pi-Desktop-${version}-win-x64.exe"
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": true,
       "perMachine": false,
       "allowElevation": false,
+      "packElevateHelper": false,
       "deleteAppDataOnUninstall": false,
       "artifactName": "Pi-Desktop-${version}-win-x64-setup.exe"
     },

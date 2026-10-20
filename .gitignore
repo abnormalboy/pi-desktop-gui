@@ -8,6 +8,7 @@ release/
 work/
 test-results/
 output/playwright/
+build/update-files-*.nsh
 .env
 .env.*
 *.log

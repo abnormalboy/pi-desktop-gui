@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
@@ -20,6 +20,7 @@ import {
 } from 'playwright';
 import { extractFile } from '@electron/asar';
 import { Store } from '../electron/store';
+import writeWindowsUpdateFileChecks from './after-sign.mjs';
 
 // Build two copies of the production app. Only identity, data directory and update transport differ.
 // The fixture has its own installer GUID and never installs or removes the user's Pi Desktop.
@@ -102,6 +103,51 @@ const env: Record<string, string> = Object.fromEntries(
 env.PI_OFFLINE = '1';
 env.APPIMAGE_EXTRACT_AND_RUN = '1';
 delete env.PI_DESKTOP_DATA_DIR;
+const startMenuShortcut =
+  process.platform === 'win32'
+    ? path.join(env.APPDATA, 'Microsoft/Windows/Start Menu/Programs', productName + '.lnk')
+    : '';
+const fixtureWindowsState = async (target = '') => {
+  const { stdout } = await exec(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+if (-not (Test-Path -LiteralPath $env:PI_UPDATE_LINK)) { throw 'Fixture shortcut is missing' }
+$shell = New-Object -ComObject WScript.Shell
+$link = $shell.CreateShortcut($env:PI_UPDATE_LINK)
+if ($env:PI_UPDATE_TARGET) {
+  $link.TargetPath = $env:PI_UPDATE_TARGET
+  $link.WorkingDirectory = [System.IO.Path]::GetDirectoryName($env:PI_UPDATE_TARGET)
+  $link.Save()
+}
+[pscustomobject]@{
+  shortcut = $shell.CreateShortcut($env:PI_UPDATE_LINK).TargetPath
+  registeredDirectory = (Get-ItemProperty -LiteralPath ('Registry::HKEY_CURRENT_USER\\Software\\' + $env:PI_UPDATE_GUID) -Name InstallLocation).InstallLocation
+} | ConvertTo-Json -Compress`,
+    ],
+    {
+      env: { ...env, PI_UPDATE_LINK: startMenuShortcut, PI_UPDATE_TARGET: target, PI_UPDATE_GUID: guid },
+      windowsHide: true,
+      timeout: 10000,
+    },
+  );
+  return JSON.parse(stdout) as { shortcut: string; registeredDirectory: string };
+};
+const directorySnapshot = async (directory: string) => {
+  const hashes: [string, string][] = [];
+  for (const file of (await fs.readdir(directory, { recursive: true })).sort()) {
+    const absolute = path.join(directory, file);
+    if (!(await fs.stat(absolute)).isFile()) continue;
+    const hash = createHash('sha512');
+    for await (const chunk of createReadStream(absolute)) hash.update(chunk);
+    hashes.push([file, hash.digest('hex')]);
+  }
+  return hashes;
+};
 let app: ElectronApplication | undefined;
 let portableBrowser: Browser | undefined;
 let portableProcess: ChildProcess | undefined;
@@ -131,7 +177,7 @@ fixtureElectron.app.on('session-created', session => session.webRequest.onBefore
 fixtureElectron.app.on('browser-window-created', (_, window) => window.webContents.once('did-finish-load', async () => {
   try {
     const bootstrap = await window.webContents.executeJavaScript('window.desktop.invoke("bootstrap")');
-    fixtureFs.writeFileSync(fixturePath.join(fixtureCase.dataDir, 'boot-' + fixtureElectron.app.getVersion() + '.json'), JSON.stringify({version:fixtureElectron.app.getVersion(),bootstrap,pid:process.pid,defaultDataDir:fixtureDefaultDataDir}));
+    fixtureFs.writeFileSync(fixturePath.join(fixtureCase.dataDir, 'boot-' + fixtureElectron.app.getVersion() + '.json'), JSON.stringify({version:fixtureElectron.app.getVersion(),executable:process.execPath,bootstrap,pid:process.pid,defaultDataDir:fixtureDefaultDataDir}));
     if (fixtureElectron.app.getVersion() === '${nextVersion}') setTimeout(() => fixtureElectron.app.quit(), 2500);
   } catch (error) { fixtureFs.writeFileSync(fixturePath.join(fixtureRoot, 'boot-error.txt'), String(error)); }
 }));
@@ -142,8 +188,29 @@ try {
       out = path.join(root, version, 'out');
     await fs.mkdir(path.join(stage, 'build'), { recursive: true });
     await fs.mkdir(path.join(stage, 'dist-electron'), { recursive: true });
-    for (const icon of ['icon.png', 'icon-mac.png', 'icon.ico'])
-      await fs.copyFile(path.resolve('build', icon), path.join(stage, 'build', icon));
+    for (const file of ['icon.png', 'icon-mac.png', 'icon.ico', 'installer.nsh'])
+      await fs.copyFile(path.resolve('build', file), path.join(stage, 'build', file));
+    if (process.platform === 'win32' && version === nextVersion) {
+      const include = path.join(stage, 'build/installer.nsh');
+      const source = await fs.readFile(include, 'utf8');
+      const marker = '      # Verify every extracted file before copying.';
+      assert.ok(source.includes(marker));
+      await fs.writeFile(
+        include,
+        source.replace(
+          marker,
+          [
+            '      ReadEnvStr $R0 PI_UPDATE_FIXTURE_BAD_EXTRACTION',
+            '      ${if} $R0 == "1"',
+            '        FileOpen $R0 "$OUTDIR\\resources\\app.asar" w',
+            '        FileWrite $R0 "truncated fixture file"',
+            '        FileClose $R0',
+            '      ${endif}',
+            marker,
+          ].join('\n'),
+        ),
+      );
+    }
     await buildRenderer({
       define: { __APP_VERSION__: JSON.stringify(version) },
       build: { outDir: path.join(stage, 'dist'), emptyOutDir: true },
@@ -212,6 +279,7 @@ try {
         electronVersion: config.devDependencies.electron,
         electronDist,
         directories: { output: out },
+        afterSign: writeWindowsUpdateFileChecks,
         files: [...config.build.files],
         compression: 'store',
         win: {
@@ -224,7 +292,7 @@ try {
           guid,
           runAfterFinish: false,
           createDesktopShortcut: false,
-          createStartMenuShortcut: false,
+          createStartMenuShortcut: true,
         },
         portable: { artifactName: 'Pi-Desktop-${version}-win-x64.exe' },
         linux: {
@@ -235,17 +303,35 @@ try {
         publish: { provider: 'generic', url: feed },
       },
     });
+    if (process.platform === 'win32') {
+      const checks = await fs.readFile(path.join(stage, 'build/update-files-x64.nsh'), 'utf8');
+      const files = await directorySnapshot(path.join(out, 'win-unpacked'));
+      assert.equal(checks.split('${StdUtils.HashFile}').length - 1, files.length);
+      for (const [file, hash] of files) {
+        const escaped = file.replaceAll('$', () => '$$');
+        assert.ok(
+          checks.includes('"${DIRECTORY}\\' + escaped + '"\n  ${if} $R0 != "' + hash.toUpperCase() + '"'),
+          `${file} must be checked with its final packaged contents`,
+        );
+      }
+    }
     for (const file of await fs.readdir(out))
       if (/\.(?:exe|AppImage|blockmap|yml)$/.test(file)) assets.set(file, path.join(out, file));
   }
-  const executable =
-    process.platform === 'win32'
-      ? path.join(installDir, productName + '.exe')
-      : path.join(root, 'current.AppImage');
   const modes =
-    process.platform === 'win32' ? ['restart', 'on-quit', 'portable-to-installer'] : ['restart', 'on-quit'];
+    process.platform === 'win32'
+      ? ['restart', 'stale-shortcut', 'unpacked-restart', 'portable-to-installer', 'on-quit']
+      : ['restart', 'on-quit'];
   for (const mode of modes) {
     const portable = mode === 'portable-to-installer';
+    const unpacked = mode === 'unpacked-restart';
+    const restart = mode === 'restart' || mode === 'stale-shortcut' || unpacked;
+    const runningDirectory = unpacked ? path.join(root, mode, 'unpacked with spaces') : installDir;
+    let otherCopyFiles: [string, string][] | undefined;
+    const executable =
+      process.platform === 'win32'
+        ? path.join(runningDirectory, productName + '.exe')
+        : path.join(root, 'current.AppImage');
     const dataDir = path.join(root, mode, 'data');
     const store = new Store(dataDir, oldVersion);
     await store.load();
@@ -283,6 +369,30 @@ try {
         windowsHide: true,
         timeout: 180000,
       });
+      if (unpacked) {
+        const before = await fixtureWindowsState();
+        assert.equal(before.shortcut, path.join(installDir, productName + '.exe'));
+        assert.equal(before.registeredDirectory, installDir);
+        await fs.cp(path.join(root, oldVersion, 'out/win-unpacked'), runningDirectory, { recursive: true });
+        otherCopyFiles = await directorySnapshot(installDir);
+        const runningFiles = await directorySnapshot(runningDirectory);
+        await assert.rejects(
+          exec(
+            assets.get(`Pi-Desktop-${nextVersion}-win-x64-setup.exe`)!,
+            ['/S', '--updated', `/D=${runningDirectory}`],
+            {
+              env: { ...env, PI_UPDATE_FIXTURE_BAD_EXTRACTION: '1' },
+              windowsHide: true,
+              timeout: 180000,
+            },
+          ),
+          { code: 1 },
+        );
+        assert.deepEqual(await directorySnapshot(installDir), otherCopyFiles);
+        assert.deepEqual(await directorySnapshot(runningDirectory), runningFiles);
+        assert.deepEqual(await fixtureWindowsState(), before);
+        console.log('PASS incomplete extraction rejects the update before modifying either directory');
+      }
     } else if (process.platform === 'linux') {
       await fs.copyFile(assets.get(`Pi-Desktop-${oldVersion}-linux-x64.AppImage`)!, executable);
       await fs.chmod(executable, 0o755);
@@ -339,6 +449,12 @@ try {
     }
     const draft = `保留 ${mode} 更新前的新草稿`;
     await page.getByRole('textbox', { name: '任务输入' }).fill(draft);
+    if (mode === 'stale-shortcut') {
+      const staleExecutable = path.join(root, oldVersion, 'out/win-unpacked', productName + '.exe');
+      await fs.access(staleExecutable);
+      assert.equal((await fixtureWindowsState(staleExecutable)).shortcut, staleExecutable);
+    }
+    if (process.platform === 'win32' && mode === 'on-quit') await fs.unlink(startMenuShortcut);
     await page
       .getByRole('button', { name: portable ? 'v0.9.1 可用' : '重启以更新到 v0.9.1', exact: true })
       .click();
@@ -377,7 +493,7 @@ try {
     const closed = portable
       ? new Promise<void>((resolve) => portableBrowser!.once('disconnected', () => resolve()))
       : app!.waitForEvent('close', { timeout: 120000 });
-    if (mode === 'restart') await page.getByRole('button', { name: '立即重启', exact: true }).click();
+    if (restart) await page.getByRole('button', { name: '立即重启', exact: true }).click();
     else {
       await page.getByRole('button', { name: '稍后', exact: true }).click();
       await page.evaluate(() => window.desktop.invoke('quit'));
@@ -390,7 +506,7 @@ try {
         windowsHide: true,
         timeout: 180000,
       });
-    if (mode !== 'restart') {
+    if (!restart) {
       if (process.platform === 'win32')
         await until(
           async () =>
@@ -409,9 +525,35 @@ try {
     }
     const boot = await readBoot(dataDir);
     assert.equal(boot.version, nextVersion);
-    if (mode === 'restart') {
+    if (restart) {
       assert.equal(boot.bootstrap.update.lastInstall.outcome, 'completed');
       assert.equal(boot.bootstrap.update.lastInstall.targetVersion, nextVersion);
+    }
+    if (process.platform === 'win32') {
+      assert.equal(boot.executable, executable, 'restart must use the directory that initiated the update');
+      assert.equal(
+        JSON.parse(extractFile(path.join(runningDirectory, 'resources/app.asar'), 'package.json').toString())
+          .version,
+        nextVersion,
+      );
+      if (mode === 'on-quit') await assert.rejects(fs.access(startMenuShortcut), { code: 'ENOENT' });
+      else {
+        const after = await fixtureWindowsState();
+        assert.equal(after.shortcut, path.join(installDir, productName + '.exe'));
+        assert.equal(after.registeredDirectory, installDir, 'another copy must retain its installation');
+      }
+      if (unpacked) {
+        assert.deepEqual(await directorySnapshot(installDir), otherCopyFiles);
+        assert.equal(
+          JSON.parse(extractFile(path.join(installDir, 'resources/app.asar'), 'package.json').toString())
+            .version,
+          oldVersion,
+          'updating an unpacked directory must preserve the other installed copy',
+        );
+        await assert.rejects(fs.access(path.join(runningDirectory, `Uninstall ${productName}.exe`)), {
+          code: 'ENOENT',
+        });
+      }
     }
     const oldBoot = JSON.parse(await fs.readFile(path.join(dataDir, `boot-${oldVersion}.json`), 'utf8'));
     assert.equal(

@@ -1,5 +1,6 @@
 import electronUpdater from 'electron-updater';
 import type { AppUpdater } from 'electron-updater';
+import path from 'node:path';
 import type { DesktopRelease, UpdateDriver, UpdateDriverEvent } from './updater';
 
 function release(info: {
@@ -54,5 +55,11 @@ export function nativeUpdateDriver(updater: AppUpdater): UpdateDriver {
 }
 export function createNativeUpdateDriver(installation: 'nsis' | 'appimage') {
   const { NsisUpdater, AppImageUpdater } = electronUpdater;
-  return nativeUpdateDriver(installation === 'nsis' ? new NsisUpdater() : new AppImageUpdater());
+  if (installation === 'nsis') {
+    const updater = new NsisUpdater();
+    // The registered installation can belong to a different copy of this app.
+    updater.installDirectory = path.dirname(process.execPath);
+    return nativeUpdateDriver(updater);
+  }
+  return nativeUpdateDriver(new AppImageUpdater());
 }
