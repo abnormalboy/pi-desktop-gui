@@ -126,6 +126,7 @@ try {
   await page.getByRole('button', { name: '移除引用 输入 文件.txt', exact: true }).click();
   await savedSession(fixture.sessionId, (s) => s.images?.length === 1 && s.attachments.length === 1);
   await releaseDrop();
+  await savedSession(standalone.id, (session) => session.draft === '另一个会话的草稿');
   const editedDuringDrop = await savedSession(fixture.sessionId, (s) =>
     s.attachments.includes('延迟校验.txt'),
   );

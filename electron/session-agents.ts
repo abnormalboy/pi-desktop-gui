@@ -68,6 +68,9 @@ export class SessionAgents extends EventEmitter {
   get runtime(): Runtime {
     return this.agents.get(this.store.state.selectedSessionId ?? '')?.runtime ?? this.empty;
   }
+  get disposed() {
+    return this.closing;
+  }
 
   get hasPendingWork() {
     return (
@@ -284,8 +287,13 @@ export class SessionAgents extends EventEmitter {
 
   async dispose() {
     this.closing = true;
-    await Promise.all([...this.workspaceOperations.values()].map((operation) => operation.finished));
-    await Promise.all([...this.agents.values()].map((agent) => agent.dispose()));
+    // Start cancellation first. A workspace operation may be waiting for a Pi
+    // reader/dialog which only AgentService.dispose can close.
+    const disposing = [...this.agents.values()].map((agent) => agent.dispose());
+    await Promise.all([
+      ...disposing,
+      ...[...this.workspaceOperations.values()].map((operation) => operation.finished),
+    ]);
     this.agents.clear();
   }
 }

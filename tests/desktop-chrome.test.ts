@@ -32,12 +32,16 @@ function helper(name: string, parameters: string, extra = '', result = name) {
 }
 const dialogFactory = helper(
   'showAppDialog',
-  'window, appDialogsReady, rendererResponsive, dialog, appDialogs',
+  'window, appDialogsReady, rendererResponsive, dialog, appDialogs, quitting = false',
 );
+const finishOperation = source.statements.find(
+  (statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'finishOperation',
+);
+assert.ok(finishOperation, 'Expected current operation completion helper');
 const menuFactory = helper(
   'newSessionFromMenu',
   'store, updates, appDialogs, newSession, showAppDialog, closing = false, quitting = false',
-  'let activeOperations = 0',
+  `let activeOperations = 0; const operationWaiters = new Set(); ${finishOperation.getText(source)}`,
   '{ invoke: newSessionFromMenu, pending: () => activeOperations }',
 );
 const themeFactory = helper('updateWindowTheme', 'window, nativeTheme, isMac, windowTheme');
@@ -105,6 +109,23 @@ test('unavailable renderer cancels ordinary actions; only explicit quit fallback
   }
   const show = dialogFactory(undefined, false, false, {}, {});
   assert.deepEqual(await show({ message: 'gone', cancelId: 1 }, true), { response: 1 });
+});
+
+test('ordinary business dialogs fail closed while accepted work drains for quit', async () => {
+  const show = dialogFactory(
+    {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      show: () => assert.fail('Quitting business action must not show a window'),
+      focus: () => assert.fail('Quitting business action must not focus a window'),
+    },
+    true,
+    true,
+    { showMessageBox: () => assert.fail('Business action must not use a native dialog') },
+    { show: () => assert.fail('Business action must not queue an unanswered dialog') },
+    true,
+  );
+  assert.deepEqual(await show({ message: 'late deletion?', cancelId: 1 }), { response: 1 });
 });
 
 test('native new-session menu cannot mutate read-only storage or bypass modal/update/quit guards', async () => {

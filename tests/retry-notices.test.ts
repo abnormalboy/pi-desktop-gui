@@ -15,6 +15,13 @@ function fixture(t: TestContext) {
   const store = {
     state: { selectedSessionId: 'one', settings: {} },
     session: (id: string) => sessions.find((session) => session.id === id)!,
+    // These pre-existing conversations are durable; exercise the same lookup contract.
+    isTransientSession: () => false,
+    promoteSession(id: string) {
+      const session = sessions.find((session) => session.id === id);
+      assert.ok(session);
+      return session;
+    },
     assertWritable() {},
     async save() {},
     async flush() {},

@@ -36,7 +36,7 @@ import {
 } from './workspace';
 import { WorkspaceWatcher } from './workspace-watch';
 import { projectRules, createAgentRules } from './project-rules';
-import { isEmptySession, isReusableSession, hasSessionData, fillSessionUsage } from './session-maintenance';
+import { isEmptySession, hasSessionData, fillSessionUsage } from './session-maintenance';
 import { aggregateUsage } from '../shared/usage';
 import { composeDraftText } from '../shared/draft';
 import { validatePromptTemplate } from '../shared/prompts';
@@ -84,6 +84,16 @@ let quitting = false;
 let closing = false;
 let sessionEnding = false;
 let activeOperations = 0;
+const operationWaiters = new Set<() => void>();
+function finishOperation() {
+  activeOperations--;
+  if (activeOperations) return;
+  for (const resolve of operationWaiters) resolve();
+  operationWaiters.clear();
+}
+function waitForOperations() {
+  return activeOperations ? new Promise<void>((resolve) => operationWaiters.add(resolve)) : Promise.resolve();
+}
 let workspaceWatcher: WorkspaceWatcher | undefined;
 let watchedProject = '';
 let watcherRevision = 0;
@@ -94,7 +104,7 @@ const appUserModelId = app.isPackaged ? 'io.yeyuproject.pi-desktop' : 'io.yeyupr
 let stateRevision = 0;
 // Broadcasts, bootstrap and completion reads share one non-persistent sequence.
 const stateSnapshot = (state = store.state): StateSnapshot => ({
-  state: structuredClone(state),
+  state: structuredClone(store.visibleState(state)),
   revision: ++stateRevision,
 });
 const send = (
@@ -113,6 +123,9 @@ function cancelAppDialogs() {
   send({ type: 'appDialogsCancelled' });
 }
 function showAppDialog(options: DialogOptions, allowNativeFallback = false) {
+  // Already accepted operations may reach their business confirmation while quit
+  // drains them. Cancel that work rather than opening a dialog IPC cannot answer.
+  if (quitting && !allowNativeFallback) return Promise.resolve({ response: options.cancelId ?? 0 });
   const unavailable = !appDialogsReady || !rendererResponsive;
   if (!window || window.isDestroyed() || (unavailable && !allowNativeFallback))
     return Promise.resolve({ response: options.cancelId ?? 0 });
@@ -123,6 +136,28 @@ function showAppDialog(options: DialogOptions, allowNativeFallback = false) {
   // A crashed/hung renderer must not trap a running Pi process in an unquittable app.
   // Only the close flow opts in; ordinary business operations fail closed.
   return unavailable ? dialog.showMessageBox(window, options) : appDialogs.show(options);
+}
+async function confirmUnsavedQuit(error: unknown, copyOnly = false) {
+  // A renderer-backed dialog must still be able to reply while close is paused.
+  quitting = false;
+  const result = await showAppDialog(
+    {
+      type: 'warning',
+      message: copyOnly ? '退出准备时保存失败，仍然退出？' : '本地内容尚未保存，仍然退出？',
+      detail:
+        (copyOnly
+          ? '会话服务已关闭，窗口仅保留用于复制尚未保存的内容。请先复制需要保留的草稿。\n\n'
+          : '未保存的草稿和设置仍保留在窗口中。建议留在窗口，先复制需要保留的内容。\n\n') +
+        String(error instanceof Error ? error.message : error),
+      buttons: [copyOnly ? '保留窗口以复制内容' : '留在窗口', '仍然退出，丢弃未保存内容'],
+      defaultId: 0,
+      cancelId: 0,
+    },
+    true,
+  );
+  if (result.response !== 1) return false;
+  quitting = true;
+  return true;
 }
 function updateWindowTheme() {
   if (!window || window.isDestroyed()) return;
@@ -178,6 +213,7 @@ function notifyAttention(runtime: Runtime) {
   } else return;
   const toast = new Notification({ title, body });
   toast.on('click', () => {
+    if (closing || quitting || updates.state.installing) return;
     if (!window || window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
     window.show();
@@ -248,13 +284,38 @@ function strings(value: unknown): asserts value is string[] {
   )
     throw new Error('列表格式无效');
 }
+// The workspace/terminal checks below await I/O before the handler is reached. Record
+// an accepted session intent first, so another New click cannot reuse its stable ID.
+function protectSessionOperation(method: string, args: unknown[]) {
+  const id = args[0];
+  text(id, 100);
+  if (method === 'send') {
+    text(args[1]);
+    strings(args[2]);
+    if (args[3] !== 'steer' && args[3] !== 'followUp') throw new Error('发送模式无效');
+    validateImages(args[4] ?? []);
+    if (!args[1].trim() && !(args[4] as unknown[] | undefined)?.length)
+      throw new Error('请输入任务内容或添加图片');
+  } else if (method === 'recover') {
+    if (args[1] !== undefined) text(args[1]);
+  } else if (method === 'compact') text(args[1]);
+  else if (method === 'login' || method === 'logout') {
+    text(args[1], 200);
+    if (method === 'login' && !['oauth', 'api_key'].includes(args[2] as string))
+      throw new Error('登录方式无效');
+  } else if (method === 'branchSession') {
+    text(args[2], 100);
+    if (args[4] !== undefined) text(args[4]);
+  } else if (method === 'messageAction') {
+    if (!['user', 'assistant'].includes(args[2] as string) || !Number.isFinite(args[3]))
+      throw new Error('消息无效');
+  }
+  const transient = store.isTransientSession(id);
+  store.promoteSession(id);
+  if (transient) return save();
+}
 async function newSession(projectId?: string) {
-  const reusable = store.state.sessions.find(
-    (session) =>
-      session.projectId === projectId && isReusableSession(session) && !service.connected(session.id),
-  );
-  const s = reusable ?? store.createSession(projectId);
-  if (reusable) store.selectSession(reusable.id);
+  const s = store.createPlaceholder(projectId, (id) => service.connected(id));
   await save();
   return s;
 }
@@ -266,7 +327,7 @@ async function newSessionFromMenu() {
     try {
       await newSession();
     } finally {
-      activeOperations--;
+      finishOperation();
     }
   } catch (error) {
     await showAppDialog({ message: '无法新建对话', detail: String(error) });
@@ -334,6 +395,13 @@ const terminalLock = (id: string) => path.join(store.dir, 'terminal-' + encodeUR
 async function assertTerminalClosed(id: string) {
   if (await terminalOpen(terminalLock(id)))
     throw new Error('当前会话已交给 Pi 终端，请关闭该终端后再使用桌面会话');
+}
+async function inSessionWorkspace<T>(id: string, action: () => Promise<T>) {
+  await assertTerminalClosed(id);
+  return service.inWorkspace(await store.sessionDirectory(id), false, async () => {
+    await service.assertResourcesAvailable(id);
+    return action();
+  });
 }
 async function assertWorkspaceTerminalsClosed(root: string) {
   const real = await canonicalWritePath(root);
@@ -460,8 +528,10 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     const folder = await fs.realpath(chosen.filePaths[0]);
     const existing = store.state.projects.find((p) => samePath(p.path, folder));
     if (existing) {
-      store.state.selectedProjectId = existing.id;
-      store.state.selectedSessionId = store.state.sessions.find((s) => s.projectId === existing.id)?.id;
+      const session =
+        store.durableSessions().find((s) => s.projectId === existing.id) ??
+        store.createPlaceholder(existing.id, (id) => service.connected(id));
+      store.selectSession(session.id);
       await save();
       return existing;
     }
@@ -503,9 +573,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       store.state.sessions.filter((s) => s.projectId === id).map((s) => service.release(s.id)),
     );
     store.state.projects = store.state.projects.filter((p) => p.id !== id);
-    store.state.sessions = store.state.sessions.filter((s) => s.projectId !== id);
+    store.removeSessions(store.state.sessions.filter((s) => s.projectId === id).map((s) => s.id));
     if (store.state.selectedProjectId === id) {
-      const next = store.state.sessions[0] ?? store.createSession();
+      const next = store.durableSessions()[0] ?? store.createPlaceholder();
       store.selectSession(next.id);
     }
     await save();
@@ -559,9 +629,9 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(id, 100);
     text(name, 120);
     if (!name.trim()) return;
-    store.session(id).title = name.trim();
-    await service.get(id).rename(id, name.trim());
+    store.promoteSession(id).title = name.trim();
     await save();
+    await service.get(id).rename(id, name.trim());
   },
   deleteSession: async (id) => {
     text(id, 100);
@@ -591,12 +661,12 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
       );
       if (exists) await shell.trashItem(s.file);
     }
-    store.state.sessions = store.state.sessions.filter((x) => x.id !== id);
+    store.removeSessions([id]);
     if (store.state.selectedSessionId === id) {
       const next =
-        store.state.sessions.find((x) => x.projectId === s.projectId) ??
-        store.state.sessions.find((x) => !x.projectId) ??
-        store.createSession();
+        store.durableSessions().find((x) => x.projectId === s.projectId) ??
+        store.durableSessions().find((x) => !x.projectId) ??
+        store.createPlaceholder(s.projectId);
       store.selectSession(next.id);
     }
     await save();
@@ -604,20 +674,24 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   pinSession: async (id, pinned) => {
     text(id, 100);
-    store.session(id).pinned = pinned === true;
+    store.promoteSession(id).pinned = pinned === true;
     await save();
   },
   cleanupEmptySessions: async () => {
     const candidates = (
       await Promise.all(
-        store.state.sessions.map(async (session) =>
-          (await isEmptySession(
-            session,
-            service.connected(session.id) || (await service.inTerminal(session.id)) ? session.id : undefined,
-          ))
-            ? session.id
-            : undefined,
-        ),
+        store
+          .durableSessions()
+          .map(async (session) =>
+            (await isEmptySession(
+              session,
+              service.connected(session.id) || (await service.inTerminal(session.id))
+                ? session.id
+                : undefined,
+            ))
+              ? session.id
+              : undefined,
+          ),
       )
     ).filter((id): id is string => !!id);
     if (!candidates.length) return 0;
@@ -646,12 +720,17 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     await Promise.all([...removable].map((id) => service.release(id)));
     // Draft saves can arrive while the file checks above await I/O; inspect current fields once more.
     const before = store.state.sessions.length;
-    store.state.sessions = store.state.sessions.filter(
-      (session) => !removable.has(session.id) || service.connected(session.id) || hasSessionData(session),
+    store.removeSessions(
+      store.state.sessions
+        .filter(
+          (session) =>
+            removable.has(session.id) && !service.connected(session.id) && !hasSessionData(session),
+        )
+        .map((session) => session.id),
     );
     const removed = before - store.state.sessions.length;
     if (!store.state.sessions.some((session) => session.id === store.state.selectedSessionId)) {
-      const next = store.state.sessions[0] ?? store.createSession();
+      const next = store.durableSessions()[0] ?? store.createPlaceholder(store.state.selectedProjectId);
       store.selectSession(next.id);
     }
     await save();
@@ -659,7 +738,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   searchSessions: async (query) => {
     text(query, 200);
-    return searchSessionContents(store.state.sessions, query);
+    return searchSessionContents(store.durableSessions(), query);
   },
   piSessions: async () => {
     const known = new Set(store.state.sessions.filter((s) => s.file).map((s) => pathKey(s.file!)));
@@ -786,6 +865,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     }
     if (images !== undefined) validateImages(images);
     const s = store.session(id);
+    if (draft || attachments.length || images?.length || snippets?.length) store.promoteSession(id);
     s.draft = draft;
     s.attachments = attachments;
     if (snippets !== undefined) s.draftSnippets = snippets;
@@ -797,6 +877,8 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
     text(expected);
     const s = store.session(id);
     if (composeDraftText(s.draft, s.draftSnippets ?? []) === expected) {
+      if (s.draft || s.attachments.length || s.images?.length || s.draftSnippets?.length)
+        store.promoteSession(id);
       s.draft = '';
       s.attachments = [];
       s.images = [];
@@ -883,7 +965,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   readModels: async (id) => {
     text(id, 100);
-    await service.get(id).readModels(id);
+    await service.get(id).readModels(id, (read) => inSessionWorkspace(id, read));
   },
   recover: async (id, prompt) => {
     text(id, 100);
@@ -1030,7 +1112,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   usageSummary: async () => {
     await fillSessionUsage(store);
-    return aggregateUsage(store.state.sessions, store.state.projects);
+    return aggregateUsage(store.durableSessions(), store.state.projects);
   },
   toggleResource: async (id, resource, enabled) => {
     text(id, 100);
@@ -1128,6 +1210,7 @@ const handlers: Record<keyof ApiMap, (...args: any[]) => any> = {
   },
   editDraft: async (id) => {
     text(id, 100);
+    await protectSessionOperation('editDraft', [id]);
     const s = store.session(id);
     const original = JSON.stringify([s.draft, s.draftSnippets ?? []]);
     const file = path.join(store.dir, 'draft-' + encodeURIComponent(id) + '.txt');
@@ -1454,12 +1537,31 @@ async function createWindow() {
           }
         }
         quitting = true;
+        // First await only the already-enqueued filesystem writes. If they fail,
+        // the user can stay before any session service has been disposed.
+        let discardUnsaved = false;
+        try {
+          await store.flush();
+        } catch (error) {
+          if (!(await confirmUnsavedQuit(error, service.disposed))) return;
+          discardUnsaved = true;
+        }
+        // Cancellation must start before waiting for accepted native/agent work:
+        // a queued model read can otherwise wait for a dialog that disposal closes.
+        await service.dispose();
+        await waitForOperations();
+        await configurationWrites;
+        // Keep a defensive final barrier for disposal-triggered writes. Never
+        // silently discard a newly failed write while destroying the window.
+        try {
+          await store.flush();
+        } catch (error) {
+          if (!discardUnsaved && !(await confirmUnsavedQuit(error, true))) return;
+        }
         workspaceWatcher?.dispose();
         clearTimeout(windowTimer);
         windowTimer = undefined;
         await writeWindowState();
-        await configurationWrites;
-        await service.dispose();
         updates.prepareForQuit(!sessionEnding && (store.storage.writable || !!store.storage.newerFormat));
         updates.dispose();
         window?.destroy();
@@ -1494,7 +1596,11 @@ else {
       nativeTheme.themeSource = store.state.settings.theme;
       nativeTheme.on('updated', updateWindowTheme);
       if (!store.state.sessions.some((s) => s.id === store.state.selectedSessionId)) {
-        const initial = store.state.sessions[0] ?? store.createSession();
+        // An omitted transient selection may still carry a valid project scope on disk.
+        const scope = store.state.selectedProjectId;
+        const initial =
+          store.durableSessions().find((session) => session.projectId === scope) ??
+          store.createPlaceholder(scope);
         store.selectSession(initial.id);
         if (store.storage.writable) await store.save().catch(() => {});
       }
@@ -1725,7 +1831,19 @@ else {
               'toggleResource',
               'reloadPi',
             ].includes(method);
-          trackedOperation = engineOperation || !readOnlyMethods.includes(method as keyof ApiMap);
+          trackedOperation =
+            engineOperation ||
+            [
+              'usageSummary',
+              'respond',
+              'stop',
+              'stopAll',
+              'forceStop',
+              'abortRetry',
+              'clearQueue',
+              'cancelLogin',
+            ].includes(method) ||
+            !readOnlyMethods.includes(method as keyof ApiMap);
           if (trackedOperation) activeOperations++;
           const invoke = () => handlers[method as keyof ApiMap](...args);
           const execute = async () => {
@@ -1744,7 +1862,6 @@ else {
             const sessionOperation =
               [
                 'connect',
-                'readModels',
                 'send',
                 'recover',
                 'compact',
@@ -1757,11 +1874,8 @@ else {
               (method === 'messageAction' && args[1] !== 'fork');
             if (sessionOperation) {
               const id = args[0] as string;
-              await assertTerminalClosed(id);
-              return service.inWorkspace(await store.sessionDirectory(id), false, async () => {
-                await service.assertResourcesAvailable(id);
-                return invoke();
-              });
+              await protectSessionOperation(method, args);
+              return inSessionWorkspace(id, invoke);
             }
             return invoke();
           };
@@ -1784,7 +1898,7 @@ else {
         } catch (e) {
           throw new Error(redact(e instanceof Error ? e.message : String(e)));
         } finally {
-          if (trackedOperation) activeOperations--;
+          if (trackedOperation) finishOperation();
         }
       });
       Menu.setApplicationMenu(

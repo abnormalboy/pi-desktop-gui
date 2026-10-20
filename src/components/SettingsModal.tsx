@@ -14,6 +14,7 @@ import {
   Monitor,
   CircleHelp,
   Link2,
+  Trash2,
 } from 'lucide-react';
 import { platform } from '../lib/platform';
 import { readableError } from '../lib/format';
@@ -33,6 +34,7 @@ export function SettingsModal(
     | 'environment'
     | 'error'
     | 'setError'
+    | 'setNotice'
     | 'settingsOpen'
     | 'setSettingsOpen'
     | 'settingsTab'
@@ -64,6 +66,7 @@ export function SettingsModal(
     environment,
     error,
     setError,
+    setNotice,
     settingsOpen,
     setSettingsOpen,
     settingsTab,
@@ -105,7 +108,7 @@ export function SettingsModal(
                 ['environment', '运行环境', Terminal],
                 ['models', '模型连接', Link2],
                 ['appearance', '外观与编辑器', Monitor],
-                ['diagnostic', '诊断', CircleHelp],
+                ['diagnostic', '诊断与数据', CircleHelp],
                 ['updates', '关于与更新', Download],
               ].map(([key, label, Icon]) => (
                 <button
@@ -489,6 +492,26 @@ export function SettingsModal(
                   <p className="settings-copy">
                     运行差异基线保留 7 天，总计不超过 200 MiB。清理基线不影响项目与 Pi 会话文件。
                   </p>
+                  <h3>旧空会话</h3>
+                  <p className="settings-copy">
+                    新建后未使用的占位不会成为长期历史。旧版本留下的空会话可在这里手动清理；草稿、附件、图片、自定义设置和正在使用的会话会保留。
+                  </p>
+                  <button
+                    disabled={pending}
+                    onClick={() =>
+                      void attempt(async () => {
+                        const count = await api.invoke('cleanupEmptySessions');
+                        setNotice(
+                          count
+                            ? `已清理 ${count} 个空会话`
+                            : '未清理会话；有内容、自定义设置或正在使用的会话会保留。',
+                        );
+                      })
+                    }
+                  >
+                    <Trash2 size={15} />
+                    清理空会话
+                  </button>
                 </>
               )}
             </div>

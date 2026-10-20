@@ -345,19 +345,6 @@ export function Sidebar(
         {state.sessions.some((session) => busy(session.lastStatus)) && (
           <button onClick={() => void attempt(() => api.invoke('stopAll'))}>停止所有会话</button>
         )}
-        <button
-          onClick={() =>
-            void attempt(async () => {
-              const count = await api.invoke('cleanupEmptySessions');
-              setNotice(
-                count ? `已清理 ${count} 个空会话` : '未清理会话；有草稿、附件、图片或运行中的会话会保留。',
-              );
-            })
-          }
-        >
-          <Trash2 size={16} />
-          清理空会话
-        </button>
         <button onClick={() => openSettings()}>
           <Settings2 size={16} />
           设置

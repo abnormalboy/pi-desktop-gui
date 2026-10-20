@@ -73,7 +73,8 @@ export function ModelPicker({
   const models = runtime.models.filter((m) => `${m.provider} ${m.name} ${m.id}`.toLowerCase().includes(q));
   const providers = [...new Set(models.map((m) => m.provider))];
   const choose = (key: string) => {
-    if (key !== current) pick(key);
+    // An explicit default-valued choice still makes this session meaningful.
+    pick(key);
     close();
   };
   return (
@@ -198,7 +199,7 @@ export function ModelPicker({
                     role="radio"
                     aria-checked={selection.thinking === level}
                     disabled={thinkingLocked}
-                    onClick={() => level !== selection.thinking && setThinking(level)}
+                    onClick={() => setThinking(level)}
                   >
                     {level}
                   </button>

@@ -2,11 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import type { IndexRecovery, Message, Session, StorageStatus } from '../shared/types';
+import type { AppState, IndexRecovery, Message, Session, StorageStatus } from '../shared/types';
 import { emptyState, parseState } from './store-state';
 import { compareAppVersions, stableVersion } from '../shared/app-update';
 import { sessionUsage } from './pi/session-usage';
 import type { SessionUsage } from '../shared/usage';
+import { isReusableSession } from './session-lifecycle';
 export { defaultSettings } from './store-state';
 
 const BACKUP_INTERVAL = 10 * 60 * 1000;
@@ -14,6 +15,8 @@ export class Store extends EventEmitter {
   state = emptyState();
   storage: StorageStatus = { writable: true };
   private writing = Promise.resolve();
+  // Keep stable IDs for late draft IPC, but never infer this status from loaded blank rows.
+  private transientSessions = new Set<string>();
   constructor(
     readonly dir: string,
     private readonly appVersion?: string,
@@ -36,6 +39,7 @@ export class Store extends EventEmitter {
     if (!this.storage.writable) throw new Error(this.storage.problem);
   }
   async load() {
+    this.transientSessions.clear();
     this.state = emptyState();
     this.storage = { writable: true };
     try {
@@ -185,7 +189,9 @@ export class Store extends EventEmitter {
   }
   save() {
     if (this.appVersion && this.storage.writable) this.state.appVersion = this.appVersion;
-    const contents = JSON.stringify(this.state, null, 2);
+    // Capture the projection now, before joining the existing atomic-write queue. Current
+    // state and backups must describe the same acknowledged save, not later mutations.
+    const contents = JSON.stringify(this.persistentState(), null, 2);
     const write = async () => {
       this.assertWritable();
       try {
@@ -201,6 +207,75 @@ export class Store extends EventEmitter {
   }
   flush() {
     return this.writing;
+  }
+  isTransientSession(id: string) {
+    return this.transientSessions.has(id);
+  }
+  promoteSession(id: string) {
+    const session = this.session(id);
+    this.transientSessions.delete(id);
+    return session;
+  }
+  private promoteSessionData() {
+    for (const session of this.state.sessions)
+      if (this.transientSessions.has(session.id) && !isReusableSession(session))
+        this.transientSessions.delete(session.id);
+  }
+  durableSessions() {
+    this.promoteSessionData();
+    return this.state.sessions.filter((session) => !this.transientSessions.has(session.id));
+  }
+  private projectState(state: AppState, includeSelected: boolean): AppState {
+    this.promoteSessionData();
+    const sessions = state.sessions.filter(
+      (session) =>
+        !this.transientSessions.has(session.id) ||
+        (includeSelected && session.id === state.selectedSessionId),
+    );
+    const current = state.sessions.find((session) => session.id === state.selectedSessionId);
+    const requestedScope = current ? current.projectId : state.selectedProjectId;
+    const scope = state.projects.some((project) => project.id === requestedScope)
+      ? requestedScope
+      : undefined;
+    const selected =
+      sessions.find((session) => session.id === state.selectedSessionId) ??
+      sessions.find((session) => session.projectId === scope);
+    return {
+      ...state,
+      sessions,
+      selectedSessionId: selected?.id,
+      selectedProjectId: selected ? selected.projectId : scope,
+    };
+  }
+  persistentState() {
+    return this.projectState(this.state, false);
+  }
+  visibleState(state = this.state) {
+    return this.projectState(state, true);
+  }
+  createPlaceholder(projectId?: string, unavailable: (id: string) => boolean = () => false) {
+    if (projectId !== undefined) this.project(projectId);
+    this.promoteSessionData();
+    // A caller may discover activity not yet represented in the session fields.
+    // Fail safe: that ID is now formal, even if the operation later fails.
+    for (const session of this.state.sessions)
+      if (this.transientSessions.has(session.id) && unavailable(session.id))
+        this.transientSessions.delete(session.id);
+    const existing = this.state.sessions.find(
+      (session) => session.projectId === projectId && this.transientSessions.has(session.id),
+    );
+    if (existing) {
+      this.selectSession(existing.id);
+      return existing;
+    }
+    const session = this.createSession(projectId);
+    this.transientSessions.add(session.id);
+    return session;
+  }
+  removeSessions(ids: Iterable<string>) {
+    const removed = new Set(ids);
+    this.state.sessions = this.state.sessions.filter((session) => !removed.has(session.id));
+    for (const id of removed) this.transientSessions.delete(id);
   }
   createSession(projectId?: string) {
     if (projectId !== undefined) this.project(projectId);

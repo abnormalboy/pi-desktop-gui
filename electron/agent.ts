@@ -257,6 +257,14 @@ export class AgentService extends EventEmitter {
         this.publish();
       });
   }
+  private protectSession(id: string) {
+    const transient = this.store.isTransientSession(id);
+    const session = this.store.promoteSession(id);
+    // Persist accepted intent even if a later resource/trust check fails or the task
+    // is cancelled before Pi starts. ensureConnected still observes the write barrier.
+    if (transient) this.save();
+    return session;
+  }
   private status(status: RunStatus) {
     if (!busy(status))
       this.finishRetry(
@@ -739,23 +747,28 @@ export class AgentService extends EventEmitter {
     return fallback.map(redactMessageError);
   }
   connect(sessionId: string) {
+    this.protectSession(sessionId);
     return this.exclusive(async () => {
       await this.ensureConnected(sessionId);
       await this.applyPendingConfiguration();
     });
   }
-  readModels(sessionId: string) {
-    return this.exclusive(async () => {
-      if (this.runtime.connected && this.runtime.sessionId === sessionId) return;
-      const session = this.store.session(sessionId);
-      const settings = this.store.state.settings;
-      const wanted =
-        session.model ??
-        (!session.file && settings.provider && settings.modelId
-          ? { provider: settings.provider, id: settings.modelId }
-          : undefined);
-      await this.readModelCatalog(sessionId, wanted, session.thinking, false);
-    });
+  readModels(sessionId: string, aroundRead: (read: () => Promise<void>) => Promise<void> = (read) => read()) {
+    // Reserve the existing operation queue before outer terminal/workspace checks
+    // await I/O. Reading a catalog alone does not make a conversation permanent.
+    return this.exclusive(() =>
+      aroundRead(async () => {
+        if (this.runtime.connected && this.runtime.sessionId === sessionId) return;
+        const session = this.store.session(sessionId);
+        const settings = this.store.state.settings;
+        const wanted =
+          session.model ??
+          (!session.file && settings.provider && settings.modelId
+            ? { provider: settings.provider, id: settings.modelId }
+            : undefined);
+        await this.readModelCatalog(sessionId, wanted, session.thinking, false);
+      }),
+    );
   }
   /** Read Pi's real project/provider metadata without creating a conversation or loading the desktop bridge. */
   private async readModelCatalog(
@@ -767,6 +780,9 @@ export class AgentService extends EventEmitter {
     const epoch = this.stopEpoch;
     await this.crashCleanup;
     this.assertCommandsStopped();
+    // An explicit model choice may have just promoted a placeholder. Its queued
+    // save must succeed before even the disposable metadata process is started.
+    await this.store.flush();
     this.store.assertWritable();
     if (this.shutdown) throw new Error('应用正在关闭，请稍后重新打开');
     const session = this.store.session(sessionId);
@@ -864,6 +880,7 @@ export class AgentService extends EventEmitter {
       );
   }
   private async ensureConnected(sessionId: string) {
+    this.protectSession(sessionId);
     const started = performance.now();
     const epoch = this.stopEpoch;
     await this.crashCleanup;
@@ -1188,10 +1205,14 @@ export class AgentService extends EventEmitter {
     this.status('idle');
   }
   send(id: string, text: string, attachments: string[], mode: SendMode, images: ImageAttachment[] = []) {
+    validateImages(images);
+    if (!text.trim() && !images.length) return Promise.reject(new Error('请输入任务内容或添加图片'));
+    this.protectSession(id);
     const epoch = this.stopEpoch;
     return this.exclusive(() => this.sendInOperation(id, text, attachments, mode, images, epoch));
   }
   recover(id: string, continuePrompt?: string) {
+    this.protectSession(id);
     const epoch = this.stopEpoch;
     return this.exclusive(async () => {
       if (this.runtime.sessionId !== id || !this.runtime.crash || busy(this.runtime.status))
@@ -1339,6 +1360,7 @@ export class AgentService extends EventEmitter {
     this.runtime.thinkingLevels = levels.levels;
   }
   setModel(id: string, provider: string, modelId: string) {
+    this.protectSession(id);
     return this.preference(async () => {
       const session = this.store.session(id);
       const previous = { model: session.model, thinking: session.thinking, nextTask: this.runtime.nextTask };
@@ -1385,6 +1407,7 @@ export class AgentService extends EventEmitter {
     });
   }
   setThinking(id: string, level: string) {
+    this.protectSession(id);
     return this.preference(async () => {
       const session = this.store.session(id);
       const previous = { thinking: session.thinking, nextTask: this.runtime.nextTask };
@@ -1454,7 +1477,7 @@ export class AgentService extends EventEmitter {
   }
   async setApprovalMode(id: string, mode: ApprovalMode) {
     if (!['auto', 'confirm', 'readonly'].includes(mode)) throw new Error('审批模式无效');
-    this.store.session(id).approvalMode = mode;
+    this.store.promoteSession(id).approvalMode = mode;
     this.save();
     if (this.runtime.sessionId === id) await this.preference(() => this.syncApprovalMode());
     this.publish(true);
@@ -1606,6 +1629,7 @@ export class AgentService extends EventEmitter {
     this.runtime.approvalGrants = options.approvalGrants;
   }
   private idleTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>, changesContent = false): Promise<T> {
+    this.protectSession(id);
     return this.exclusive(async () => {
       await this.ensureConnected(id);
       if (busy(this.runtime.status)) throw new Error('请先等待当前任务结束');
@@ -1633,6 +1657,7 @@ export class AgentService extends EventEmitter {
     });
   }
   private async readTask<T>(id: string, action: (rpc: PiRpc) => Promise<T>): Promise<T> {
+    this.protectSession(id);
     await this.beforeConnect?.('read');
     this.reading++;
     this.pendingOperations++;
@@ -1864,6 +1889,7 @@ export class AgentService extends EventEmitter {
     return Buffer.from(html);
   }
   async rename(id: string, name: string) {
+    this.protectSession(id);
     if (this.runtime.sessionId === id && this.runtime.connected)
       await this.rpc!.request('set_session_name', { name });
   }
@@ -1953,11 +1979,13 @@ export class AgentService extends EventEmitter {
     this.publish(true);
   }
   async testConnection(sessionId: string) {
+    const epoch = this.stopEpoch;
     this.assertCommandsStopped();
     this.store.assertWritable();
     if (busy(this.runtime.status) || this.probing) throw new Error('请先等待当前任务结束');
-    const session = this.store.session(sessionId);
+    const session = this.protectSession(sessionId);
     const cwd = await this.store.sessionDirectory(session.id);
+    if (this.shutdown || epoch !== this.stopEpoch) throw new Error('模型连接测试已取消');
     const settings = this.store.state.settings;
     const model = session.model ?? this.runtime.model;
     const provider = model?.provider || settings.provider,
@@ -1972,6 +2000,11 @@ export class AgentService extends EventEmitter {
     let timer: NodeJS.Timeout | undefined;
     try {
       const { resolved } = await preparePi(settings, this.developmentRoot);
+      // A concurrent draft/model save may have promoted this ID before this
+      // request arrived. Probe startup must observe that queued write as well.
+      await this.store.flush();
+      this.store.assertWritable();
+      if (this.shutdown || epoch !== this.stopEpoch) throw new Error('模型连接测试已取消');
       const settled = new Promise<void>((resolve, reject) => {
         probe.on('event', (e) => {
           if (e.type === 'message_end' && e.message?.role === 'assistant') {

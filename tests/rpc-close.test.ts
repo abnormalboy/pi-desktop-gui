@@ -129,6 +129,8 @@ test('a tolerated close race keeps recovery blocked when a tool was running', as
     {
       state: { selectedSessionId: session.id },
       session: () => session,
+      isTransientSession: () => false,
+      promoteSession: () => session,
       save: async () => {},
     } as never,
     {} as never,

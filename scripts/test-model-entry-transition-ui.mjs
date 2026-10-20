@@ -495,11 +495,10 @@ try {
       io.writeFile = async (...args) => {
         if (!value.used && String(args[0]) === file) {
           const state = JSON.parse(String(args[1]));
-          if (
-            state.sessions.find((session) => session.id === state.selectedSessionId)?.projectId === projectId
-          ) {
+          // New untouched placeholders are deliberately absent from this durable
+          // projection. Gate the project save, then use the actual IPC reply ID.
+          if (state.selectedProjectId === projectId) {
             value.used = true;
-            value.id = state.selectedSessionId;
             value.enter();
             await value.wait;
           }
@@ -513,7 +512,6 @@ try {
   await projectNew();
   await app.evaluate(() => globalThis.entryProbe.writeGate.entered);
   await clickDisabled();
-  const createdButUnpublished = await app.evaluate(() => globalThis.entryProbe.writeGate.id);
   await nativeNewChat();
   await page.evaluate(() => {
     window.entryAwaitUnlock = true;
@@ -534,6 +532,10 @@ try {
   await busyStarted;
   await app.evaluate(() => globalThis.entryProbe.writeGate.release());
   await entered('cc-b-reply');
+  const createdButUnpublished = await app.evaluate(
+    () => globalThis.entryProbe.gates.find((gate) => gate.token === 'cc-b-reply').resultId,
+  );
+  assert.ok(createdButUnpublished);
   await expect
     .poll(() =>
       app.evaluate(

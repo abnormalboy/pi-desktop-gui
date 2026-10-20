@@ -271,12 +271,19 @@ try {
     'PASS native project template create/edit/delete refreshes commands and usage shows its accounting basis',
   );
 
-  await page.getByRole('button', { name: '清理空会话', exact: true }).click();
+  assert.equal(
+    await page.locator('.sidebar-footer').getByRole('button', { name: '清理空会话', exact: true }).count(),
+    0,
+  );
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await settingsDialog.getByRole('button', { name: '诊断与数据', exact: true }).click();
+  await settingsDialog.getByRole('button', { name: '清理空会话', exact: true }).click();
   await page
     .getByRole('dialog', { name: /清理 .* 个空会话/ })
     .getByRole('button', { name: '清理空会话', exact: true })
     .click();
   await until((value) => !value.state.sessions.some((session) => session.id === cleanupId));
+  await settingsDialog.getByRole('button', { name: '关闭', exact: true }).last().click();
   assert.ok((await snapshot()).state.sessions.some((session) => session.title === '自定义空会话'));
   const after = await snapshot();
   assert.ok(after.state.sessions.some((session) => session.id === draftId));

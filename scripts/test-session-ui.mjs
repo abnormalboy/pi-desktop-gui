@@ -2,15 +2,33 @@ import { _electron as electron } from 'playwright';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { AgentService } from '../electron/agent.ts';
 import { Workspace } from '../electron/workspace.ts';
+import { readSessionFile } from '../electron/store.ts';
 import { createLocalProvider, prepareRealPiFixture } from '../tests/support/local-provider.ts';
 import { reportSessionSwitchBudget } from './session-switch-budget.mjs';
+import {
+  observeSessionSelections,
+  sessionSelectionReady,
+  sessionSelectionSnapshot,
+} from './session-switch-measurement.mjs';
 
 process.env.PI_OFFLINE = '1';
 const provider = await createLocalProvider();
 const f = await prepareRealPiFixture(provider.baseUrl, 'session-ui');
+// Real Pi loads both models. A/B have different identities so a stale model
+// cannot accidentally satisfy the final rapid-return gate.
+const modelsFile = path.join(f.agentDir, 'models.json');
+const models = JSON.parse(await fs.readFile(modelsFile, 'utf8'));
+models.providers['local-e2e'].models.push({
+  ...models.providers['local-e2e'].models[0],
+  id: 'local-e2e-alt',
+  name: '另一个本地验收模型',
+});
+await fs.writeFile(modelsFile, JSON.stringify(models));
 // All trust and extension changes are confined to this disposable fixture.
 const settingsFile = path.join(f.agentDir, 'settings.json');
 await fs.writeFile(
@@ -45,13 +63,16 @@ const a = f.store.session(f.sessionId),
   b = f.store.createSession(f.projectId),
   standalone = f.store.createSession(),
   coldProject = f.store.createSession(f.projectId),
-  other = f.store.createSession(otherProject.id);
+  other = f.store.createSession(otherProject.id),
+  largeHistory = f.store.createSession(f.projectId);
+b.model = { provider: 'local-e2e', id: 'local-e2e-alt' };
 const fixtures = [
   { session: a, marker: 'SESSION_A_ONLY', command: 'session-ui-project-only' },
   { session: b, marker: 'SESSION_B_ONLY', command: 'session-ui-project-only' },
   { session: standalone, marker: 'SESSION_STANDALONE_ONLY' },
   { session: coldProject, marker: 'SESSION_COLD_PROJECT_ONLY', command: 'session-ui-project-only' },
   { session: other, marker: 'SESSION_OTHER_PROJECT_ONLY', command: 'session-ui-other-project-only' },
+  { session: largeHistory, marker: 'SESSION_LARGE_HISTORY_ONLY', command: 'session-ui-project-only' },
 ];
 const seed = new AgentService(f.store, new Workspace(f.dataDir));
 const wait = async (condition) => {
@@ -70,6 +91,51 @@ try {
 } finally {
   await seed.dispose();
 }
+// Extend a real Pi-created transcript with Pi's own append-only writer. No
+// renderer/runtime overrides and no 250 network turns are needed for this fixture.
+const largeTranscript = await readSessionFile(largeHistory.file);
+const conversationMessages = largeTranscript.messages.filter((message) =>
+  ['user', 'assistant'].includes(message.role),
+);
+assert.deepEqual(
+  conversationMessages.map((message) => message.role),
+  ['user', 'assistant'],
+);
+const historyWriter = SessionManager.open(largeHistory.file);
+const historyMessageCount = 500;
+const historyRecordCount =
+  largeTranscript.messages.length + historyMessageCount - conversationMessages.length;
+for (let index = conversationMessages.length; index < historyMessageCount; index++) {
+  const template = conversationMessages[index % 2];
+  historyWriter.appendMessage({
+    ...template,
+    timestamp: 1700000000000 + index,
+    content: [
+      {
+        type: 'text',
+        text:
+          `历史消息 ${index + 1}: ${index % 2 ? '已检查修改和测试结果。' : '请检查本轮文件修改和边界情况。'}\n\n` +
+          '- 保留当前项目和会话的上下文\n- 核对草稿、模型和发送状态\n\n' +
+          (index === historyMessageCount - 1 ? 'SESSION_LARGE_HISTORY_ONLY' : `HISTORY_RECORD_${index}`),
+      },
+    ],
+  });
+}
+const savedLargeMessages = (await readSessionFile(largeHistory.file)).messages;
+assert.equal(savedLargeMessages.length, historyRecordCount);
+assert.equal(
+  savedLargeMessages.filter((message) => ['user', 'assistant'].includes(message.role)).length,
+  historyMessageCount,
+);
+assert.equal(
+  SessionManager.open(largeHistory.file)
+    .buildSessionContext()
+    .messages.filter((message) => ['user', 'assistant'].includes(message.role)).length,
+  historyMessageCount,
+);
+const historyBytes = (await fs.stat(largeHistory.file)).size;
+assert.ok(historyBytes < 2 * 1024 * 1024, 'The 500-message fixture must have bounded cost');
+const requestsAfterSeeding = provider.requests.length;
 let originalActivity = {};
 for (const [index, { session }] of fixtures.entries()) {
   session.title = `切换验收 ${index + 1}`;
@@ -89,9 +155,79 @@ if (packaged && !executablePath)
       : path.resolve(
           `release/mac${process.arch === 'arm64' ? '-arm64' : ''}/Pi Desktop.app/Contents/MacOS/Pi Desktop`,
         );
-let app, page, testError;
+let app, page, testError, firstColdOpen;
 const errors = [];
+const nodeLaunch = {};
+const expectedSelection = (fixture, requireConnection = true) => ({
+  id: fixture.session.id,
+  projectId: fixture.session.projectId,
+  cwd: fixture.cwd,
+  title: fixture.session.title,
+  draft: fixture.session.draft,
+  marker: fixture.marker,
+  markers: fixtures.map((item) => item.marker),
+  modelId: fixture.session.model?.id ?? 'local-e2e',
+  requireConnection,
+});
+let measurementRequest = 0;
+const measurementSpec = (fixture, scenario, requireConnection = true, phase = 'browse') => ({
+  requestId: `${scenario}-${++measurementRequest}`,
+  scenario,
+  phase,
+  projectId: fixture.session.projectId,
+  expected: expectedSelection(fixture, requireConnection),
+  triggerSelector:
+    phase === 'explicit-model-open'
+      ? 'button[aria-label="选择模型"]'
+      : phase === 'explicit-connect'
+        ? '.run-meta button'
+        : `.session-row[data-session-id="${fixture.session.id}"] > button`,
+});
+const armMeasurement = (requests, startMode = 'click') =>
+  page.evaluate(observeSessionSelections, { requests, startMode });
+const readMeasurement = async () => {
+  const samples = await page.evaluate(() => window.switchMeasurement);
+  for (const timing of samples) {
+    assert.equal(timing.otherHistoryVisible, false, 'No foreign history may appear after the target preview');
+    assert.equal(
+      timing.unsafeSendGateObserved,
+      false,
+      'A pending switch must not unlock the wrong send/model gate',
+    );
+    if (timing.outcome !== 'completed') continue;
+    for (const key of [
+      'messageDomMs',
+      'nextAnimationFrameMs',
+      'authoritativeSelectionMs',
+      'draftRestoredMs',
+      'sendGateReadyMs',
+      'selectionSettledMs',
+    ])
+      assert.ok(Number.isFinite(timing[key]) && timing[key] >= 0, `Missing or invalid ${key}`);
+    if (timing.requireConnection)
+      assert.ok(Number.isFinite(timing.runtimeReadyMs) && timing.runtimeReadyMs >= 0);
+    if (timing.requireModels)
+      assert.ok(Number.isFinite(timing.modelCatalogReadyMs) && timing.modelCatalogReadyMs >= 0);
+    if (timing.startMode === 'explicit-ipc')
+      assert.ok(Number.isFinite(timing.actionCompletedMs) && timing.actionCompletedMs >= 0);
+    assert.equal(timing.settlement.complete, true, 'The resolving sample must satisfy every target gate');
+    assert.equal(
+      timing.settlement.targetHistoryPresent,
+      true,
+      'The target history must remain at completion',
+    );
+    assert.equal(
+      timing.settlement.foreignHistoryPresent,
+      false,
+      'Completed selection must contain no foreign history',
+    );
+    assert.equal(timing.settlement.runtimeOwned, true, 'Readiness must belong to the intended runtime');
+  }
+  return samples;
+};
 const launch = async () => {
+  // Keep this Node clock separate from all renderer navigation/click measurements.
+  const nodeStarted = performance.now();
   app = await electron.launch({
     executablePath,
     args: executablePath ? [] : [path.resolve('.')],
@@ -99,65 +235,86 @@ const launch = async () => {
     timeout: 60000,
   });
   page = await app.firstWindow();
+  nodeLaunch.firstWindowMs = performance.now() - nodeStarted;
   page.setDefaultTimeout(30000);
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
+  await page.waitForFunction(() => Boolean(window.desktop && document.querySelector('#root')));
   await app.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
-    // Measure foreground latency even when the desktop gives another app focus during the test.
     window.webContents.setBackgroundThrottling(false);
     window.focus();
   });
   await page.bringToFront();
-  await page.evaluate(async () => {
-    // Scalar runtime fields (including commands) are complete in each public patch.
-    // Keep one snapshot per session so background events cannot replace the target.
+  await page.evaluate(`window.sessionUiSnapshot = (${sessionSelectionSnapshot.toString()})`);
+  await page.evaluate(() => {
+    const navigation = performance.getEntriesByType('navigation')[0];
+    window.sessionUiNavigation = {
+      timeOrigin: performance.timeOrigin,
+      url: location.href,
+      documentReadyStateAtObserverInstallation: document.readyState,
+      navigationType: navigation?.type ?? null,
+      domContentLoadedEventEndAtObserverInstallation: navigation?.domContentLoadedEventEnd ?? null,
+      loadEventEndAtObserverInstallation: navigation?.loadEventEnd ?? null,
+    };
     window.sessionUiRuntimes = new Map();
-    window.desktop.onEvent((event) => {
-      if (event.type === 'state') window.sessionUiState = event.state;
+    window.sessionUiRevision = 0;
+    const unsubscribe = window.desktop.onEvent((event) => {
+      if (event.type === 'state' && event.revision >= window.sessionUiRevision) {
+        window.sessionUiState = event.state;
+        window.sessionUiRevision = event.revision;
+      }
       if (event.type === 'runtime' && event.runtime.sessionId)
         window.sessionUiRuntimes.set(event.runtime.sessionId, event.runtime);
       if (event.type === 'runtimePatch' && event.patch.sessionId)
-        window.sessionUiRuntimes.set(event.patch.sessionId, event.patch);
+        window.sessionUiRuntimes.set(event.patch.sessionId, {
+          ...window.sessionUiRuntimes.get(event.patch.sessionId),
+          ...event.patch,
+        });
       if (event.type === 'runtimeRemoved') window.sessionUiRuntimes.delete(event.sessionId);
     });
-    // A single initial resync seeds the observer; never poll bootstrap during a switch.
-    const { state, runtime } = await window.desktop.invoke('bootstrap');
-    window.sessionUiState = state;
-    if (runtime.sessionId) window.sessionUiRuntimes.set(runtime.sessionId, runtime);
     window.otherSessionBannerCount = 0;
-    new MutationObserver(() => {
+    const observer = new MutationObserver(() => {
       if (
         [...document.querySelectorAll('.banner')].some((banner) =>
           banner.textContent.includes('另一个会话正在执行'),
         )
       )
         window.otherSessionBannerCount++;
-    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+    window.sessionUiObservationCleanup = () => {
+      observer.disconnect();
+      unsubscribe();
+    };
   });
+  // The observer is attached after firstWindow, so this is an upper-bound DOM
+  // observation from navigation origin, not an exact app-launch or paint time.
+  await armMeasurement([measurementSpec(fixtures[0], 'first-cold-open', false)], 'navigation');
+  await page.evaluate(async () => {
+    window.sessionUiInitialResyncStartedAtMs = performance.now();
+    // Exactly one initial read seeds public state; never poll bootstrap in a switch.
+    const { state, runtime, revision } = await window.desktop.invoke('bootstrap');
+    if (revision >= window.sessionUiRevision) {
+      window.sessionUiState = state;
+      window.sessionUiRevision = revision;
+    }
+    if (runtime.sessionId) window.sessionUiRuntimes.set(runtime.sessionId, runtime);
+    window.sessionUiInitialResyncResolvedAtMs = performance.now();
+  });
+  [firstColdOpen] = await readMeasurement();
+  nodeLaunch.firstColdOpenObservedMs = performance.now() - nodeStarted;
+  firstColdOpen.initialStateResync = await page.evaluate(() => ({
+    startedAtMs: window.sessionUiInitialResyncStartedAtMs,
+    resolvedAtMs: window.sessionUiInitialResyncResolvedAtMs,
+  }));
+  firstColdOpen.navigation = await page.evaluate(() => window.sessionUiNavigation);
+  await page.getByRole('textbox', { name: '任务输入' }).waitFor();
 };
-// Playwright 1.64 treats an async waitForFunction predicate's Promise as truthy.
-// These predicates must stay synchronous and use the already-observed public state.
-function selectionReady({ id, draft, requireConnection = true }) {
-  const runtime = window.sessionUiRuntimes.get(id);
-  const send = document.querySelector('button[aria-label="发送任务"]');
-  return Boolean(
-    window.sessionUiState?.selectedSessionId === id &&
-    document.querySelector(`.session-row[data-session-id="${id}"] > button`)?.getAttribute('aria-current') ===
-      'page' &&
-    (!requireConnection || (runtime?.connected && runtime.status === 'idle')) &&
-    document.querySelector('textarea[aria-label="任务输入"]')?.value === draft &&
-    draft &&
-    send &&
-    !send.disabled,
-  );
-}
-const selectionSettled = (session, requireConnection = true) =>
-  page.waitForFunction(
-    selectionReady,
-    { id: session.id, draft: session.draft, requireConnection },
-    { timeout: 30000 },
-  );
+// Playwright 1.64 predicates must return synchronous booleans, never Promises.
+const selectionSettled = (session, requireConnection = true) => {
+  const fixture = fixtures.find((item) => item.session.id === session.id);
+  return page.waitForFunction(sessionSelectionReady, expectedSelection(fixture, requireConnection));
+};
 const diagnostic = async () => JSON.parse(await page.evaluate(() => window.desktop.invoke('diagnostics')));
 const sidebarOrder = () =>
   page.locator('.sidebar .session-row').evaluateAll((rows) => rows.map((row) => row.dataset.sessionId));
@@ -171,121 +328,98 @@ const assertBrowsingUnchanged = async () => {
   );
   assert.deepEqual(await sidebarOrder(), originalOrder, 'Browsing must not reorder sidebar sessions');
 };
-const measureSelection = async (fixture, requireConnection = true) => {
-  const { session, marker } = fixture;
-  await page.evaluate(
-    ({ id, marker, draft, markers, requireConnection }) => {
-      window.switchMeasurement = new Promise((resolve, reject) => {
-        let started, messageDomMs, nextAnimationFrameMs, runtimeReadyMs, selectionSettledMs;
-        let otherHistoryVisible = false,
-          frame;
-        const cleanup = () => {
-          clearTimeout(timeout);
-          cancelAnimationFrame(frame);
-          observer.disconnect();
-          unsubscribe();
-          document.removeEventListener('click', click, true);
-        };
-        const sample = () => {
-          if (started === undefined) return;
-          const runtime = window.sessionUiRuntimes.get(id);
-          if (runtimeReadyMs === undefined && runtime?.connected && runtime.status === 'idle')
-            runtimeReadyMs = performance.now() - started;
-          const text = document.querySelector('.thread')?.textContent ?? '';
-          if (messageDomMs === undefined && text.includes(marker)) {
-            messageDomMs = performance.now() - started;
-            // A rAF callback is an observable frame boundary, not proof of screen presentation.
-            requestAnimationFrame(() => {
-              nextAnimationFrameMs = performance.now() - started;
-            });
-          }
-          // Once the target preview appears, later wrong-history frames must not be forgotten.
-          if (messageDomMs !== undefined)
-            otherHistoryVisible ||= markers.some((other) => other !== marker && text.includes(other));
-        };
-        const pollFrame = () => {
-          sample();
-          const send = document.querySelector('button[aria-label="发送任务"]');
-          const selected = document.querySelector(`.session-row[data-session-id="${id}"] > button`);
-          if (
-            selectionSettledMs === undefined &&
-            window.sessionUiState?.selectedSessionId === id &&
-            selected?.getAttribute('aria-current') === 'page' &&
-            (!requireConnection ||
-              (window.sessionUiRuntimes.get(id)?.connected &&
-                window.sessionUiRuntimes.get(id)?.status === 'idle')) &&
-            document.querySelector('textarea[aria-label="任务输入"]')?.value === draft &&
-            draft &&
-            send &&
-            !send.disabled
-          )
-            selectionSettledMs = performance.now() - started;
-          if (
-            nextAnimationFrameMs !== undefined &&
-            (!requireConnection || runtimeReadyMs !== undefined) &&
-            selectionSettledMs !== undefined
-          ) {
-            cleanup();
-            resolve({
-              messageDomMs,
-              nextAnimationFrameMs,
-              runtimeReadyMs,
-              selectionSettledMs,
-              otherHistoryVisible,
-              targetHistoryPresentAtSettlement:
-                document.querySelector('.thread')?.textContent.includes(marker) ?? false,
-              foreignHistoryAtSettlement: markers.some(
-                (other) => other !== marker && document.querySelector('.thread')?.textContent.includes(other),
-              ),
-            });
-          } else frame = requestAnimationFrame(pollFrame);
-        };
-        const click = (event) => {
-          if (!event.target.closest(`.session-row[data-session-id="${id}"] > button`)) return;
-          document.removeEventListener('click', click, true);
-          started = performance.now();
-          sample();
-          frame = requestAnimationFrame(pollFrame);
-        };
-        const observer = new MutationObserver(sample);
-        const unsubscribe = window.desktop.onEvent(sample);
-        const timeout = setTimeout(() => {
-          cleanup();
-          reject(new Error(`Session ${id} history, runtime, draft or selection completion timed out`));
-        }, 30000);
-        document.addEventListener('click', click, true);
-        observer.observe(document.querySelector('.thread'), {
-          subtree: true,
-          childList: true,
-          characterData: true,
-        });
-      });
-      // A failed Playwright click must not leave an unhandled renderer rejection before cleanup.
-      void window.switchMeasurement.catch(() => {});
-    },
-    {
-      id: session.id,
-      marker,
-      draft: session.draft,
-      markers: fixtures.map((item) => item.marker),
-      requireConnection,
-    },
+const measureSelection = async (fixture, requireConnection = true, scenario = 'correctness-only') => {
+  await armMeasurement([measurementSpec(fixture, scenario, requireConnection)]);
+  try {
+    await page.locator(`.session-row[data-session-id="${fixture.session.id}"] > button`).first().click();
+    const [timing] = await readMeasurement();
+    await selectionSettled(fixture.session, requireConnection);
+    return timing;
+  } catch (error) {
+    await page.evaluate(() => window.cancelSessionSwitchMeasurement?.()).catch(() => {});
+    throw error;
+  }
+};
+const measureModelOpen = async (fixture, scenario) => {
+  const previousConnection = (await diagnostic()).sessionSwitch;
+  const previousCommands = await page.evaluate(
+    (id) => window.sessionUiRuntimes.get(id)?.commands ?? [],
+    fixture.session.id,
   );
-  await page.locator(`.session-row[data-session-id="${session.id}"] > button`).first().click();
-  const timing = await page.evaluate(() => window.switchMeasurement);
-  assert.equal(timing.otherHistoryVisible, false, 'No foreign history may appear after the target preview');
+  const historyBeforeModelLookup = await fs.readFile(fixture.session.file);
+  const spec = measurementSpec(fixture, scenario, false, 'explicit-model-open');
+  spec.expected.requireModels = true;
+  await armMeasurement([spec]);
+  try {
+    await page.getByRole('button', { name: '选择模型', exact: true }).click();
+    const [timing] = await readMeasurement();
+    await selectionSettled(fixture.session, false);
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
+    assert.equal(
+      await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, fixture.session.id),
+      false,
+      'Model metadata loading must not connect the conversation',
+    );
+    assert.deepEqual(
+      (await diagnostic()).sessionSwitch,
+      previousConnection,
+      'Metadata loading must not create a chat connection',
+    );
+    const commandsAfter = await page.evaluate(
+      (id) => window.sessionUiRuntimes.get(id).commands,
+      fixture.session.id,
+    );
+    if (previousConnection === undefined)
+      assert.equal(commandsAfter.length, 0, 'Catalog loading must not load chat commands');
+    else
+      assert.deepEqual(
+        commandsAfter,
+        previousCommands,
+        'Catalog loading must not replace retained chat commands',
+      );
+    const historyAfterModelLookup = await fs.readFile(fixture.session.file);
+    assert.deepEqual(
+      historyAfterModelLookup,
+      historyBeforeModelLookup,
+      'Catalog loading must preserve exact saved-history bytes',
+    );
+    timing.catalogIsolation = {
+      historyBytesUnchanged: true,
+      historySha256: createHash('sha256').update(historyAfterModelLookup).digest('hex'),
+      chatCommandsUnchanged: true,
+      chatCommandCountAfter: commandsAfter.length,
+      chatConnectionDiagnosticUnchanged: true,
+      pickerDetached: true,
+    };
+    return timing;
+  } catch (error) {
+    await page.evaluate(() => window.cancelSessionSwitchMeasurement?.()).catch(() => {});
+    throw error;
+  }
+};
+const measureExplicitConnection = async (fixture, scenario) => {
+  await selectionSettled(fixture.session, false);
+  const spec = {
+    ...measurementSpec(fixture, scenario, true, 'explicit-connect'),
+    activation: 'Playwright pointer click on the selected conversation’s .run-meta 重新连接 button',
+  };
+  const reconnect = page.locator('.run-meta').getByRole('button', { name: '重新连接', exact: true });
   assert.equal(
-    timing.targetHistoryPresentAtSettlement,
-    true,
-    'The target history must still be present at selection completion',
+    await reconnect.count(),
+    1,
+    'The selected disconnected conversation must expose its real reconnect action',
   );
-  assert.equal(
-    timing.foreignHistoryAtSettlement,
-    false,
-    'Completed selection must not contain another session history',
-  );
-  await selectionSettled(session, requireConnection);
-  return timing;
+  await armMeasurement([spec]);
+  try {
+    await reconnect.click();
+    const [timing] = await readMeasurement();
+    await selectionSettled(fixture.session);
+    return timing;
+  } catch (error) {
+    await page.evaluate(() => window.cancelSessionSwitchMeasurement?.()).catch(() => {});
+    throw error;
+  }
 };
 const within = async (operation, ms, label) => {
   let timer;
@@ -305,6 +439,8 @@ const cleanupApp = async () => {
   if (page && !page.isClosed())
     await within(
       page.evaluate(() => {
+        window.cancelSessionSwitchMeasurement?.();
+        window.sessionUiObservationCleanup?.();
         // Cleanup only: handle future exit requests and a request already shown by a failed close.
         window.desktop.onEvent((event) => {
           if (event.type === 'appDialog' && event.dialog.message === 'Pi 仍在执行任务')
@@ -333,11 +469,60 @@ try {
   const buildInfo = await app.evaluate(({ app }) => ({
     version: app.getVersion(),
     packaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    electron: process.versions.electron,
+    chromium: process.versions.chrome,
   }));
   assert.equal(buildInfo.version, JSON.parse(await fs.readFile('package.json', 'utf8')).version);
   if (packaged) assert.equal(buildInfo.packaged, true);
-  await page.evaluate((id) => window.desktop.invoke('connect', id), a.id);
-  await selectionSettled(a);
+  const git = (args) => {
+    try {
+      return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const sha256 = async (file) => {
+    try {
+      return createHash('sha256')
+        .update(await fs.readFile(file))
+        .digest('hex');
+    } catch {
+      return null;
+    }
+  };
+  const trackedDiff = git(['diff', '--binary', 'HEAD']);
+  const buildFiles = {};
+  if (buildInfo.packaged) buildFiles['app.asar'] = await sha256(buildInfo.appPath);
+  else {
+    const collect = async (directory) => {
+      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) await collect(file);
+        else buildFiles[path.relative(buildInfo.appPath, file)] = await sha256(file);
+      }
+    };
+    await collect(path.join(buildInfo.appPath, 'dist'));
+    await collect(path.join(buildInfo.appPath, 'dist-electron'));
+  }
+  const sourceIdentity = {
+    checkoutCommit: git(['rev-parse', 'HEAD']),
+    reportedBuildCommit: process.env.PI_DESKTOP_SOURCE_COMMIT ?? null,
+    worktreeStatus: git(['status', '--porcelain']),
+    trackedDiffSha256: trackedDiff === null ? null : createHash('sha256').update(trackedDiff).digest('hex'),
+    buildFiles,
+    runnerSha256: await sha256('scripts/test-session-ui.mjs'),
+    observerSha256: await sha256('scripts/session-switch-measurement.mjs'),
+    note: 'Checkout identity and dirty diff are separate from hashes of the actual loaded build; unavailable identity is null.',
+  };
+  assert.equal(
+    await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, a.id),
+    false,
+    'First app-open browsing must not start Pi',
+  );
+  assert.equal((await diagnostic()).sessionSwitch, undefined);
+  const firstColdModelOpen = await measureModelOpen(fixtures[0], 'first-cold-open');
+  const firstColdConnection = await measureExplicitConnection(fixtures[0], 'first-cold-open');
   await page.locator('.thread').getByText('SESSION_A_ONLY', { exact: true }).waitFor();
   for (const header of await page.locator('.project-row').all())
     if ((await header.getAttribute('aria-expanded')) !== 'true') await header.click();
@@ -350,10 +535,15 @@ try {
   // Warm B explicitly so the hot-switch measurements only cover existing connections.
   await page.evaluate((id) => window.desktop.invoke('connect', id), b.id);
   const hotSwitches = [];
-  const requestsBeforeSwitching = provider.requests.length;
+  const requestsBeforeSwitching = requestsAfterSeeding;
+  assert.equal(
+    provider.requests.length,
+    requestsBeforeSwitching,
+    'Initial browsing and model loading must not send a prompt',
+  );
   for (let i = 0; i < 12; i++) {
     const target = fixtures[i % 2 ? 0 : 1];
-    const timing = await measureSelection(target);
+    const timing = await measureSelection(target, true, 'same-project-hot-return');
     // lastSwitch describes the process's last connection, not this hot UI switch.
     // Read it only after selection settles, and use it solely to check PID ownership.
     const info = (await diagnostic()).sessionSwitch;
@@ -365,8 +555,12 @@ try {
   }
   const durations = hotSwitches.map((sample) => sample.nextAnimationFrameMs);
   const measurement = {
+    schemaVersion: 2,
+    recordedAt: new Date().toISOString(),
     platform: process.platform,
     ...buildInfo,
+    sourceIdentity,
+    nodeLaunch: { clock: 'Node performance.now; never subtracted from renderer timestamps', ...nodeLaunch },
     durations,
     selectionSettledMs: hotSwitches.map((sample) => sample.selectionSettledMs),
     hotSwitches,
@@ -374,9 +568,15 @@ try {
     timingNotes: {
       durations: 'Click to target history DOM observation followed by the next rAF; not a paint measurement.',
       runtimeReadyMs:
-        'Click to observed connected/idle state; an already-ready hot runtime is available at click time.',
+        'Target-owned connected/idle state with its expected model. Exactly 0 means already-ready at click, not a zero-cost connection.',
       selectionSettledMs:
-        'Click to observed target state, idle runtime, correct nonempty draft and enabled send button; includes renderer completion after selectSession IPC, not an IPC roundtrip measurement.',
+        'Click to a newer authoritative target state revision, correct heading/sidebar/history/draft and nonpending enabled send/model gates, plus target-owned idle runtime when required. This is observed renderer completion, not an IPC roundtrip.',
+      firstColdOpen:
+        'Initial renderer navigation origin to observation after firstWindow and one initial public bootstrap resync. Observer installation is recorded; already-visible DOM is an upper bound. Node launch timings use a separate clock.',
+      modelCatalogReadyMs:
+        'Real model-menu click to loaded target-owned catalog and its enabled expected current option. A disposable Pi metadata reader is allowed; the conversation remains disconnected.',
+      explicitConnection:
+        'Real selected-session .run-meta 重新连接 click to target-owned idle readiness and nonpending renderer completion. Separate from catalog opening and browsing; not a direct IPC-roundtrip measurement.',
     },
     maxMs: Math.max(...durations),
     budgetMs: 200,
@@ -426,11 +626,11 @@ try {
   assert.equal((await diagnostic()).sessionSwitch.pid, sessionPids.get(b.id));
   await assertBrowsingUnchanged();
   console.log('PASS an idle process exit in A leaves B connected to its original process');
-  await measureSelection(fixtures[0], false);
+  const exitedBrowse = await measureSelection(fixtures[0], false, 'process-exit-recovery');
   assert.equal(await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected, a.id), false);
   // Browsing an exited chat preserves its interrupted state until the user reconnects.
-  await page.evaluate((id) => window.desktop.invoke('connect', id), a.id);
-  await selectionSettled(a);
+  const exitRecoveryModelOpen = await measureModelOpen(fixtures[0], 'process-exit-recovery');
+  const exitRecoveryConnection = await measureExplicitConnection(fixtures[0], 'process-exit-recovery');
   const reconnectedPid = (await diagnostic()).sessionSwitch.pid;
   assert.notEqual(reconnectedPid, originalPid);
   assert.notEqual(reconnectedPid, sessionPids.get(b.id));
@@ -452,7 +652,7 @@ try {
       false,
       'The target must be cold before its first UI selection',
     );
-    const timing = await measureSelection(fixture, false);
+    const timing = await measureSelection(fixture, false, 'cross-directory-first-visit');
     assert.equal(
       await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, session.id),
       false,
@@ -463,25 +663,9 @@ try {
       await page.locator('.stop-button, .elapsed, select[aria-label="运行中发送方式"]').count(),
       0,
     );
-    // Model discovery reads a disposable history copy and leaves the chat disconnected.
-    const historyBeforeModelLookup = await fs.readFile(session.file, 'utf8');
-    await page.getByRole('button', { name: '选择模型', exact: true }).click();
-    await page.waitForFunction((id) => {
-      const runtime = window.sessionUiRuntimes.get(id);
-      return Boolean(runtime?.modelsLoaded && !runtime.modelsLoading && !runtime.connected);
-    }, session.id);
-    await selectionSettled(session, false);
-    assert.equal((await diagnostic()).sessionSwitch, undefined);
-    assert.equal(
-      await page.evaluate((id) => window.sessionUiRuntimes.get(id).commands.length, session.id),
-      0,
-    );
-    assert.equal(await fs.readFile(session.file, 'utf8'), historyBeforeModelLookup);
-    await page.keyboard.press('Escape');
-    await page.getByRole('dialog', { name: '模型与推理级别' }).waitFor({ state: 'detached' });
-    // Only an explicit connection loads chat capabilities and owns a persistent Pi process.
-    await page.locator('.run-meta').getByRole('button', { name: '重新连接', exact: true }).click();
-    await selectionSettled(session);
+    // Menu metadata and the actual chat connection are distinct operations.
+    const modelOpening = await measureModelOpen(fixture, 'cross-directory-first-visit');
+    const explicitConnection = await measureExplicitConnection(fixture, 'cross-directory-first-visit');
     const { state, runtime } = await page.evaluate(
       (id) => ({
         state: window.sessionUiState,
@@ -512,13 +696,22 @@ try {
     assert.equal([...sessionPids.values()].includes(info.pid), false, 'Each session owns a separate process');
     sessionPids.set(session.id, info.pid);
     await assertBrowsingUnchanged();
-    crossDirectory.push({ transition, sessionId: session.id, ...timing });
+    crossDirectory.push({ transition, sessionId: session.id, ...timing, modelOpening, explicitConnection });
   }
   // Return to each warmed directory and check its original independent process remains in place.
+  const hotReturns = [];
+  let fromCwd = fixtures[4].cwd;
   for (const fixture of [fixtures[2], fixtures[3], fixtures[4], fixtures[0], fixtures[1]]) {
-    await measureSelection(fixture);
+    const crossDirectory = fromCwd !== fixture.cwd;
+    const timing = await measureSelection(
+      fixture,
+      true,
+      crossDirectory ? 'cross-directory-hot-return' : 'same-project-hot-return',
+    );
     assert.equal((await diagnostic()).sessionSwitch.pid, sessionPids.get(fixture.session.id));
     await assertBrowsingUnchanged();
+    hotReturns.push({ crossDirectory, fromCwd, targetCwd: fixture.cwd, ...timing });
+    fromCwd = fixture.cwd;
   }
   assert.equal(
     provider.requests.length,
@@ -531,7 +724,9 @@ try {
       {
         platform: process.platform,
         ...buildInfo,
+        sourceIdentity,
         crossDirectory,
+        hotReturns,
         activitySnapshotAfterExit: { updatedAt: originalActivity, sidebarOrder: originalOrder },
       },
       null,
@@ -543,13 +738,178 @@ try {
     JSON.stringify(crossDirectory),
   );
   console.log(
-    'PASS cold browsing starts no Pi process; model lookup leaves chats disconnected; explicit connections and hot returns preserve cwd, drafts and activity',
+    'PASS cold browsing starts no Pi process; explicit model loading and hot return visits preserve cwd, drafts and activity',
+  );
+
+  const largeFixture = fixtures[5];
+  assert.equal(
+    await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, largeHistory.id),
+    false,
+    'Large history must be unvisited before its cold browsing sample',
+  );
+  const largeColdBrowse = await measureSelection(largeFixture, false, 'large-history');
+  assert.equal((await diagnostic()).sessionSwitch, undefined);
+  assert.equal(
+    await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.connected ?? false, largeHistory.id),
+    false,
+    'Reading 500 saved messages must not start Pi',
+  );
+  assert.equal(
+    await page.evaluate(
+      async (id) => (await window.desktop.invoke('readHistory', id)).length,
+      largeHistory.id,
+    ),
+    historyRecordCount,
+  );
+  const largeModelOpen = await measureModelOpen(largeFixture, 'large-history');
+  const largeConnection = await measureExplicitConnection(largeFixture, 'large-history');
+  const largeRuntime = await page.evaluate((id) => window.sessionUiRuntimes.get(id), largeHistory.id);
+  assert.equal(largeRuntime.sessionId, largeHistory.id);
+  assert.equal(largeRuntime.cwd, largeFixture.cwd);
+  assert.equal(
+    largeRuntime.commands.find((command) => command.name === 'session-ui-process-cwd')?.description,
+    await fs.realpath(largeFixture.cwd),
+  );
+  const largePid = (await diagnostic()).sessionSwitch.pid;
+  assert.ok(Number.isInteger(largePid));
+  assert.equal([...sessionPids.values()].includes(largePid), false);
+  sessionPids.set(largeHistory.id, largePid);
+  await assertBrowsingUnchanged();
+  await measureSelection(fixtures[0]);
+  const largeHotReturn = await measureSelection(largeFixture, true, 'large-history');
+  assert.equal((await diagnostic()).sessionSwitch.pid, largePid);
+  assert.equal(
+    await page.evaluate(
+      async (id) => (await window.desktop.invoke('readHistory', id)).length,
+      largeHistory.id,
+    ),
+    historyRecordCount,
+  );
+  await assertBrowsingUnchanged();
+  const largeHistoryScenario = {
+    messageCount: historyMessageCount,
+    transcriptMessageRecordCount: historyRecordCount,
+    historyBytes,
+    renderedMessageElementsAfterHotReturn: await page.locator('.thread [data-message-index]').count(),
+    note: '500 messages are persisted and read through real Pi; the renderer retains its normal visible-history limit.',
+    coldBrowse: largeColdBrowse,
+    modelOpening: largeModelOpen,
+    explicitConnection: largeConnection,
+    hotReturn: largeHotReturn,
+  };
+  console.log('Large-history session-switch measurements:', JSON.stringify(largeHistoryScenario));
+
+  // Establish B, then issue the requested A→B→A targets without waiting between them.
+  await measureSelection(fixtures[1]);
+  const rapidSpecs = [fixtures[0], fixtures[1], fixtures[0]].map((fixture) => ({
+    ...measurementSpec(fixture, 'rapid-a-b-a'),
+    activation: 'HTMLElement.click burst in one renderer task',
+  }));
+  await armMeasurement(rapidSpecs);
+  try {
+    await page.evaluate(
+      (ids) => {
+        for (const id of ids) {
+          const target = document.querySelector(`.session-row[data-session-id="${id}"] > button`);
+          if (!target || target.disabled) throw new Error(`Rapid target ${id} is not actionable`);
+          target.click();
+        }
+      },
+      [a.id, b.id, a.id],
+    );
+  } catch (error) {
+    await page.evaluate(() => window.cancelSessionSwitchMeasurement?.()).catch(() => {});
+    throw error;
+  }
+  const rapidSwitches = await readMeasurement();
+  assert.deepEqual(
+    rapidSwitches.map((sample) => sample.sessionId),
+    [a.id, b.id, a.id],
+  );
+  assert.deepEqual(
+    rapidSwitches.map((sample) => sample.outcome),
+    ['superseded', 'superseded', 'completed'],
+  );
+  assert.equal(new Set(rapidSwitches.map((sample) => sample.requestId)).size, 3);
+  // Recheck after queued frame work; stale A/B results must not replace the final A.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await selectionSettled(a);
+  assert.equal((await diagnostic()).sessionSwitch.pid, sessionPids.get(a.id));
+  assert.equal(await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.model?.id, a.id), 'local-e2e');
+  assert.equal(
+    await page.evaluate((id) => window.sessionUiRuntimes.get(id)?.model?.id, b.id),
+    'local-e2e-alt',
+  );
+  await assertBrowsingUnchanged();
+  assert.equal(
+    provider.requests.length,
+    requestsBeforeSwitching,
+    'All measured browsing/model operations must send no prompt',
+  );
+  const scenarios = {
+    firstColdOpen: {
+      browsing: firstColdOpen,
+      modelOpening: firstColdModelOpen,
+      explicitConnection: firstColdConnection,
+    },
+    sameProjectHotReturn: { discardedWarmups: 2, samples: hotSwitches },
+    crossDirectoryHotReturn: { samples: hotReturns.filter((sample) => sample.crossDirectory) },
+    largeHistory: largeHistoryScenario,
+    rapidABA: {
+      activation:
+        'Three HTMLElement.click activations in one renderer task; this exercises the real UI handlers without pointer-travel delay.',
+      samples: rapidSwitches,
+    },
+  };
+  await fs.writeFile(
+    `test-results/session-ui-scenarios-${process.platform}.json`,
+    JSON.stringify(
+      {
+        ...measurement,
+        scenarios,
+        supplementalColdDirectoryVisits: crossDirectory,
+        processExitRecovery: {
+          browsing: exitedBrowse,
+          modelOpening: exitRecoveryModelOpen,
+          explicitConnection: exitRecoveryConnection,
+        },
+        unrunPaths: [
+          {
+            path: 'automatic-process-eviction',
+            status: 'not-run',
+            reason: 'The script explicitly terminates one process; it does not exercise automatic eviction.',
+          },
+          {
+            path: 'project-resource-reload',
+            status: 'not-run',
+            reason: 'No loaded extension/configuration file is changed during measurement.',
+          },
+        ],
+        activitySnapshotAfterExit: { updatedAt: originalActivity, sidebarOrder: originalOrder },
+      },
+      null,
+      2,
+    ),
+  );
+  console.log('Rapid A→B→A session-switch measurements:', JSON.stringify(rapidSwitches));
+  console.log(
+    'PASS all five scenario groups retain target history, model ownership, drafts, process isolation and activity order',
   );
   assert.equal(await page.evaluate(() => window.otherSessionBannerCount), 0);
   console.log('PASS idle switches and cold reconnection never show an unrelated running-session banner');
 
   const fresh = await page.evaluate(() => window.desktop.invoke('newSession'));
   const task = 'FIRST_SEND_WITHOUT_PRECONNECT';
+  await page.waitForFunction(
+    ({ id, title }) =>
+      window.sessionUiState?.selectedSessionId === id &&
+      document.querySelector('.workspace-title h1')?.textContent === title &&
+      Boolean(document.querySelector('textarea[aria-label="任务输入"]')) &&
+      !document.querySelector('textarea[aria-label="任务输入"]').disabled,
+    { id: fresh.id, title: fresh.title },
+  );
   await page.getByRole('textbox', { name: '任务输入' }).fill(task);
   await page.waitForFunction(
     (id) =>

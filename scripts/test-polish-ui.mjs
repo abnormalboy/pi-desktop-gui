@@ -21,6 +21,9 @@ const protectedFields = [
   { unread: true },
 ];
 const protectedSessions = protectedFields.map((fields) => Object.assign(f.store.createSession(), fields));
+// These model already-persisted empty rows from older releases, not new transient placeholders.
+const cleanupRace = f.store.createSession();
+const cleanupLegacy = f.store.createSession();
 await f.store.save();
 const output = path.resolve('test-results/polish');
 await fs.mkdir(output, { recursive: true });
@@ -53,10 +56,9 @@ try {
       Promise.all(Array.from({ length: 8 }, () => api.invoke('newSession'))),
       Promise.all(Array.from({ length: 8 }, () => api.invoke('newSession', projectId))),
     ]);
-    const original = (await api.invoke('bootstrap')).state.sessions.find((s) => s.id === standalone[0].id);
     // Autosave and another new-session request can overlap; contents must survive either ordering.
     await Promise.all([
-      api.invoke('saveDraft', original.id, '并发草稿', ['输入 文件.txt'], [], []),
+      api.invoke('saveDraft', standalone[0].id, '并发草稿', ['输入 文件.txt'], [], []),
       api.invoke('newSession'),
     ]);
     return { standalone, project, state: (await api.invoke('bootstrap')).state };
@@ -72,22 +74,8 @@ try {
     assert.ok(saved);
     for (const [key, value] of Object.entries(protectedFields[index])) assert.deepEqual(saved[key], value);
   }
-  const raceId = concurrent.state.sessions.find(
-    (s) =>
-      !s.file &&
-      !s.draft &&
-      !s.projectId &&
-      s.title === '新对话' &&
-      !s.model &&
-      s.thinking === undefined &&
-      s.approvalMode === undefined &&
-      !s.pinned &&
-      !s.unread &&
-      !s.attachments.length &&
-      !s.images?.length &&
-      !s.draftSnippets?.length,
-  )?.id;
-  assert.ok(raceId, 'Need an untouched placeholder for cleanup confirmation race');
+  const raceId = cleanupRace.id;
+  assert.ok(concurrent.state.sessions.some((s) => s.id === raceId));
   await page.evaluate(() => {
     window.polishCleanup = window.desktop.invoke('cleanupEmptySessions');
   });
@@ -102,6 +90,10 @@ try {
   assert.ok(removed > 0);
   const afterCleanup = await page.evaluate(async () => (await window.desktop.invoke('bootstrap')).state);
   assert.equal(afterCleanup.sessions.find((s) => s.id === raceId).draft, '确认期间到达的草稿');
+  assert.equal(
+    afterCleanup.sessions.some((s) => s.id === cleanupLegacy.id),
+    false,
+  );
   for (let index = 0; index < protectedSessions.length; index++) {
     const saved = afterCleanup.sessions.find((s) => s.id === protectedSessions[index].id);
     assert.ok(saved);

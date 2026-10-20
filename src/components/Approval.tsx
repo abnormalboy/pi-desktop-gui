@@ -73,7 +73,8 @@ export function ApprovalSwitch({
                 aria-checked={mode === id}
                 onClick={() => {
                   setOpen(false);
-                  if (id !== mode) change(id);
+                  // Keep explicit default choices, even when the effective mode is unchanged.
+                  change(id);
                 }}
               >
                 <ItemIcon size={15} />
