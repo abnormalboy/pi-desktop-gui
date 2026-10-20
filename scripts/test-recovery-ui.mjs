@@ -121,7 +121,15 @@ try {
     /发送与保存已暂停/,
   );
   console.log('PASS an actual disk write failure disables input and rejects sending at the IPC boundary');
-  await app.close();
+  const failedWriteClosed = app.waitForEvent('close', { timeout: 60000 });
+  await app.evaluate(({ app }) => {
+    setImmediate(() => app.quit());
+  });
+  await page
+    .getByRole('dialog', { name: '本地内容尚未保存，仍然退出？', exact: true })
+    .getByRole('button', { name: '仍然退出，丢弃未保存内容', exact: true })
+    .click();
+  await failedWriteClosed;
   app = undefined;
 
   const empty = await prepareRealPiFixture(provider.baseUrl, 'recovery-empty-ui');

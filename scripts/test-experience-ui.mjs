@@ -126,7 +126,6 @@ try {
   await page.getByRole('button', { name: '移除引用 输入 文件.txt', exact: true }).click();
   await savedSession(fixture.sessionId, (s) => s.images?.length === 1 && s.attachments.length === 1);
   await releaseDrop();
-  await savedSession(standalone.id, (session) => session.draft === '另一个会话的草稿');
   const editedDuringDrop = await savedSession(fixture.sessionId, (s) =>
     s.attachments.includes('延迟校验.txt'),
   );
@@ -146,6 +145,7 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="任务输入"]')?.value === '');
   await input.fill('另一个会话的草稿');
   await releaseDrop();
+  await savedSession(standalone.id, (session) => session.draft === '另一个会话的草稿');
   await page.waitForTimeout(150); // Let the cancelled callback finish before checking both sessions.
   assert.equal(await input.inputValue(), '另一个会话的草稿');
   const afterSwitch = JSON.parse(await fs.readFile(path.join(fixture.dataDir, 'state.json'), 'utf8'));
