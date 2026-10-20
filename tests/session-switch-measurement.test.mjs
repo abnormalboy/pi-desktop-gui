@@ -163,6 +163,9 @@ function harness({ now = 100 } = {}) {
     flush() {
       while (microtasks.length) microtasks.shift()();
     },
+    flushOne() {
+      microtasks.shift()?.();
+    },
     select(id, { revision = window.sessionUiRevision + 1, pending = false } = {}) {
       window.sessionUiState.selectedSessionId = id;
       window.sessionUiState.selectedProjectId = `project-${id}`;
@@ -408,6 +411,7 @@ test('collector needs a post-click revision and current complete gates, then cle
   assert.equal(resolved, false, 'a pending request must not finish');
   h.ui.pending = false;
   h.mutation();
+  h.frame();
   const [sample] = await promise;
   assert.equal(sample.outcome, 'completed');
   assert.equal(sample.settlement.complete, true);
@@ -433,6 +437,7 @@ test('rapid A→B→A keeps request IDs and supersedes earlier clicks, even on t
   h.frame();
   h.ui.pending = false;
   h.mutation();
+  h.frame();
   const samples = await promise;
   assert.deepEqual(
     Array.from(samples, (sample) => sample.requestId),
@@ -446,6 +451,152 @@ test('rapid A→B→A keeps request IDs and supersedes earlier clicks, even on t
   assert.equal(samples[1].selectionSettledMs, null);
   assert.equal(samples[2].settlement.selectedSessionId, 'A');
   assert.equal(samples[2].settlement.runtime.modelId, 'model-A');
+  h.assertClean();
+});
+
+test('coherent locked A₁→B→A₃ previews do not count as foreign history for final A', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm(['A', 'B', 'A']);
+  h.click('A');
+  h.click('B');
+  h.click('A');
+  h.flush();
+  h.ui.send.disabled = h.ui.model.disabled = h.ui.input.disabled = true;
+  h.select('A', { pending: true });
+  h.mutation();
+  h.frame();
+  h.select('B', { pending: true });
+  h.mutation();
+  h.frame();
+  h.select('A', { pending: true });
+  h.mutation();
+  h.ui.pending = false;
+  h.ui.send.disabled = h.ui.model.disabled = h.ui.input.disabled = false;
+  h.mutation();
+  h.frame();
+  const samples = await promise;
+  const final = samples.at(-1);
+  assert.deepEqual(
+    Array.from(samples, (sample) => sample.outcome),
+    ['superseded', 'superseded', 'completed'],
+  );
+  assert.equal(final.otherHistoryVisible, false);
+  assert.equal(final.unsafeSendGateObserved, false);
+  assert.equal(final.unsafeModelGateObserved, false);
+  assert.equal(final.selectionRegressed, false);
+  assert.equal(final.firstHistoryMismatch, null);
+  assert.ok(final.messageDomMs < final.selectionSettledMs, 'first A preview is not final A completion');
+  assert.match(final.messageDomScope, /not final request completion/);
+  assert.equal(final.settlement.complete, true);
+  h.assertClean();
+});
+
+test('an obsolete microtask cannot enable the newer request before its own callback', async () => {
+  const h = harness();
+  const promise = h.arm(['A', 'B']);
+  h.click('A');
+  h.click('B');
+  h.select('B', { pending: true });
+  h.flushOne();
+  h.mutation();
+  h.flush();
+  h.select('B');
+  h.frame();
+  h.frame();
+  const samples = await promise;
+  assert.equal(samples.at(-1).messageDomMs, 16, 'the first request microtask must not sample B at 0 ms');
+  h.assertClean();
+});
+
+test('wrong content under an intermediate displayed B is still retained as a hard failure', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm(['A', 'B', 'A']);
+  h.click('A');
+  h.click('B');
+  h.click('A');
+  h.flush();
+  h.select('B', { pending: true });
+  h.ui.text = 'HISTORY_A';
+  h.mutation();
+  h.select('A');
+  h.mutation();
+  h.frame();
+  const samples = await promise;
+  assert.equal(samples.at(-1).otherHistoryVisible, true);
+  assert.equal(samples.at(-1).firstHistoryMismatch.displayedSessionId, 'B');
+  h.assertClean();
+});
+
+test('wrong content under displayed A is rejected even when public B arrived before React commits', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm();
+  h.click('A');
+  h.flush();
+  h.select('A', { pending: true });
+  h.mutation();
+  h.window.sessionUiState.selectedSessionId = 'B';
+  h.ui.text = 'HISTORY_B';
+  h.mutation();
+  h.select('A');
+  h.mutation();
+  h.frame();
+  const [sample] = await promise;
+  assert.equal(sample.otherHistoryVisible, true);
+  assert.equal(sample.firstHistoryMismatch.snapshot.authoritativeSelection, false);
+  assert.equal(sample.firstHistoryMismatch.snapshot.displayedSelection, true);
+  h.assertClean();
+});
+
+test('incoming public B does not mislabel coherent locked A DOM before React commits', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm(['A', 'B', 'A']);
+  h.click('A');
+  h.click('B');
+  h.click('A');
+  h.flush();
+  h.select('A', { pending: true });
+  h.ui.send.disabled = h.ui.model.disabled = h.ui.input.disabled = true;
+  h.mutation();
+  h.window.sessionUiState.selectedSessionId = 'B';
+  h.window.sessionUiState.selectedProjectId = 'project-B';
+  h.window.sessionUiRevision++;
+  h.mutation();
+  h.frame();
+  h.select('A');
+  h.ui.send.disabled = h.ui.model.disabled = h.ui.input.disabled = false;
+  h.mutation();
+  h.frame();
+  const samples = await promise;
+  assert.equal(samples.at(-1).otherHistoryVisible, false);
+  assert.equal(samples.at(-1).unsafeSendGateObserved, false);
+  assert.equal(samples.at(-1).unsafeModelGateObserved, false);
+  assert.equal(samples.at(-1).selectionRegressed, false);
+  h.assertClean();
+});
+
+test('coherent B after final A first unlock is a hard regression even if A returns before resolution', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm(['A', 'B', 'A']);
+  h.click('A');
+  h.click('B');
+  h.click('A');
+  h.flush();
+  h.select('A');
+  h.mutation();
+  h.select('B', { pending: true });
+  h.mutation();
+  h.select('A');
+  h.mutation();
+  h.frame();
+  const samples = await promise;
+  assert.equal(samples.at(-1).otherHistoryVisible, false, 'B history belongs to its displayed B owner');
+  assert.equal(samples.at(-1).selectionRegressed, true, 'the final confirmed selection must not revert');
+  assert.equal(samples.at(-1).firstSelectionRegression.snapshot.selectedSessionId, 'B');
   h.assertClean();
 });
 
@@ -468,6 +619,7 @@ test('a later foreign frame cannot resolve an earlier correct-history observatio
   assert.equal(resolved, false);
   h.ui.text = 'HISTORY_A';
   h.mutation();
+  h.frame();
   const [sample] = await promise;
   assert.equal(sample.otherHistoryVisible, true, 'runner must fail even if foreign history later disappears');
   h.assertClean();
@@ -485,6 +637,27 @@ test('unsafe post-click send gate is retained for the runner to reject', async (
   h.frame();
   const [sample] = await promise;
   assert.equal(sample.unsafeSendGateObserved, true);
+  h.assertClean();
+});
+
+test('a wrong model entry unlocked alone is rejected while Send remains disabled and pending', async () => {
+  const h = harness();
+  h.select('B');
+  const promise = h.arm();
+  h.click('A');
+  h.flush();
+  h.ui.pending = true;
+  h.ui.send.disabled = true;
+  h.ui.model.disabled = false;
+  h.mutation();
+  h.frame();
+  h.select('A');
+  h.ui.send.disabled = false;
+  h.mutation();
+  h.frame();
+  const [sample] = await promise;
+  assert.equal(sample.unsafeSendGateObserved, false);
+  assert.equal(sample.unsafeModelGateObserved, true);
   h.assertClean();
 });
 
@@ -517,6 +690,7 @@ test('initial observer resync does not misclassify unknown public state as an un
   h.frame();
   h.window.sessionUiState = { selectedSessionId: 'A', selectedProjectId: 'project-A' };
   h.mutation();
+  h.frame();
   const [sample] = await promise;
   assert.equal(sample.unsafeSendGateObserved, false);
   h.assertClean();
@@ -540,6 +714,7 @@ test('explicit connect has its own renderer IPC start and must await that action
   await Promise.resolve();
   assert.equal(resolved, false, 'runtime readiness alone does not fulfill the invoke');
   h.window.sessionUiActionCompletions.set('connect-A', 121);
+  h.frame();
   h.frame();
   const [sample] = await promise;
   assert.equal(sample.startAtMs, 100);

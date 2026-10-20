@@ -22,12 +22,13 @@ export function sessionSelectionSnapshot({
   const text = document.querySelector('.thread')?.textContent ?? '';
   const targetHistoryPresent = text.includes(marker);
   const foreignHistoryPresent = markers.some((other) => other !== marker && text.includes(other));
-  const authoritativeSelection = Boolean(
-    state?.selectedSessionId === id &&
-    state?.selectedProjectId === projectId &&
+  const displayedSelection = Boolean(
     document.querySelector('.workspace-title h1')?.textContent === title &&
     document.querySelector(`.session-row[data-session-id="${id}"] > button`)?.getAttribute('aria-current') ===
       'page',
+  );
+  const authoritativeSelection = Boolean(
+    state?.selectedSessionId === id && state?.selectedProjectId === projectId && displayedSelection,
   );
   const runtimeOwned = !runtime || runtime.sessionId === id;
   const runtimeCwdMatches = !runtime || runtime.cwd === cwd;
@@ -59,6 +60,7 @@ export function sessionSelectionSnapshot({
     selectedSessionId: state?.selectedSessionId ?? null,
     selectedProjectId: state?.selectedProjectId ?? null,
     revision: window.sessionUiRevision ?? 0,
+    displayedSelection,
     authoritativeSelection,
     targetHistoryPresent,
     foreignHistoryPresent,
@@ -105,6 +107,7 @@ export function sessionSelectionReady(expected) {
 export function observeSessionSelections({ requests, startMode = 'click', timeoutMs = 30000 }) {
   window.cancelSessionSwitchMeasurement?.();
   const installedAtMs = performance.now();
+  const historyOwners = [...new Map(requests.map(({ expected }) => [expected.id, expected])).values()];
   const outcomes = [];
   let active,
     nextRequest = 0,
@@ -155,6 +158,7 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
     runtimeAtStart: active.initial.runtime,
     baselineRevision: active.initial.revision,
     messageDomMs: active.messageDomMs ?? null,
+    messageDomScope: 'first target preview after activation; not final request completion',
     nextAnimationFrameMs: active.nextAnimationFrameMs ?? null,
     authoritativeSelectionMs: active.authoritativeSelectionMs ?? null,
     draftRestoredMs: active.draftRestoredMs ?? null,
@@ -164,7 +168,11 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
     actionCompletedMs: active.actionCompletedMs ?? null,
     selectionSettledMs: active.selectionSettledMs ?? null,
     otherHistoryVisible: active.otherHistoryVisible,
+    firstHistoryMismatch: active.firstHistoryMismatch ?? null,
     unsafeSendGateObserved: active.unsafeSendGateObserved,
+    unsafeModelGateObserved: active.unsafeModelGateObserved,
+    selectionRegressed: active.selectionRegressed,
+    firstSelectionRegression: active.firstSelectionRegression ?? null,
     observationMs: performance.now() - active.started,
     outcome,
     settlement: window.sessionUiSnapshot(active.spec.expected),
@@ -194,24 +202,52 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
       active.messageDomMs = elapsed;
       active.historyFramePending = true;
     }
-    if (active.messageDomMs !== undefined) active.otherHistoryVisible ||= snapshot.foreignHistoryPresent;
+    // In A→B→A the first A preview may belong to the superseded first request.
+    // Coherent, locked B content is then a legitimate intermediate selection,
+    // not foreign content under A. Judge history against the displayed owner.
+    // Public state can arrive before React commits, so it is not the DOM owner.
+    for (const owner of historyOwners) {
+      const displayed = owner.id === active.spec.expected.id ? snapshot : window.sessionUiSnapshot(owner);
+      if (displayed.displayedSelection && displayed.foreignHistoryPresent) {
+        active.otherHistoryVisible = true;
+        active.firstHistoryMismatch ??= {
+          elapsedMs: elapsed,
+          displayedSessionId: owner.id,
+          snapshot: displayed,
+        };
+      }
+    }
     if (snapshot.sendPending) active.sawPending = true;
+    const wrongActionOwner =
+      !snapshot.authoritativeSelection ||
+      !snapshot.draftRestored ||
+      !snapshot.runtimeOwned ||
+      !snapshot.runtimeCwdMatches ||
+      (snapshot.runtime?.connected && snapshot.runtime.modelId !== active.spec.expected.modelId);
     if (
       (isFrame || active.sawPending) &&
       snapshot.selectedSessionId !== null &&
       snapshot.sendEnabled &&
       !snapshot.sendPending &&
-      (!snapshot.authoritativeSelection ||
-        !snapshot.draftRestored ||
-        !snapshot.runtimeOwned ||
-        !snapshot.runtimeCwdMatches ||
-        (snapshot.runtime?.connected && snapshot.runtime.modelId !== active.spec.expected.modelId))
+      wrongActionOwner
     )
       active.unsafeSendGateObserved = true;
+    if (
+      (isFrame || active.sawPending) &&
+      snapshot.selectedSessionId !== null &&
+      snapshot.modelEnabled &&
+      wrongActionOwner
+    )
+      active.unsafeModelGateObserved = true;
     if (revisionConfirmed && snapshot.authoritativeSelection) {
       active.authoritativeSelectionMs ??= elapsed;
       if (snapshot.draftRestored) active.draftRestoredMs ??= elapsed;
       if (snapshot.sendGateReady) active.sendGateReadyMs ??= elapsed;
+    }
+    const previouslySettled = active.selectionSettledMs !== undefined;
+    if (previouslySettled && !snapshot.complete) {
+      active.selectionRegressed = true;
+      active.firstSelectionRegression ??= { elapsedMs: elapsed, snapshot };
     }
     if (revisionConfirmed && actionCompleted && snapshot.complete) active.selectionSettledMs ??= elapsed;
     // Recheck all gates on the resolving sample. Earlier correct history or
@@ -219,7 +255,8 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
     if (
       nextRequest === requests.length &&
       active.nextAnimationFrameMs !== undefined &&
-      active.selectionSettledMs !== undefined &&
+      previouslySettled &&
+      isFrame &&
       revisionConfirmed &&
       actionCompleted &&
       snapshot.complete
@@ -238,7 +275,7 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
   const begin = (spec) => {
     if (active) outcomes.push(result('superseded'));
     const initial = window.sessionUiSnapshot(spec.expected);
-    active = {
+    const request = {
       spec,
       initial,
       started: startMode === 'navigation' ? 0 : performance.now(),
@@ -246,11 +283,14 @@ export function observeSessionSelections({ requests, startMode = 'click', timeou
       runtimeReadyMs: initial.runtimeReady && startMode !== 'navigation' ? 0 : undefined,
       otherHistoryVisible: false,
       unsafeSendGateObserved: false,
+      unsafeModelGateObserved: false,
+      selectionRegressed: false,
     };
+    active = request;
     nextRequest++;
     // Do not interpret the old DOM in the click capture phase as completed UI.
     queueMicrotask(() => {
-      if (!disposed) active.eligible = true;
+      if (!disposed && active === request) request.eligible = true;
     });
     if (startMode !== 'click') sample();
   };

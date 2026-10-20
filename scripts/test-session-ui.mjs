@@ -155,7 +155,7 @@ if (packaged && !executablePath)
       : path.resolve(
           `release/mac${process.arch === 'arm64' ? '-arm64' : ''}/Pi Desktop.app/Contents/MacOS/Pi Desktop`,
         );
-let app, page, testError, firstColdOpen;
+let app, page, testError, firstColdOpen, lastMeasurementSamples;
 const errors = [];
 const nodeLaunch = {};
 const expectedSelection = (fixture, requireConnection = true) => ({
@@ -187,13 +187,21 @@ const armMeasurement = (requests, startMode = 'click') =>
   page.evaluate(observeSessionSelections, { requests, startMode });
 const readMeasurement = async () => {
   const samples = await page.evaluate(() => window.switchMeasurement);
+  // Preserve the resolved samples even when a correctness assertion below fails.
+  lastMeasurementSamples = samples;
   for (const timing of samples) {
-    assert.equal(timing.otherHistoryVisible, false, 'No foreign history may appear after the target preview');
+    assert.equal(timing.otherHistoryVisible, false, 'History must match the displayed session title/sidebar');
     assert.equal(
       timing.unsafeSendGateObserved,
       false,
-      'A pending switch must not unlock the wrong send/model gate',
+      'A pending switch must not unlock the wrong send gate',
     );
+    assert.equal(
+      timing.unsafeModelGateObserved,
+      false,
+      'A pending switch must not unlock the wrong model gate',
+    );
+    assert.equal(timing.selectionRegressed, false, 'A completed final selection must not regress');
     if (timing.outcome !== 'completed') continue;
     for (const key of [
       'messageDomMs',
@@ -948,6 +956,7 @@ try {
             error: String(error),
             expectedActivity: originalActivity,
             renderer,
+            lastMeasurementSamples,
             persistedActivity: persisted.sessions.map(({ id, updatedAt, lastStatus }) => ({
               id,
               updatedAt,
