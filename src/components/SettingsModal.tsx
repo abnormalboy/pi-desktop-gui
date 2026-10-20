@@ -146,7 +146,9 @@ export function SettingsModal(
                       <span>Pi 版本</span>
                       <strong>
                         {environment?.version || '未检测到'}
-                        {environment && ` · ${compatibilityLabels[environment.compatibility]}`}
+                        {environment &&
+                          environment.compatibility !== 'unverified' &&
+                          ` · ${compatibilityLabels[environment.compatibility]}`}
                       </strong>
                       {environment?.supported ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
                     </div>

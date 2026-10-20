@@ -57,7 +57,7 @@ try {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('button', { name: '运行环境', exact: true }).click();
     const status = await page.locator('.environment-status').innerText();
-    if (recognized) assert.ok(status.includes(`${version} · 未验证`));
+    if (recognized) assert.ok(status.includes(version) && !status.includes('未验证'));
     else assert.match(status, /未知/);
     assert.equal(
       await page.locator('.settings-content').getByLabel('Pi 版本兼容性').count(),
